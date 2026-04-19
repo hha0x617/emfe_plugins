@@ -1,0 +1,89 @@
+LIBRARY emfe_plugin_z8000
+EXPORTS
+    ; Discovery & Lifecycle
+    emfe_negotiate
+    emfe_get_board_info
+    emfe_create
+    emfe_destroy
+    ; Callbacks
+    emfe_set_console_char_callback
+    emfe_set_state_change_callback
+    emfe_set_diagnostic_callback
+    ; Registers
+    emfe_get_register_defs
+    emfe_get_registers
+    emfe_set_registers
+    ; Memory
+    emfe_peek_byte
+    emfe_peek_word
+    emfe_peek_long
+    emfe_poke_byte
+    emfe_poke_word
+    emfe_poke_long
+    emfe_peek_range
+    emfe_get_memory_size
+    ; Disassembly
+    emfe_disassemble_one
+    emfe_disassemble_range
+    ; Execution
+    emfe_step
+    emfe_step_over
+    emfe_step_out
+    emfe_run
+    emfe_stop
+    emfe_reset
+    emfe_get_state
+    emfe_get_instruction_count
+    emfe_get_cycle_count
+    ; Breakpoints
+    emfe_add_breakpoint
+    emfe_remove_breakpoint
+    emfe_enable_breakpoint
+    emfe_set_breakpoint_condition
+    emfe_clear_breakpoints
+    emfe_get_breakpoints
+    ; Watchpoints (Phase 3)
+    emfe_add_watchpoint
+    emfe_remove_watchpoint
+    emfe_enable_watchpoint
+    emfe_set_watchpoint_condition
+    emfe_clear_watchpoints
+    emfe_get_watchpoints
+    ; Call Stack (Phase 3)
+    emfe_get_call_stack
+    ; Framebuffer (Phase 3)
+    emfe_get_framebuffer_info
+    emfe_get_palette_entry
+    emfe_get_palette
+    ; Input (Phase 3)
+    emfe_push_key
+    emfe_push_mouse_move
+    emfe_push_mouse_absolute
+    emfe_push_mouse_button
+    ; Program info
+    emfe_get_program_range
+    ; File Loading
+    emfe_load_elf
+    emfe_load_binary
+    emfe_load_srec
+    emfe_get_last_error
+    ; Settings
+    emfe_get_setting_defs
+    emfe_get_setting
+    emfe_set_setting
+    emfe_apply_settings
+    emfe_get_applied_setting
+    emfe_get_list_item_defs
+    emfe_get_list_item_count
+    emfe_get_list_item_field
+    emfe_set_list_item_field
+    emfe_add_list_item
+    emfe_remove_list_item
+    emfe_save_settings
+    emfe_load_settings
+    emfe_set_data_dir
+    ; Console
+    emfe_send_char
+    emfe_send_string
+    ; String Utilities
+    emfe_release_string

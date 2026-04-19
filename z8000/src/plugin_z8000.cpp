@@ -1,0 +1,1469 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 hha0x617
+//
+// plugin_z8000.cpp - Zilog Z8000 family plugin for emfe
+// Wraps Z8000Cpu + Z8000Memory + Z8000Uart + Z8000Timer as a C ABI plugin DLL.
+//
+// Phase 1 scope: Z8002 (non-segmented) only. Variant Z8001/Z8003/Z8004 are
+// selectable via Settings but behave as Z8002 until Phase 2 adds segmented
+// addressing and Phase 3 adds VM/abort support.
+
+#include "emfe_plugin.h"
+#include "Z8000Cpu.h"
+#include "Z8000Memory.h"
+#include "Z8000Uart.h"
+#include "Z8000Timer.h"
+
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <cstring>
+#include <fstream>
+#include <filesystem>
+#include <algorithm>
+#include <cstdio>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <shlobj.h>
+#endif
+
+// ============================================================================
+// Register IDs
+// ============================================================================
+
+enum RegId : uint32_t {
+    REG_R0 = 0, REG_R1, REG_R2,  REG_R3,  REG_R4,  REG_R5,  REG_R6,  REG_R7,
+    REG_R8,     REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
+    REG_PC,
+    REG_FCW,
+    REG_PSAP_OFFSET,
+    REG_PSAP_SEGMENT,
+    REG_REFRESH,
+    REG_SHADOW_R14,
+    REG_SHADOW_R15,
+    // Counters (read-only, hidden)
+    REG_CYCLES,
+    REG_INSTRUCTIONS,
+    REG_COUNT
+};
+
+// ============================================================================
+// I/O port map (plugin-owned, wires to UART/Timer)
+// ============================================================================
+
+static constexpr uint16_t UART_BASE_PORT  = 0xFE00;
+static constexpr uint16_t UART_END_PORT   = 0xFE03;   // inclusive
+static constexpr uint16_t TIMER_BASE_PORT = 0xFE10;
+static constexpr uint16_t TIMER_END_PORT  = 0xFE17;   // inclusive
+
+// ============================================================================
+// Instance
+// ============================================================================
+
+struct EmfeInstanceData {
+    Z8000Memory memory;
+    Z8000Cpu    cpu;
+    Z8000Uart   uart;
+    Z8000Timer  timer;
+
+    std::atomic<EmfeState> state{EMFE_STATE_STOPPED};
+    std::atomic<bool>      stopRequested{false};
+    std::thread            workerThread;
+
+    // Callbacks
+    EmfeConsoleCharCallback consoleCharCb = nullptr;
+    void* consoleCharUserData = nullptr;
+    EmfeStateChangeCallback stateChangeCb = nullptr;
+    void* stateChangeUserData = nullptr;
+    EmfeDiagnosticCallback  diagnosticCb = nullptr;
+    void* diagnosticUserData = nullptr;
+
+    // Breakpoints
+    std::unordered_map<uint16_t, EmfeBreakpointInfo> breakpoints;
+    std::unordered_set<uint16_t> enabledBreakpoints;
+    std::vector<std::string> bpConditionStorage;
+
+    // Watchpoints
+    struct WatchpointEntry {
+        uint16_t address;
+        uint32_t size;
+        EmfeWatchpointType type;
+        bool enabled;
+        std::string condition;
+    };
+    std::unordered_map<uint16_t, WatchpointEntry> watchpoints;
+    std::mutex watchpointsMutex;
+
+    // Step-out
+    std::atomic<int32_t> stepOutTargetDepth{-1};
+
+    // Register & setting definitions
+    std::vector<EmfeRegisterDef> regDefs;
+    std::vector<EmfeSettingDef>  settingDefs;
+    std::string settingValueBuf;
+    std::string appliedSettingValueBuf;
+    std::unordered_map<std::string, std::string> settings;
+    std::unordered_map<std::string, std::string> stagedSettings;
+    std::unordered_map<std::string, std::string> appliedSettings;
+    std::unordered_map<std::string, uint32_t>    settingFlags;
+
+    // Disassembly string storage
+    struct DisasmStringStorage {
+        std::string rawBytes;
+        std::string mnemonic;
+        std::string operands;
+    };
+    std::vector<DisasmStringStorage> disasmStorage;
+
+    uint16_t programStartAddress = 0;
+    uint16_t programEndAddress   = 0;
+
+    std::string lastError;
+
+    void EmulationLoop();
+    void NotifyStateChange(EmfeState newState, EmfeStopReason reason,
+                           uint64_t addr = 0, const char* msg = nullptr);
+    void BuildRegisterDefs();
+    void BuildSettingDefs();
+    void OutputChar(uint8_t ch);
+    void WireIoCallbacks();
+    void ApplyVariantFromSettings();
+
+    void UpdateIrqLines() {
+        cpu.ViLine  = uart.HasPendingIrq();
+        cpu.NviLine = timer.HasPendingIrq();
+    }
+};
+
+// ============================================================================
+// I/O callback wiring (UART / Timer live in Z8000 I/O port space)
+// ============================================================================
+
+void EmfeInstanceData::WireIoCallbacks() {
+    cpu.ReadIoByte = [this](uint16_t port) -> uint8_t {
+        if (port >= UART_BASE_PORT && port <= UART_END_PORT)
+            return uart.Read(static_cast<uint8_t>(port - UART_BASE_PORT));
+        if (port >= TIMER_BASE_PORT && port <= TIMER_END_PORT)
+            return timer.Read(static_cast<uint8_t>(port - TIMER_BASE_PORT));
+        return 0xFF;
+    };
+    cpu.ReadIoWord = [this](uint16_t port) -> uint16_t {
+        // Word I/O reads two consecutive bytes (big-endian on the bus)
+        uint8_t hi = cpu.ReadIoByte ? cpu.ReadIoByte(port) : 0xFF;
+        uint8_t lo = cpu.ReadIoByte ? cpu.ReadIoByte(static_cast<uint16_t>(port + 1)) : 0xFF;
+        return static_cast<uint16_t>((hi << 8) | lo);
+    };
+    cpu.WriteIoByte = [this](uint16_t port, uint8_t val) {
+        if (port >= UART_BASE_PORT && port <= UART_END_PORT) {
+            uart.Write(static_cast<uint8_t>(port - UART_BASE_PORT), val);
+            return;
+        }
+        if (port >= TIMER_BASE_PORT && port <= TIMER_END_PORT) {
+            timer.Write(static_cast<uint8_t>(port - TIMER_BASE_PORT), val);
+            return;
+        }
+    };
+    cpu.WriteIoWord = [this](uint16_t port, uint16_t val) {
+        if (cpu.WriteIoByte) {
+            cpu.WriteIoByte(port, static_cast<uint8_t>(val >> 8));
+            cpu.WriteIoByte(static_cast<uint16_t>(port + 1), static_cast<uint8_t>(val & 0xFF));
+        }
+    };
+}
+
+// ============================================================================
+// Register definitions
+// ============================================================================
+
+void EmfeInstanceData::BuildRegisterDefs() {
+    regDefs.clear();
+
+    auto addReg = [&](uint32_t id, const char* name, const char* group,
+                      EmfeRegType type, uint32_t bits, uint32_t flags) {
+        regDefs.push_back({id, name, group, type, bits, flags});
+    };
+
+    // General-purpose word registers R0..R15
+    static const char* regNames[16] = {
+        "R0","R1","R2","R3","R4","R5","R6","R7",
+        "R8","R9","R10","R11","R12","R13","R14","R15"
+    };
+    for (int i = 0; i < 16; i++) {
+        uint32_t flags = EMFE_REG_FLAG_NONE;
+        if (i == 15) flags |= EMFE_REG_FLAG_SP;
+        addReg(REG_R0 + i, regNames[i], "GPR", EMFE_REG_INT, 16, flags);
+    }
+
+    addReg(REG_PC,           "PC",      "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_PC);
+    addReg(REG_FCW,          "FCW",     "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_FLAGS);
+    addReg(REG_PSAP_OFFSET,  "PSAP",    "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_NONE);
+    addReg(REG_PSAP_SEGMENT, "PSAPseg", "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_HIDDEN);
+    addReg(REG_REFRESH,      "REFRESH", "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_HIDDEN);
+    addReg(REG_SHADOW_R14,   "R14'",    "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_HIDDEN);
+    addReg(REG_SHADOW_R15,   "R15'",    "System", EMFE_REG_INT, 16, EMFE_REG_FLAG_HIDDEN);
+
+    addReg(REG_CYCLES,       "Cycles",       "Counters", EMFE_REG_INT, 64,
+           EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
+    addReg(REG_INSTRUCTIONS, "Instructions", "Counters", EMFE_REG_INT, 64,
+           EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
+}
+
+// ============================================================================
+// Setting definitions
+// ============================================================================
+
+void EmfeInstanceData::BuildSettingDefs() {
+    settingDefs.clear();
+    const uint32_t R = EMFE_SETTING_FLAG_REQUIRES_RESET;
+
+    auto add = [&](const char* key, const char* label, const char* group,
+                   EmfeSettingType type, const char* defVal = "",
+                   const char* constraints = nullptr,
+                   uint32_t flags = 0) {
+        settingDefs.push_back({ key, label, group, type, defVal, constraints,
+                                nullptr, nullptr, flags });
+        settingFlags[key] = flags;
+        if (settings.find(key) == settings.end())
+            settings[key] = defVal;
+        if (stagedSettings.find(key) == stagedSettings.end())
+            stagedSettings[key] = defVal;
+        if (appliedSettings.find(key) == appliedSettings.end())
+            appliedSettings[key] = defVal;
+    };
+
+    // General tab
+    add("BoardType",  "Target Board",     "General", EMFE_SETTING_COMBO, "Generic",
+        "Generic", R);  // Phase 2 will add OlivettiM20 / System8000 etc.
+    add("MemorySize", "Memory Size (KB)", "General", EMFE_SETTING_INT, "64", "1|64", R);
+    add("Theme",      "Theme",            "General", EMFE_SETTING_COMBO, "Dark", "Dark|Light|System");
+
+    // Z8000 tab (CPU variant)
+    add("CpuVariant", "CPU Variant", "Z8000", EMFE_SETTING_COMBO, "Z8002",
+        "Z8001|Z8002|Z8003|Z8004", R);
+
+    // Peripherals tab
+    add("TimerReload", "Timer Reload Value", "Peripherals", EMFE_SETTING_INT,
+        "4096", "1|65535", R);
+
+    // Console tab
+    add("ConsoleScrollbackLines", "Scrollback Lines", "Console", EMFE_SETTING_INT, "2000", "0|100000");
+    add("ConsoleColumns",         "Columns",          "Console", EMFE_SETTING_INT, "80",   "40|320");
+    add("ConsoleRows",            "Rows",             "Console", EMFE_SETTING_INT, "25",   "10|100");
+}
+
+void EmfeInstanceData::ApplyVariantFromSettings() {
+    auto it = settings.find("CpuVariant");
+    if (it == settings.end()) { cpu.SetVariant(Z8000Cpu::VARIANT_Z8002); return; }
+    const std::string& v = it->second;
+    if      (v == "Z8001") cpu.SetVariant(Z8000Cpu::VARIANT_Z8001);
+    else if (v == "Z8003") cpu.SetVariant(Z8000Cpu::VARIANT_Z8003);
+    else if (v == "Z8004") cpu.SetVariant(Z8000Cpu::VARIANT_Z8004);
+    else                   cpu.SetVariant(Z8000Cpu::VARIANT_Z8002);
+}
+
+// ============================================================================
+// State notification
+// ============================================================================
+
+void EmfeInstanceData::NotifyStateChange(EmfeState newState, EmfeStopReason reason,
+                                         uint64_t addr, const char* msg) {
+    state.store(newState, std::memory_order_release);
+    if (stateChangeCb) {
+        EmfeStateInfo info{};
+        info.state = newState;
+        info.stop_reason = reason;
+        info.stop_address = addr;
+        info.stop_message = msg;
+        stateChangeCb(stateChangeUserData, &info);
+    }
+}
+
+void EmfeInstanceData::OutputChar(uint8_t ch) {
+    if (consoleCharCb) consoleCharCb(consoleCharUserData, static_cast<char>(ch));
+}
+
+// ============================================================================
+// Condition expression evaluator (R0..R15, PC, FCW, PSAP supported)
+// ============================================================================
+
+namespace {
+
+struct CondParser {
+    const char* p;
+    const Z8000Cpu& cpu;
+
+    void skipWS() { while (*p == ' ' || *p == '\t') ++p; }
+    bool tryChar(char c) { skipWS(); if (*p == c) { ++p; return true; } return false; }
+
+    bool isWordChar(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+               (c >= 'a' && c <= 'z') || c == '_';
+    }
+
+    uint32_t parseNumber() {
+        skipWS();
+        if (*p == '$') { ++p; return static_cast<uint32_t>(strtoul(p, const_cast<char**>(&p), 16)); }
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; return static_cast<uint32_t>(strtoul(p, const_cast<char**>(&p), 16)); }
+        return static_cast<uint32_t>(strtoul(p, const_cast<char**>(&p), 10));
+    }
+
+    bool tryReg(uint32_t& val) {
+        skipWS();
+        // Rnn / RHn / RLn / PC / FCW / PSAP
+        auto upper = [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; };
+
+        if (upper(p[0]) == 'P' && upper(p[1]) == 'C' && !isWordChar(p[2])) {
+            val = cpu.PC; p += 2; return true;
+        }
+        if (upper(p[0]) == 'F' && upper(p[1]) == 'C' && upper(p[2]) == 'W' && !isWordChar(p[3])) {
+            val = cpu.FCW; p += 3; return true;
+        }
+        if (upper(p[0]) == 'P' && upper(p[1]) == 'S' && upper(p[2]) == 'A' && upper(p[3]) == 'P' && !isWordChar(p[4])) {
+            val = cpu.PSAPOffset; p += 4; return true;
+        }
+        if (upper(p[0]) == 'R') {
+            // RHn / RLn (n = 0..7)
+            if ((upper(p[1]) == 'H' || upper(p[1]) == 'L') && p[2] >= '0' && p[2] <= '7' && !isWordChar(p[3])) {
+                int n = p[2] - '0';
+                val = upper(p[1]) == 'H' ? (cpu.R[n] >> 8) : (cpu.R[n] & 0xFF);
+                p += 3;
+                return true;
+            }
+            // Rnn (n = 0..15)
+            if (p[1] >= '0' && p[1] <= '9') {
+                int n = p[1] - '0';
+                int adv = 2;
+                if (p[2] >= '0' && p[2] <= '9') { n = n * 10 + (p[2] - '0'); adv = 3; }
+                if (n < 16 && !isWordChar(p[adv])) {
+                    val = cpu.R[n];
+                    p += adv;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    uint32_t parsePrimary() {
+        skipWS();
+        uint32_t val;
+        if (tryReg(val)) return val;
+        if (*p == '(') { ++p; val = parseOr(); tryChar(')'); return val; }
+        return parseNumber();
+    }
+
+    uint32_t parseBitAnd() {
+        uint32_t left = parsePrimary();
+        while (true) {
+            skipWS();
+            if (*p == '&' && p[1] != '&') { ++p; left &= parsePrimary(); }
+            else break;
+        }
+        return left;
+    }
+
+    uint32_t parseCompare() {
+        uint32_t left = parseBitAnd();
+        skipWS();
+        if (p[0] == '=' && p[1] == '=') { p += 2; return left == parseBitAnd() ? 1u : 0u; }
+        if (p[0] == '!' && p[1] == '=') { p += 2; return left != parseBitAnd() ? 1u : 0u; }
+        if (p[0] == '<' && p[1] == '=') { p += 2; return left <= parseBitAnd() ? 1u : 0u; }
+        if (p[0] == '>' && p[1] == '=') { p += 2; return left >= parseBitAnd() ? 1u : 0u; }
+        if (p[0] == '<') { ++p; return left < parseBitAnd() ? 1u : 0u; }
+        if (p[0] == '>') { ++p; return left > parseBitAnd() ? 1u : 0u; }
+        return left;
+    }
+
+    uint32_t parseAnd() {
+        uint32_t left = parseCompare();
+        while (true) {
+            skipWS();
+            if (p[0] == '&' && p[1] == '&') {
+                p += 2; uint32_t right = parseCompare();
+                left = (left && right) ? 1u : 0u;
+            } else break;
+        }
+        return left;
+    }
+
+    uint32_t parseOr() {
+        uint32_t left = parseAnd();
+        while (true) {
+            skipWS();
+            if (p[0] == '|' && p[1] == '|') {
+                p += 2; uint32_t right = parseAnd();
+                left = (left || right) ? 1u : 0u;
+            } else break;
+        }
+        return left;
+    }
+
+    bool evaluate() { return parseOr() != 0; }
+};
+
+bool EvaluateCondition(const Z8000Cpu& cpu, const char* condition) {
+    if (!condition || !*condition) return true;
+    try {
+        CondParser parser{condition, cpu};
+        return parser.evaluate();
+    } catch (...) {
+        return true;
+    }
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// Emulation loop
+// ============================================================================
+
+void EmfeInstanceData::EmulationLoop() {
+    try {
+        while (!stopRequested.load(std::memory_order_relaxed)) {
+            if (!enabledBreakpoints.empty() && enabledBreakpoints.contains(cpu.PC)) {
+                auto bpIt = breakpoints.find(cpu.PC);
+                if (bpIt == breakpoints.end() || !bpIt->second.condition ||
+                    EvaluateCondition(cpu, bpIt->second.condition)) {
+                    NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_BREAKPOINT,
+                                      cpu.PC, "Breakpoint hit");
+                    return;
+                }
+            }
+
+            int cycles = cpu.ExecuteOne();
+            timer.Tick(cycles);
+            UpdateIrqLines();
+            cpu.CheckInterrupts();
+
+            if (cpu.Halted) {
+                NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT,
+                                  cpu.PC, "CPU halted");
+                return;
+            }
+
+            if (memory.WatchpointHit.exchange(false)) {
+                uint16_t wpAddr = memory.WatchpointHitAddress.load();
+                bool shouldStop = true;
+                {
+                    std::lock_guard<std::mutex> lock(watchpointsMutex);
+                    auto wpIt = watchpoints.find(wpAddr);
+                    if (wpIt != watchpoints.end() && !wpIt->second.condition.empty())
+                        shouldStop = EvaluateCondition(cpu, wpIt->second.condition.c_str());
+                }
+                if (shouldStop) {
+                    NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_WATCHPOINT,
+                                      wpAddr, "Watchpoint hit");
+                    return;
+                }
+            }
+
+            int32_t target = stepOutTargetDepth.load(std::memory_order_relaxed);
+            if (target >= 0 && cpu.ShadowStackTop <= target) {
+                stepOutTargetDepth.store(-1, std::memory_order_relaxed);
+                NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_STEP,
+                                  cpu.PC, "Step out");
+                return;
+            }
+        }
+
+        NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_USER,
+                          cpu.PC, "Stopped by user");
+    } catch (const std::exception& ex) {
+        lastError = std::string("Emulation exception: ") + ex.what();
+        NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_EXCEPTION,
+                          cpu.PC, lastError.c_str());
+    } catch (...) {
+        lastError = "Emulation: unknown exception";
+        NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_EXCEPTION,
+                          cpu.PC, lastError.c_str());
+    }
+}
+
+// ============================================================================
+// Board info
+// ============================================================================
+
+static EmfeBoardInfo s_boardInfo = {
+    "Z8000",
+    "Z8002",  // default variant; not dynamically updated
+    "Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) with UART and Timer",
+    "0.1.0",
+    EMFE_CAP_LOAD_SREC | EMFE_CAP_LOAD_BINARY |
+    EMFE_CAP_STEP_OVER | EMFE_CAP_STEP_OUT | EMFE_CAP_CALL_STACK |
+    EMFE_CAP_WATCHPOINTS
+};
+
+// ============================================================================
+// API — Discovery & Lifecycle
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_negotiate(const EmfeNegotiateInfo* info) {
+    if (!info) return EMFE_ERR_INVALID;
+    if (info->api_version_major != EMFE_API_VERSION_MAJOR) return EMFE_ERR_UNSUPPORTED;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_get_board_info(EmfeBoardInfo* out_info) {
+    if (!out_info) return EMFE_ERR_INVALID;
+    *out_info = s_boardInfo;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instance) {
+    if (!out_instance) return EMFE_ERR_INVALID;
+
+    auto inst = new (std::nothrow) EmfeInstanceData();
+    if (!inst) return EMFE_ERR_MEMORY;
+
+    try {
+        inst->cpu.Memory = &inst->memory;
+        inst->WireIoCallbacks();
+
+        inst->uart.TxCallback = [inst](uint8_t ch) { inst->OutputChar(ch); };
+
+        inst->BuildSettingDefs();
+        inst->ApplyVariantFromSettings();
+        inst->cpu.Reset();
+        inst->BuildRegisterDefs();
+
+        *out_instance = reinterpret_cast<EmfeInstance>(inst);
+        return EMFE_OK;
+    } catch (...) {
+        delete inst;
+        return EMFE_ERR_MEMORY;
+    }
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_destroy(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->stopRequested.store(true, std::memory_order_release);
+    if (inst->workerThread.joinable()) inst->workerThread.join();
+    delete inst;
+    return EMFE_OK;
+}
+
+// ============================================================================
+// Callbacks
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_set_console_char_callback(
+    EmfeInstance instance, EmfeConsoleCharCallback callback, void* user_data) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->consoleCharCb = callback;
+    inst->consoleCharUserData = user_data;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_state_change_callback(
+    EmfeInstance instance, EmfeStateChangeCallback callback, void* user_data) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->stateChangeCb = callback;
+    inst->stateChangeUserData = user_data;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_diagnostic_callback(
+    EmfeInstance instance, EmfeDiagnosticCallback callback, void* user_data) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->diagnosticCb = callback;
+    inst->diagnosticUserData = user_data;
+    return EMFE_OK;
+}
+
+// ============================================================================
+// Registers
+// ============================================================================
+
+extern "C" int32_t EMFE_CALL emfe_get_register_defs(
+    EmfeInstance instance, const EmfeRegisterDef** out_defs) {
+    if (!instance || !out_defs) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    *out_defs = inst->regDefs.data();
+    return static_cast<int32_t>(inst->regDefs.size());
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_get_registers(
+    EmfeInstance instance, EmfeRegValue* values, int32_t count) {
+    if (!instance || !values) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+
+    for (int32_t i = 0; i < count; i++) {
+        auto& v = values[i];
+        v.value.u64 = 0;
+
+        if (v.reg_id <= REG_R15) {
+            v.value.u64 = inst->cpu.R[v.reg_id];
+            continue;
+        }
+        switch (v.reg_id) {
+        case REG_PC:           v.value.u64 = inst->cpu.PC; break;
+        case REG_FCW:          v.value.u64 = inst->cpu.FCW; break;
+        case REG_PSAP_OFFSET:  v.value.u64 = inst->cpu.PSAPOffset; break;
+        case REG_PSAP_SEGMENT: v.value.u64 = inst->cpu.PSAPSegment; break;
+        case REG_REFRESH:      v.value.u64 = inst->cpu.Refresh; break;
+        case REG_SHADOW_R14:   v.value.u64 = inst->cpu.ShadowR14; break;
+        case REG_SHADOW_R15:   v.value.u64 = inst->cpu.ShadowR15; break;
+        case REG_CYCLES:       v.value.u64 = inst->cpu.CycleCount; break;
+        case REG_INSTRUCTIONS: v.value.u64 = inst->cpu.InstructionCount; break;
+        default: return EMFE_ERR_INVALID;
+        }
+    }
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_registers(
+    EmfeInstance instance, const EmfeRegValue* values, int32_t count) {
+    if (!instance || !values) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    for (int32_t i = 0; i < count; i++) {
+        const auto& v = values[i];
+        if (v.reg_id <= REG_R15) {
+            inst->cpu.R[v.reg_id] = static_cast<uint16_t>(v.value.u64);
+            continue;
+        }
+        switch (v.reg_id) {
+        case REG_PC:           inst->cpu.PC = static_cast<uint16_t>(v.value.u64); break;
+        case REG_FCW:          inst->cpu.FCW = static_cast<uint16_t>(v.value.u64); break;
+        case REG_PSAP_OFFSET:  inst->cpu.PSAPOffset = static_cast<uint16_t>(v.value.u64); break;
+        case REG_PSAP_SEGMENT: inst->cpu.PSAPSegment = static_cast<uint16_t>(v.value.u64); break;
+        case REG_REFRESH:      inst->cpu.Refresh = static_cast<uint16_t>(v.value.u64); break;
+        case REG_SHADOW_R14:   inst->cpu.ShadowR14 = static_cast<uint16_t>(v.value.u64); break;
+        case REG_SHADOW_R15:   inst->cpu.ShadowR15 = static_cast<uint16_t>(v.value.u64); break;
+        case REG_CYCLES:
+        case REG_INSTRUCTIONS:
+            break; // read-only
+        default: return EMFE_ERR_INVALID;
+        }
+    }
+    return EMFE_OK;
+}
+
+// ============================================================================
+// Memory
+// ============================================================================
+
+extern "C" uint8_t EMFE_CALL emfe_peek_byte(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    return inst->memory.PeekByte(static_cast<uint16_t>(address));
+}
+
+extern "C" uint16_t EMFE_CALL emfe_peek_word(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    return inst->memory.PeekWord(static_cast<uint16_t>(address));
+}
+
+extern "C" uint32_t EMFE_CALL emfe_peek_long(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    return inst->memory.PeekLong(static_cast<uint16_t>(address));
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_poke_byte(EmfeInstance instance, uint64_t address, uint8_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->memory.PokeByte(static_cast<uint16_t>(address), value);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_poke_word(EmfeInstance instance, uint64_t address, uint16_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->memory.PokeWord(static_cast<uint16_t>(address), value);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_poke_long(EmfeInstance instance, uint64_t address, uint32_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->memory.PokeLong(static_cast<uint16_t>(address), value);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_peek_range(EmfeInstance instance, uint64_t address,
+                                                uint8_t* out_data, uint32_t length) {
+    if (!instance || !out_data) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    for (uint32_t i = 0; i < length; i++)
+        out_data[i] = inst->memory.PeekByte(static_cast<uint16_t>(addr + i));
+    return EMFE_OK;
+}
+
+extern "C" uint64_t EMFE_CALL emfe_get_memory_size(EmfeInstance instance) {
+    (void)instance;
+    return 65536; // Phase 1: 16-bit address space
+}
+
+// ============================================================================
+// Disassembly
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_disassemble_one(EmfeInstance instance, uint64_t address,
+                                                     EmfeDisasmLine* out_line) {
+    if (!instance || !out_line) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+
+    auto result = inst->cpu.Disassemble(static_cast<uint16_t>(address));
+
+    inst->disasmStorage.resize(1);
+    inst->disasmStorage[0].rawBytes = result.rawBytes;
+    inst->disasmStorage[0].mnemonic = result.mnemonic;
+    inst->disasmStorage[0].operands = result.operands;
+
+    out_line->address   = address;
+    out_line->raw_bytes = inst->disasmStorage[0].rawBytes.c_str();
+    out_line->mnemonic  = inst->disasmStorage[0].mnemonic.c_str();
+    out_line->operands  = inst->disasmStorage[0].operands.c_str();
+    out_line->length    = result.length;
+    return EMFE_OK;
+}
+
+extern "C" int32_t EMFE_CALL emfe_disassemble_range(EmfeInstance instance, uint64_t start_address,
+                                                     uint64_t end_address, EmfeDisasmLine* out_lines,
+                                                     int32_t max_lines) {
+    if (!instance || !out_lines || max_lines <= 0) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+
+    uint16_t addr = static_cast<uint16_t>(start_address);
+    uint16_t end  = static_cast<uint16_t>(end_address);
+    int32_t count = 0;
+
+    inst->disasmStorage.clear();
+    inst->disasmStorage.reserve(max_lines);
+
+    while (addr < end && count < max_lines) {
+        auto result = inst->cpu.Disassemble(addr);
+        inst->disasmStorage.push_back({result.rawBytes, result.mnemonic, result.operands});
+        out_lines[count].address = addr;
+        out_lines[count].length  = result.length;
+        addr = static_cast<uint16_t>(addr + result.length);
+        count++;
+    }
+
+    for (int32_t i = 0; i < count; i++) {
+        out_lines[i].raw_bytes = inst->disasmStorage[i].rawBytes.c_str();
+        out_lines[i].mnemonic  = inst->disasmStorage[i].mnemonic.c_str();
+        out_lines[i].operands  = inst->disasmStorage[i].operands.c_str();
+    }
+    return count;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_get_program_range(
+    EmfeInstance instance, uint64_t* out_start, uint64_t* out_end) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (out_start) *out_start = inst->programStartAddress;
+    if (out_end)   *out_end   = inst->programEndAddress;
+    return EMFE_OK;
+}
+
+// ============================================================================
+// Execution
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_step(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    inst->state.store(EMFE_STATE_STEPPING);
+    int cycles = inst->cpu.ExecuteOne();
+    inst->timer.Tick(cycles);
+    inst->UpdateIrqLines();
+    inst->cpu.CheckInterrupts();
+    inst->state.store(inst->cpu.Halted ? EMFE_STATE_HALTED : EMFE_STATE_STOPPED);
+    inst->NotifyStateChange(inst->state.load(), EMFE_STOP_REASON_STEP, inst->cpu.PC, nullptr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_step_over(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    auto line = inst->cpu.Disassemble(inst->cpu.PC);
+    bool isCall = (line.mnemonic == "CALL" || line.mnemonic == "CALR");
+    if (!isCall) return emfe_step(instance);
+
+    if (inst->workerThread.joinable()) inst->workerThread.join();
+
+    uint16_t nextPC = static_cast<uint16_t>(inst->cpu.PC + line.length);
+    bool hadBP = inst->enabledBreakpoints.contains(nextPC);
+    if (!hadBP) inst->enabledBreakpoints.insert(nextPC);
+
+    inst->stopRequested.store(false);
+    inst->state.store(EMFE_STATE_RUNNING);
+    inst->workerThread = std::thread([inst, nextPC, hadBP]() {
+        inst->EmulationLoop();
+        if (!hadBP) inst->enabledBreakpoints.erase(nextPC);
+    });
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_step_out(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    if (inst->cpu.ShadowStackTop > 0) {
+        if (inst->workerThread.joinable()) inst->workerThread.join();
+        int32_t targetDepth = inst->cpu.ShadowStackTop - 1;
+        inst->stepOutTargetDepth.store(targetDepth, std::memory_order_relaxed);
+        inst->stopRequested.store(false);
+        inst->state.store(EMFE_STATE_RUNNING);
+        inst->workerThread = std::thread([inst]() {
+            inst->EmulationLoop();
+            inst->stepOutTargetDepth.store(-1, std::memory_order_relaxed);
+        });
+    }
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_run(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    if (inst->workerThread.joinable()) inst->workerThread.join();
+
+    if (!inst->enabledBreakpoints.empty() && inst->enabledBreakpoints.contains(inst->cpu.PC)) {
+        int cycles = inst->cpu.ExecuteOne();
+        inst->timer.Tick(cycles);
+        inst->cpu.CheckInterrupts();
+        if (inst->cpu.Halted) {
+            inst->NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT,
+                                    inst->cpu.PC, "CPU halted");
+            return EMFE_OK;
+        }
+    }
+
+    inst->stopRequested.store(false);
+    inst->state.store(EMFE_STATE_RUNNING);
+    inst->workerThread = std::thread([inst]() { inst->EmulationLoop(); });
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->stopRequested.store(true, std::memory_order_release);
+    if (inst->workerThread.joinable()) inst->workerThread.join();
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    // Flush deferred REQUIRES_RESET settings.
+    inst->appliedSettings = inst->settings;
+    inst->ApplyVariantFromSettings();
+    inst->cpu.Reset();
+    inst->uart.Reset();
+    inst->timer.Reset();
+    inst->state.store(EMFE_STATE_STOPPED);
+    inst->NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_NONE, inst->cpu.PC, "Reset");
+    return EMFE_OK;
+}
+
+extern "C" EmfeState EMFE_CALL emfe_get_state(EmfeInstance instance) {
+    if (!instance) return EMFE_STATE_STOPPED;
+    return reinterpret_cast<EmfeInstanceData*>(instance)->state.load();
+}
+
+extern "C" int64_t EMFE_CALL emfe_get_instruction_count(EmfeInstance instance) {
+    if (!instance) return 0;
+    return reinterpret_cast<EmfeInstanceData*>(instance)->cpu.InstructionCount;
+}
+
+extern "C" int64_t EMFE_CALL emfe_get_cycle_count(EmfeInstance instance) {
+    if (!instance) return 0;
+    return reinterpret_cast<EmfeInstanceData*>(instance)->cpu.CycleCount;
+}
+
+// ============================================================================
+// Breakpoints
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_add_breakpoint(EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    EmfeBreakpointInfo bp{};
+    bp.address = address;
+    bp.enabled = true;
+    bp.condition = nullptr;
+    inst->breakpoints[addr] = bp;
+    inst->enabledBreakpoints.insert(addr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_remove_breakpoint(EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    inst->breakpoints.erase(addr);
+    inst->enabledBreakpoints.erase(addr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_enable_breakpoint(EmfeInstance instance, uint64_t address, bool enabled) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    auto it = inst->breakpoints.find(addr);
+    if (it == inst->breakpoints.end()) return EMFE_ERR_NOTFOUND;
+    it->second.enabled = enabled;
+    if (enabled) inst->enabledBreakpoints.insert(addr);
+    else         inst->enabledBreakpoints.erase(addr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_breakpoint_condition(
+    EmfeInstance instance, uint64_t address, const char* condition) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    auto it = inst->breakpoints.find(addr);
+    if (it == inst->breakpoints.end()) return EMFE_ERR_NOTFOUND;
+    if (condition) {
+        inst->bpConditionStorage.push_back(condition);
+        it->second.condition = inst->bpConditionStorage.back().c_str();
+    } else {
+        it->second.condition = nullptr;
+    }
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_clear_breakpoints(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->breakpoints.clear();
+    inst->enabledBreakpoints.clear();
+    inst->bpConditionStorage.clear();
+    return EMFE_OK;
+}
+
+extern "C" int32_t EMFE_CALL emfe_get_breakpoints(EmfeInstance instance,
+                                                   EmfeBreakpointInfo* out_breakpoints,
+                                                   int32_t max_count) {
+    if (!instance || !out_breakpoints || max_count <= 0) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    int32_t i = 0;
+    for (auto& [addr, bp] : inst->breakpoints) {
+        if (i >= max_count) break;
+        out_breakpoints[i] = bp;
+        i++;
+    }
+    return i;
+}
+
+// ============================================================================
+// Watchpoints
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_add_watchpoint(
+    EmfeInstance instance, uint64_t address, EmfeWatchpointSize size, EmfeWatchpointType type) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    inst->watchpoints[addr] = {addr, static_cast<uint32_t>(size), type, true, ""};
+    // Register into memory subsystem for fast check in Read/WriteByte
+    if (type == EMFE_WP_READ || type == EMFE_WP_READWRITE)
+        inst->memory.ReadWatchpoints.insert(addr);
+    if (type == EMFE_WP_WRITE || type == EMFE_WP_READWRITE)
+        inst->memory.WriteWatchpoints.insert(addr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_remove_watchpoint(EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    inst->watchpoints.erase(addr);
+    inst->memory.ReadWatchpoints.erase(addr);
+    inst->memory.WriteWatchpoints.erase(addr);
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_enable_watchpoint(EmfeInstance instance, uint64_t address, bool enabled) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    auto it = inst->watchpoints.find(addr);
+    if (it == inst->watchpoints.end()) return EMFE_ERR_NOTFOUND;
+    it->second.enabled = enabled;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_watchpoint_condition(
+    EmfeInstance instance, uint64_t address, const char* condition) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    uint16_t addr = static_cast<uint16_t>(address);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    auto it = inst->watchpoints.find(addr);
+    if (it == inst->watchpoints.end()) return EMFE_ERR_NOTFOUND;
+    it->second.condition = condition ? condition : "";
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_clear_watchpoints(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    inst->watchpoints.clear();
+    inst->memory.ReadWatchpoints.clear();
+    inst->memory.WriteWatchpoints.clear();
+    return EMFE_OK;
+}
+
+extern "C" int32_t EMFE_CALL emfe_get_watchpoints(
+    EmfeInstance instance, EmfeWatchpointInfo* out_watchpoints, int32_t max_count) {
+    if (!instance || !out_watchpoints || max_count <= 0) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    std::lock_guard<std::mutex> lock(inst->watchpointsMutex);
+    int32_t i = 0;
+    for (auto& [addr, wp] : inst->watchpoints) {
+        if (i >= max_count) break;
+        out_watchpoints[i].address   = wp.address;
+        out_watchpoints[i].size      = static_cast<EmfeWatchpointSize>(wp.size);
+        out_watchpoints[i].type      = wp.type;
+        out_watchpoints[i].enabled   = wp.enabled;
+        out_watchpoints[i].condition = wp.condition.empty() ? nullptr : wp.condition.c_str();
+        i++;
+    }
+    return i;
+}
+
+// ============================================================================
+// Call Stack
+// ============================================================================
+
+extern "C" int32_t EMFE_CALL emfe_get_call_stack(
+    EmfeInstance instance, EmfeCallStackEntry* out_entries, int32_t max_count) {
+    if (!instance || !out_entries || max_count <= 0) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    int32_t count = (std::min)(static_cast<int32_t>(inst->cpu.ShadowStackTop), max_count);
+    for (int32_t i = 0; i < count; i++) {
+        uint16_t retAddr = inst->cpu.ShadowStack[count - 1 - i];
+        out_entries[i].call_pc       = 0;
+        out_entries[i].target_pc     = 0;
+        out_entries[i].return_pc     = retAddr;
+        out_entries[i].frame_pointer = 0;
+        out_entries[i].kind          = EMFE_CALL_KIND_CALL;
+        out_entries[i].label         = nullptr;
+    }
+    return count;
+}
+
+// ============================================================================
+// Framebuffer (unsupported in Phase 1)
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_get_framebuffer_info(
+    EmfeInstance instance, EmfeFramebufferInfo* out_info) {
+    (void)instance; (void)out_info;
+    return EMFE_ERR_UNSUPPORTED;
+}
+
+extern "C" uint32_t EMFE_CALL emfe_get_palette_entry(EmfeInstance instance, uint32_t index) {
+    (void)instance; (void)index;
+    return 0;
+}
+
+extern "C" int32_t EMFE_CALL emfe_get_palette(
+    EmfeInstance instance, uint32_t* out_colors, int32_t max_count) {
+    (void)instance; (void)out_colors; (void)max_count;
+    return 0;
+}
+
+// ============================================================================
+// Input events (unsupported)
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_push_key(
+    EmfeInstance instance, uint32_t scancode, bool pressed) {
+    (void)instance; (void)scancode; (void)pressed;
+    return EMFE_ERR_UNSUPPORTED;
+}
+extern "C" EmfeResult EMFE_CALL emfe_push_mouse_move(
+    EmfeInstance instance, int32_t dx, int32_t dy) {
+    (void)instance; (void)dx; (void)dy;
+    return EMFE_ERR_UNSUPPORTED;
+}
+extern "C" EmfeResult EMFE_CALL emfe_push_mouse_absolute(
+    EmfeInstance instance, int32_t x, int32_t y) {
+    (void)instance; (void)x; (void)y;
+    return EMFE_ERR_UNSUPPORTED;
+}
+extern "C" EmfeResult EMFE_CALL emfe_push_mouse_button(
+    EmfeInstance instance, int32_t button, bool pressed) {
+    (void)instance; (void)button; (void)pressed;
+    return EMFE_ERR_UNSUPPORTED;
+}
+
+// ============================================================================
+// File loading (binary + S-record; ELF unsupported in Phase 1)
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_load_elf(EmfeInstance instance, const char* file_path) {
+    (void)instance; (void)file_path;
+    return EMFE_ERR_UNSUPPORTED;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_load_binary(
+    EmfeInstance instance, const char* file_path, uint64_t load_address) {
+    if (!instance || !file_path) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    try {
+        std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) {
+            inst->lastError = std::string("Cannot open file: ") + file_path;
+            return EMFE_ERR_IO;
+        }
+        auto size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<uint8_t> data(static_cast<size_t>(size));
+        if (!file.read(reinterpret_cast<char*>(data.data()), size)) {
+            inst->lastError = std::string("Failed to read file: ") + file_path;
+            return EMFE_ERR_IO;
+        }
+        uint16_t addr = static_cast<uint16_t>(load_address);
+        for (size_t i = 0; i < data.size() && (addr + i) < 0x10000; i++)
+            inst->memory.PokeByte(static_cast<uint16_t>(addr + i), data[i]);
+
+        inst->programStartAddress = addr;
+        inst->programEndAddress   = static_cast<uint16_t>(addr + data.size());
+
+        // Read reset vector from PSA ($0002=FCW, $0004=PC) if present
+        uint16_t vecPC = inst->memory.PeekWord(0x0004);
+        inst->cpu.PC = vecPC != 0 ? vecPC : addr;
+        inst->cpu.R[15] = 0xF000;  // default stack near top of RAM
+        inst->lastError.clear();
+        return EMFE_OK;
+    } catch (const std::exception& ex) {
+        inst->lastError = ex.what();
+        return EMFE_ERR_IO;
+    }
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_load_srec(EmfeInstance instance, const char* file_path) {
+    if (!instance || !file_path) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    try {
+        std::ifstream file(file_path);
+        if (!file.is_open()) {
+            inst->lastError = std::string("Cannot open file: ") + file_path;
+            return EMFE_ERR_IO;
+        }
+
+        uint16_t minAddr = 0xFFFF;
+        uint16_t maxAddr = 0;
+        uint16_t entryPoint = 0;
+        bool hasEntry = false;
+
+        auto parseHexByte = [](const char* p) -> uint8_t {
+            auto nibble = [](char c) -> uint8_t {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+                if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+                return 0;
+            };
+            return static_cast<uint8_t>((nibble(p[0]) << 4) | nibble(p[1]));
+        };
+
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.size() < 4 || line[0] != 'S') continue;
+            char recType = line[1];
+            const char* p = line.c_str() + 2;
+            uint8_t byteCount = parseHexByte(p);
+            p += 2;
+
+            if (recType == '0') {
+                continue;
+            } else if (recType == '1') {
+                uint16_t addr = static_cast<uint16_t>((parseHexByte(p) << 8) | parseHexByte(p + 2));
+                p += 4;
+                int dataCount = byteCount - 3;
+                for (int i = 0; i < dataCount; i++) {
+                    uint8_t dataByte = parseHexByte(p);
+                    p += 2;
+                    inst->memory.PokeByte(addr, dataByte);
+                    if (addr < minAddr) minAddr = addr;
+                    if (addr >= maxAddr) maxAddr = static_cast<uint16_t>(addr + 1);
+                    addr++;
+                }
+            } else if (recType == '9') {
+                entryPoint = static_cast<uint16_t>((parseHexByte(p) << 8) | parseHexByte(p + 2));
+                hasEntry = true;
+            }
+            // S2/S3/S7/S8: 24/32-bit variants skipped for Phase 1 (16-bit addr space)
+        }
+
+        if (hasEntry) inst->cpu.PC = entryPoint;
+        else if (minAddr <= maxAddr) inst->cpu.PC = minAddr;
+
+        inst->cpu.R[15] = 0xF000;
+        inst->programStartAddress = minAddr;
+        inst->programEndAddress   = maxAddr;
+        inst->lastError.clear();
+        return EMFE_OK;
+    } catch (const std::exception& ex) {
+        inst->lastError = ex.what();
+        return EMFE_ERR_IO;
+    }
+}
+
+extern "C" const char* EMFE_CALL emfe_get_last_error(EmfeInstance instance) {
+    if (!instance) return "Invalid instance";
+    return reinterpret_cast<EmfeInstanceData*>(instance)->lastError.c_str();
+}
+
+// ============================================================================
+// Console I/O
+// ============================================================================
+
+extern "C" EmfeResult EMFE_CALL emfe_send_char(EmfeInstance instance, char ch) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->uart.ReceiveChar(static_cast<uint8_t>(ch));
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_send_string(EmfeInstance instance, const char* str) {
+    if (!instance || !str) return EMFE_ERR_INVALID;
+    while (*str) emfe_send_char(instance, *str++);
+    return EMFE_OK;
+}
+
+// ============================================================================
+// Settings
+// ============================================================================
+
+static std::string& GetDataDirString() {
+    static std::string dataDir;
+    return dataDir;
+}
+
+static std::filesystem::path GetSettingsPath() {
+    auto& dir = GetDataDirString();
+    if (dir.empty()) {
+#ifdef _WIN32
+        wchar_t* appData = nullptr;
+        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appData)) && appData) {
+            std::filesystem::path defaultDir =
+                std::filesystem::path(appData) / L"emfe_plugin_z8000";
+            ::CoTaskMemFree(appData);
+            dir = defaultDir.string();
+        }
+#else
+        const char* home = std::getenv("HOME");
+        if (home) dir = std::string(home) + "/.config/emfe_plugin_z8000";
+#endif
+    }
+    if (!dir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+    }
+    return std::filesystem::path(dir) / "appsettings.json";
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_data_dir(const char* path) {
+    if (!path) return EMFE_ERR_INVALID;
+    try {
+        GetDataDirString() = path;
+        return EMFE_OK;
+    } catch (...) {
+        return EMFE_ERR_MEMORY;
+    }
+}
+
+extern "C" int32_t EMFE_CALL emfe_get_setting_defs(
+    EmfeInstance instance, const EmfeSettingDef** out_defs) {
+    if (!instance || !out_defs) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    *out_defs = inst->settingDefs.data();
+    return static_cast<int32_t>(inst->settingDefs.size());
+}
+
+extern "C" const char* EMFE_CALL emfe_get_setting(EmfeInstance instance, const char* key) {
+    if (!instance || !key) return "";
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    auto it = inst->stagedSettings.find(key);
+    if (it != inst->stagedSettings.end()) {
+        inst->settingValueBuf = it->second;
+        return inst->settingValueBuf.c_str();
+    }
+    return "";
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_set_setting(
+    EmfeInstance instance, const char* key, const char* value) {
+    if (!instance || !key || !value) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->stagedSettings[key] = value;
+    return EMFE_OK;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_apply_settings(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    inst->settings = inst->stagedSettings;
+    // Only hot-swap-safe settings update appliedSettings immediately;
+    // REQUIRES_RESET settings (BoardType, MemorySize, CpuVariant, TimerReload) wait for emfe_reset.
+    for (auto& [key, val] : inst->stagedSettings) {
+        auto fit = inst->settingFlags.find(key);
+        uint32_t flags = (fit != inst->settingFlags.end()) ? fit->second : 0;
+        if (!(flags & EMFE_SETTING_FLAG_REQUIRES_RESET)) {
+            inst->appliedSettings[key] = val;
+        }
+    }
+    return EMFE_OK;
+}
+
+extern "C" const char* EMFE_CALL emfe_get_applied_setting(EmfeInstance instance, const char* key) {
+    if (!instance || !key) return "";
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    auto it = inst->appliedSettings.find(key);
+    if (it != inst->appliedSettings.end()) {
+        inst->appliedSettingValueBuf = it->second;
+        return inst->appliedSettingValueBuf.c_str();
+    }
+    return "";
+}
+
+// LIST type — Z8000 plugin has no list settings in Phase 1
+extern "C" int32_t EMFE_CALL emfe_get_list_item_defs(
+    EmfeInstance instance, const char* list_key, const EmfeListItemDef** out_defs) {
+    (void)instance; (void)list_key; (void)out_defs;
+    return 0;
+}
+extern "C" int32_t EMFE_CALL emfe_get_list_item_count(EmfeInstance instance, const char* list_key) {
+    (void)instance; (void)list_key;
+    return 0;
+}
+extern "C" const char* EMFE_CALL emfe_get_list_item_field(
+    EmfeInstance instance, const char* list_key, int32_t item_index, const char* field_key) {
+    (void)instance; (void)list_key; (void)item_index; (void)field_key;
+    return "";
+}
+extern "C" EmfeResult EMFE_CALL emfe_set_list_item_field(
+    EmfeInstance instance, const char* list_key, int32_t item_index,
+    const char* field_key, const char* value) {
+    (void)instance; (void)list_key; (void)item_index; (void)field_key; (void)value;
+    return EMFE_ERR_UNSUPPORTED;
+}
+extern "C" int32_t EMFE_CALL emfe_add_list_item(EmfeInstance instance, const char* list_key) {
+    (void)instance; (void)list_key;
+    return -1;
+}
+extern "C" EmfeResult EMFE_CALL emfe_remove_list_item(
+    EmfeInstance instance, const char* list_key, int32_t item_index) {
+    (void)instance; (void)list_key; (void)item_index;
+    return EMFE_ERR_UNSUPPORTED;
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_save_settings(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    try {
+        auto path = GetSettingsPath();
+        std::ofstream ofs(path);
+        if (!ofs.is_open()) {
+            inst->lastError = "Failed to open settings file for writing";
+            return EMFE_ERR_IO;
+        }
+        ofs << "{\n";
+        bool first = true;
+        for (auto& [key, val] : inst->settings) {
+            if (!first) ofs << ",\n";
+            ofs << "  \"" << key << "\": \"" << val << "\"";
+            first = false;
+        }
+        ofs << "\n}\n";
+        return EMFE_OK;
+    } catch (const std::exception& ex) {
+        inst->lastError = ex.what();
+        return EMFE_ERR_IO;
+    }
+}
+
+extern "C" EmfeResult EMFE_CALL emfe_load_settings(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    try {
+        auto path = GetSettingsPath();
+        if (!std::filesystem::exists(path)) return EMFE_OK;
+        std::ifstream ifs(path);
+        if (!ifs.is_open()) return EMFE_OK;
+        std::string content((std::istreambuf_iterator<char>(ifs)),
+                             std::istreambuf_iterator<char>());
+        for (auto& [key, val] : inst->settings) {
+            auto keyStr = "\"" + key + "\"";
+            auto pos = content.find(keyStr);
+            if (pos != std::string::npos) {
+                auto colon = content.find(':', pos + keyStr.size());
+                if (colon != std::string::npos) {
+                    auto q1 = content.find('"', colon + 1);
+                    if (q1 != std::string::npos) {
+                        auto q2 = content.find('"', q1 + 1);
+                        if (q2 != std::string::npos)
+                            val = content.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            }
+        }
+        inst->stagedSettings = inst->settings;
+        inst->appliedSettings = inst->settings;
+        inst->ApplyVariantFromSettings();
+        return EMFE_OK;
+    } catch (const std::exception& ex) {
+        inst->lastError = ex.what();
+        return EMFE_ERR_IO;
+    }
+}
+
+extern "C" void EMFE_CALL emfe_release_string(const char* str) {
+    (void)str;
+}
+
+// ============================================================================
+// DLL entry point
+// ============================================================================
+
+#ifdef _WIN32
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
+    (void)hModule; (void)lpReserved;
+    switch (reason) {
+    case DLL_PROCESS_ATTACH:
+    case DLL_THREAD_ATTACH:
+    case DLL_THREAD_DETACH:
+    case DLL_PROCESS_DETACH:
+        break;
+    }
+    return TRUE;
+}
+#endif
