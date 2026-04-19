@@ -1,0 +1,4 @@
+# Statically link the MSVC C runtime so the resulting DLL is self-contained,
+# matching the other emfe plugins (m68030 / em8 / z8000).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

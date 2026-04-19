@@ -1,0 +1,25 @@
+[package]
+name = "emfe_plugin_mc6809"
+version = "0.1.0"
+edition = "2021"
+authors = ["hha0x617 <hha0x617@gmail.com>"]
+description = "MC6809 emfe plugin DLL (wraps em6809)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "emfe_plugin_mc6809"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Wrap the em6809 CPU core. default-features=false keeps GUI/i18n/serde out of
+# the compile graph.
+em6809 = { path = "../../em6809", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Unwind so every FFI entry can `catch_unwind` and convert plugin panics into
+# EmfeResult::ErrMemory, keeping the host (emfe.exe) alive across plugin bugs.
+panic = "unwind"
