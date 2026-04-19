@@ -1,0 +1,29 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# CMake / C++ build output
+build/
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exp
+*.ilk
+*.exe
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
+
+# Packaged example archives (regenerated on release)
+examples/*.zip
+*/examples/*.zip
