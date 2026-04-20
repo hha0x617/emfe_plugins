@@ -18,9 +18,10 @@ jobs:
         with:
           submodules: recursive
           # While upstream em6809 / Em68030_WinUI3Cpp are private, provide a
-          # fine-grained PAT with `Contents: read` on all three repos as the
-          # `REPO_PAT` secret.  Remove once everything is public.
-          token: ${{ secrets.REPO_PAT || github.token }}
+          # fine-grained PAT with `Contents: read` on both repos as the
+          # `SUBMODULE_READ_TOKEN` secret.  Remove the secret once both
+          # upstream repos are public — `github.token` alone is enough then.
+          token: ${{ secrets.SUBMODULE_READ_TOKEN || github.token }}
 
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
