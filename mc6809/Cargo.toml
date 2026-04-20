@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 # Wrap the em6809 CPU core. default-features=false keeps GUI/i18n/serde out of
 # the compile graph.
-em6809 = { path = "../../em6809", default-features = false }
+em6809 = { path = "../external/em6809", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -14,8 +14,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Em68030 source tree root (external dependency)
-set(EM68030_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../em68030_WinUI3Cpp/Em68030"
+# Em68030 source tree root (submodule at external/em68030_WinUI3Cpp)
+# Override with -DEM68030_ROOT=... if using a different layout.
+set(EM68030_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../external/em68030_WinUI3Cpp/Em68030"
     CACHE PATH "Path to the Em68030 source tree")
 
 if(NOT EXISTS "${EM68030_ROOT}/Core/MC68030.cpp")

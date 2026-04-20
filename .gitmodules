@@ -1,0 +1,6 @@
+[submodule "external/em6809"]
+	path = external/em6809
+	url = https://github.com/hha0x617/em6809.git
+[submodule "external/em68030_WinUI3Cpp"]
+	path = external/em68030_WinUI3Cpp
+	url = https://github.com/hha0x617/Em68030_WinUI3Cpp.git
