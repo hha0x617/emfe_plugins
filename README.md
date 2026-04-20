@@ -12,8 +12,42 @@ self-contained plugin that exposes the `emfe` C ABI.
 | `rv32ima` | RISC-V RV32IMA |
 | `api` | Shared C ABI headers |
 
-Sample guest programs (e.g. Tiny Forth for MC6809) live under each plugin's
-`examples/` directory.
+Sample guest programs (e.g. Hha Forth / Hha Lisp for MC6809) live under each
+plugin's `examples/` directory.
+
+## Cloning
+
+This repository vendors two upstream source trees as git submodules:
+
+- `external/em6809` — [hha0x617/em6809](https://github.com/hha0x617/em6809)
+  (required by the `mc6809` plugin)
+- `external/em68030_WinUI3Cpp` — [hha0x617/Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp)
+  (required by the `mc68030` plugin)
+
+Clone recursively:
+
+```bash
+git clone --recurse-submodules https://github.com/hha0x617/emfe_plugins.git
+```
+
+Or, if you already cloned without `--recurse-submodules`:
+
+```bash
+git submodule update --init --recursive
+```
+
+## Building
+
+| Plugin | Toolchain | Command |
+|--------|-----------|---------|
+| `mc6809` | Rust stable | `cd mc6809 && cargo build --release` |
+| `em8` | MSVC + CMake | `cd em8 && cmake -S . -B build && cmake --build build --config Release` |
+| `mc68030` | MSVC + CMake | `cd mc68030 && cmake -S . -B build && cmake --build build --config Release` |
+| `z8000` | MSVC + CMake | `cd z8000 && cmake -S . -B build && cmake --build build --config Release` |
+
+GitHub Actions runs the same steps on every push; tagged commits (`v*`)
+publish the built DLLs as a GitHub Release. See
+[`.github/workflows/build.yml`](.github/workflows/build.yml).
 
 ## License
 
