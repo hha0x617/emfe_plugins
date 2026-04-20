@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/hha0x617/emfe_plugins?include_prereleases&sort=semver)](https://github.com/hha0x617/emfe_plugins/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-APACHE)
 
+[日本語 (README_ja.md)](README_ja.md)
+
 Guest-CPU plugins for the `emfe` emulator framework. Each subdirectory is a
 self-contained plugin that exposes the `emfe` C ABI.
 
