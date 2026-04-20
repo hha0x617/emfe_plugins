@@ -89,18 +89,20 @@ jobs:
         run: |
           SHORT_HASH=$(git rev-parse --short HEAD)
           echo "SHORT_HASH=${SHORT_HASH}" >> "$GITHUB_ENV"
-          mkdir -p dist
-          cp mc6809/target/release/emfe_plugin_mc6809.dll dist/
-          cp em8/build/bin/Release/emfe_plugin_em8.dll dist/
-          cp mc68030/build/bin/Release/emfe_plugin_mc68030.dll dist/
-          cp z8000/build/bin/Release/emfe_plugin_z8000.dll dist/
-          ls -l dist/
+          # Stage under dist/plugins/ so the release zip can be
+          # extracted next to emfe.exe without further rearrangement.
+          mkdir -p dist/plugins
+          cp mc6809/target/release/emfe_plugin_mc6809.dll dist/plugins/
+          cp em8/build/bin/Release/emfe_plugin_em8.dll dist/plugins/
+          cp mc68030/build/bin/Release/emfe_plugin_mc68030.dll dist/plugins/
+          cp z8000/build/bin/Release/emfe_plugin_z8000.dll dist/plugins/
+          ls -l dist/plugins/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: emfe-plugins-${{ env.SHORT_HASH }}
-          path: dist/*.dll
+          path: dist/plugins/*.dll
           if-no-files-found: error
 
       - name: Package release zip
@@ -109,11 +111,16 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           ZIP="emfe-plugins-${TAG}-${SHORT_HASH}.zip"
+          # Zip the `plugins/` directory (not its contents) so the
+          # archive holds `plugins/*.dll` paths — extractable directly
+          # next to emfe.exe.
           cd dist
-          7z a -tzip "../${ZIP}" *.dll > /dev/null
+          7z a -tzip "../${ZIP}" plugins > /dev/null
           cd ..
           echo "ZIP_NAME=${ZIP}" >> "$GITHUB_ENV"
           ls -l "${ZIP}"
+          echo "--- zip contents ---"
+          7z l "${ZIP}"
 
       - name: Virus scan release zip
         if: startsWith(github.ref, 'refs/tags/v')
@@ -160,10 +167,20 @@ jobs:
           - \`emfe_plugin_em8.dll\` — em8 minimal 8-bit CPU (ABI validation target)
 
           ### Installation
-          Extract the zip and drop the DLLs into the \`plugins\\\` directory
-          next to an emfe host executable (\`emfe.exe\` from
+          Extract the zip **next to the emfe host executable** (\`emfe.exe\` from
           [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF) or
           [emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp)).
+          The archive already contains a top-level \`plugins/\` directory,
+          so after extraction the host picks up the DLLs automatically:
+          \`\`\`
+          <install-dir>/
+          ├── emfe.exe
+          └── plugins/
+              ├── emfe_plugin_mc6809.dll
+              ├── emfe_plugin_mc68030.dll
+              ├── emfe_plugin_z8000.dll
+              └── emfe_plugin_em8.dll
+          \`\`\`
 
           ### Security
           - Virus scan: **Passed** (Windows Defender, signatures updated at build time)
