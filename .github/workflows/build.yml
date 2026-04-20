@@ -13,15 +13,24 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout emfe_plugins
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          # While upstream em6809 / Em68030_WinUI3Cpp are private, provide a
-          # fine-grained PAT with `Contents: read` on both repos as the
-          # `SUBMODULE_READ_TOKEN` secret.  Remove the secret once both
-          # upstream repos are public — `github.token` alone is enough then.
-          token: ${{ secrets.SUBMODULE_READ_TOKEN || github.token }}
+        # Uses the default GITHUB_TOKEN (scoped to this repo), so the
+        # SUBMODULE_READ_TOKEN PAT only needs Contents:read on the
+        # *upstream* repos (em6809, Em68030_WinUI3Cpp).
+
+      - name: Fetch submodules (em6809, Em68030_WinUI3Cpp)
+        env:
+          SUBMODULE_READ_TOKEN: ${{ secrets.SUBMODULE_READ_TOKEN }}
+        shell: bash
+        run: |
+          # Use the PAT for *any* github.com clone, limited to this job.
+          # If the secret is empty (all upstream repos already public),
+          # fall through and rely on the ambient credentials.
+          if [[ -n "${SUBMODULE_READ_TOKEN}" ]]; then
+            git config --global url."https://x-access-token:${SUBMODULE_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          git submodule update --init --recursive
 
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
