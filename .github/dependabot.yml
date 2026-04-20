@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # mc6809 is the only Rust plugin; the other three (em8 / mc68030 / z8000)
+  # are CMake-driven C++ without a dependabot-tracked manifest.
+  - package-ecosystem: "cargo"
+    directory: "/mc6809"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
