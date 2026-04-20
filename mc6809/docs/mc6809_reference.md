@@ -209,7 +209,7 @@ Running em6809's `samples/hello/hello.s19` on this plugin will:
 
 ## 9. References
 
-- em6809 upstream: [`D:\projects\em6809`](../../../em6809)
+- em6809 upstream: [hha0x617/em6809](https://github.com/hha0x617/em6809)
 - MC6809 programming reference: Motorola MC6809E 8-bit microprocessor datasheet
 - MC6850 ACIA datasheet: Motorola MC6850 Asynchronous Communications
   Interface Adapter

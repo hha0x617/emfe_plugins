@@ -176,7 +176,7 @@ emfe_load_binary(inst, "program.bin", 0x0100);
 
 ## 8. em6809 本体のサンプルとの非互換性
 
-em6809 本体のリポジトリ ([`D:\projects\em6809`](../../../em6809)) は
+em6809 本体のリポジトリ ([hha0x617/em6809](https://github.com/hha0x617/em6809)) は
 `samples/` 配下に独自のサンプルプログラム (hello / echo / vt100) を同梱して
 いるが、これらは **em6809 独自の `ConsoleDev` ($FF00 固定)** を前提にしており、
 **本プラグインの MC6850 ACIA とは互換性がない**。
@@ -202,7 +202,7 @@ em6809 の `samples/hello/hello.s19` を本プラグインにロードすると:
 
 ## 9. 参考資料
 
-- em6809 本体: [`D:\projects\em6809`](../../../em6809)
+- em6809 本体: [hha0x617/em6809](https://github.com/hha0x617/em6809)
 - MC6809 プログラミングリファレンス: Motorola MC6809E データシート
 - MC6850 ACIA データシート: Motorola MC6850 Asynchronous Communications
   Interface Adapter
