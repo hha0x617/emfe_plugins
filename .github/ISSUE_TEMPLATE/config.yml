@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hha0x617/emfe_plugins/security/advisories/new
+    about: Please report security issues privately via Private Vulnerability Reporting (see SECURITY.md).
+  - name: Question / Discussion
+    url: https://github.com/hha0x617/emfe_plugins/discussions
+    about: For general questions, ideas, or help requests, start a discussion.

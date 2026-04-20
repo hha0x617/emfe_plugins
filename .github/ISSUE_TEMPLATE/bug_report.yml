@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a plugin that misbehaves, crashes, or produces wrong results
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.  Please fill in as much
+        as you can — reproducibility is the single most important detail.
+
+  - type: dropdown
+    id: plugin
+    attributes:
+      label: Which plugin?
+      options:
+        - mc6809
+        - mc68030
+        - z8000
+        - em8
+        - api (C ABI / header)
+        - other / unsure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: emfe_plugins version
+      description: Release tag (e.g. `v0.1.0`) or commit hash
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host application
+      description: Which emfe host did you use to load the plugin?
+      placeholder: emfe_CsWPF v0.1.0 / emfe_WinUI3Cpp v0.1.0 / custom
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2 x64
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A concise description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Include the guest program if possible (binary, source, or a link).
+        For ISA bugs, a minimal assembly snippet is invaluable.
+      placeholder: |
+        1. Load `forth.s19` into mc6809 plugin
+        2. Type `: DOUBLE 2 * ;`
+        3. Type `5 DOUBLE .`
+        4. Observe `11 ok` instead of `10 ok`
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / screenshots
+      description: |
+        Paste any error messages, console output, or screenshots.  Use
+        triple backticks for text.
+      render: shell
