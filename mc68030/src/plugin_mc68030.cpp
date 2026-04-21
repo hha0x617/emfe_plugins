@@ -24,7 +24,6 @@
 #include "IO/FramebufferDevice.h"
 #include "IO/InputDevice.h"
 #include "IO/Uart16550Device.h"
-#include "IO/NullNetworkHandler.h"
 #include "IO/SlirpNetworkHandler.h"
 #include "IO/TapNetworkHandler.h"
 #include "IO/VirtualNetworkHandler.h"
@@ -390,23 +389,26 @@ void EmfeInstanceData::SetupMvme147Devices() {
         : static_cast<uint32_t>(config.MemorySize);
     rtcDevice->SetMvme147Config(kernelRamEnd, ethAddr, sizeof(ethAddr));
 
-    // LANCE Ethernet
-    lanceDevice = std::make_unique<Em68030::IO::LanceDevice>();
-    lanceDevice->AttachMemory(memory.get());
-    // Mode dispatch — LanceDevice's ctor already installs a VirtualNetworkHandler,
-    // so the "Virtual" branch is implicit (no override). "None" models an
-    // unplugged cable via NullNetworkHandler, which used to silently fall
-    // through to Virtual and made the two options functionally identical.
-    if (config.NetworkMode.find("TAP") != std::string::npos) {
-        auto tapHandler = std::make_unique<Em68030::IO::TapNetworkHandler>(config.TapAdapterGuid);
-        lanceDevice->SetNetworkHandler(std::move(tapHandler));
-    } else if (config.NetworkMode.find("NAT") != std::string::npos) {
-        auto gwIp = Em68030::IO::SlirpNetworkHandler::ParseIpAddress(config.NatGatewayIp);
-        auto gwMac = Em68030::IO::SlirpNetworkHandler::ParseMacAddress(config.NatGatewayMac);
-        auto natHandler = std::make_unique<Em68030::IO::SlirpNetworkHandler>(gwIp, gwMac);
-        lanceDevice->SetNetworkHandler(std::move(natHandler));
-    } else if (config.NetworkMode == "None") {
-        lanceDevice->SetNetworkHandler(std::make_unique<Em68030::IO::NullNetworkHandler>());
+    // LANCE Ethernet — NetworkMode="None" means "the LANCE isn't on this
+    // board at all", so we skip construction, memory mapping, interrupt
+    // wiring, and the tick. Reads at $FFFE1800 then fall through to the
+    // Mvme147IoSpaceDevice catch-all (returns 0), the guest autoconf
+    // probe fails the LANCE magic check, and no ethernet interface shows
+    // up in the guest. LanceDevice's ctor installs a VirtualNetworkHandler
+    // by default so "Virtual" is implicit (no override).
+    const bool networkPresent = (config.NetworkMode != "None");
+    if (networkPresent) {
+        lanceDevice = std::make_unique<Em68030::IO::LanceDevice>();
+        lanceDevice->AttachMemory(memory.get());
+        if (config.NetworkMode.find("TAP") != std::string::npos) {
+            auto tapHandler = std::make_unique<Em68030::IO::TapNetworkHandler>(config.TapAdapterGuid);
+            lanceDevice->SetNetworkHandler(std::move(tapHandler));
+        } else if (config.NetworkMode.find("NAT") != std::string::npos) {
+            auto gwIp = Em68030::IO::SlirpNetworkHandler::ParseIpAddress(config.NatGatewayIp);
+            auto gwMac = Em68030::IO::SlirpNetworkHandler::ParseMacAddress(config.NatGatewayMac);
+            auto natHandler = std::make_unique<Em68030::IO::SlirpNetworkHandler>(gwIp, gwMac);
+            lanceDevice->SetNetworkHandler(std::move(natHandler));
+        }
     }
 
     // Register I/O space (catch-all first, then specific devices override)
@@ -416,7 +418,8 @@ void EmfeInstanceData::SetupMvme147Devices() {
     memory->RegisterDevice(0xFFFE3000, 8, sccDevice.get());
     memory->RegisterDevice(0xFFFE4000, 4, scsiDevice.get());
     memory->RegisterDevice(0xFFFE0000, 2048, rtcDevice.get());
-    memory->RegisterDevice(0xFFFE1800, 4, lanceDevice.get());
+    if (lanceDevice)
+        memory->RegisterDevice(0xFFFE1800, 4, lanceDevice.get());
 
     // Framebuffer (optional)
     if (config.FramebufferEnabled) {
@@ -433,9 +436,11 @@ void EmfeInstanceData::SetupMvme147Devices() {
     }
 
     // Interrupt wiring
-    lanceDevice->InterruptOutput = [this](bool active) {
-        pccDevice->SetDeviceInterrupt("lance", active);
-    };
+    if (lanceDevice) {
+        lanceDevice->InterruptOutput = [this](bool active) {
+            pccDevice->SetDeviceInterrupt("lance", active);
+        };
+    }
     sccDevice->InterruptOutput = [this](bool active) {
         pccDevice->SetDeviceInterrupt("scc", active);
     };
@@ -463,7 +468,7 @@ void EmfeInstanceData::SetupMvme147Devices() {
     cpu->AddTickHandler([this]() {
         pccDevice->Tick();
         sccDevice->Tick(cpu->Stopped);
-        lanceDevice->Tick();
+        if (lanceDevice) lanceDevice->Tick();
     });
 
     // RESET instruction
