@@ -1,4 +1,21 @@
 version: 2
+
+# Grant Dependabot the credentials it needs to clone the private
+# \`em6809\` / \`Em68030_WinUI3Cpp\` submodules when analysing
+# \`mc6809/Cargo.toml\` (which has a path dep on em6809) and when
+# fetching submodules during CI.  Register the same PAT as a
+# Dependabot secret:
+#   gh secret set SUBMODULE_READ_TOKEN --app dependabot \
+#     --repo hha0x617/emfe_plugins
+# Once all upstream repos are public, remove this block and the
+# per-ecosystem \`registries:\` reference.
+registries:
+  github-private-submodules:
+    type: git
+    url: https://github.com
+    username: x-access-token
+    password: ${{secrets.SUBMODULE_READ_TOKEN}}
+
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -12,3 +29,5 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    registries:
+      - github-private-submodules
