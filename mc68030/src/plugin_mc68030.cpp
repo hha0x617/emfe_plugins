@@ -24,6 +24,7 @@
 #include "IO/FramebufferDevice.h"
 #include "IO/InputDevice.h"
 #include "IO/Uart16550Device.h"
+#include "IO/NullNetworkHandler.h"
 #include "IO/SlirpNetworkHandler.h"
 #include "IO/TapNetworkHandler.h"
 #include "IO/VirtualNetworkHandler.h"
@@ -392,6 +393,10 @@ void EmfeInstanceData::SetupMvme147Devices() {
     // LANCE Ethernet
     lanceDevice = std::make_unique<Em68030::IO::LanceDevice>();
     lanceDevice->AttachMemory(memory.get());
+    // Mode dispatch — LanceDevice's ctor already installs a VirtualNetworkHandler,
+    // so the "Virtual" branch is implicit (no override). "None" models an
+    // unplugged cable via NullNetworkHandler, which used to silently fall
+    // through to Virtual and made the two options functionally identical.
     if (config.NetworkMode.find("TAP") != std::string::npos) {
         auto tapHandler = std::make_unique<Em68030::IO::TapNetworkHandler>(config.TapAdapterGuid);
         lanceDevice->SetNetworkHandler(std::move(tapHandler));
@@ -400,6 +405,8 @@ void EmfeInstanceData::SetupMvme147Devices() {
         auto gwMac = Em68030::IO::SlirpNetworkHandler::ParseMacAddress(config.NatGatewayMac);
         auto natHandler = std::make_unique<Em68030::IO::SlirpNetworkHandler>(gwIp, gwMac);
         lanceDevice->SetNetworkHandler(std::move(natHandler));
+    } else if (config.NetworkMode == "None") {
+        lanceDevice->SetNetworkHandler(std::make_unique<Em68030::IO::NullNetworkHandler>());
     }
 
     // Register I/O space (catch-all first, then specific devices override)
