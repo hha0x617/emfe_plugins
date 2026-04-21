@@ -73,6 +73,17 @@ target_compile_options(emfe_plugin_mc68030 PRIVATE
     /fp:precise
     /W3
     /EHsc
+    # Ship a PDB with the Release build so VS can decode C++ frames when
+    # the plugin AVs under an emfe frontend. Optimization is preserved.
+    $<$<CONFIG:Release>:/Zi>
+)
+
+target_link_options(emfe_plugin_mc68030 PRIVATE
+    # /DEBUG emits a .pdb; /OPT:REF + /OPT:ICF preserve Release-level
+    # dead-code and COMDAT-folding (the default /DEBUG flips them off).
+    $<$<CONFIG:Release>:/DEBUG>
+    $<$<CONFIG:Release>:/OPT:REF>
+    $<$<CONFIG:Release>:/OPT:ICF>
 )
 
 target_link_libraries(emfe_plugin_mc68030 PRIVATE
