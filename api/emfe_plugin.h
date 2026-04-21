@@ -145,6 +145,7 @@ typedef struct {
 #define EMFE_CAP_FRAMEBUFFER     (1ULL <<  7)  /* emfe_get_framebuffer_info */
 #define EMFE_CAP_INPUT_KEYBOARD  (1ULL <<  8)  /* emfe_push_key */
 #define EMFE_CAP_INPUT_MOUSE     (1ULL <<  9)  /* emfe_push_mouse_* */
+#define EMFE_CAP_CONSOLE_TX_SPACE (1ULL << 10) /* emfe_console_tx_space */
 
 /* Board/plugin information */
 typedef struct {
@@ -660,6 +661,23 @@ EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_char(EmfeInstance instance, char ch);
 
 /* Send a string to the emulator's console input. */
 EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_string(EmfeInstance instance, const char* str);
+
+/* Query how many characters the console RX buffer can accept right now.
+ *
+ * Returns:
+ *   > 0  — at least that many subsequent emfe_send_char calls will not
+ *          overflow (though the host may still want to poll again between
+ *          large batches).  Pasted clipboard text should be drip-fed,
+ *          calling this query between chunks.
+ *     0  — the buffer is full; host should wait briefly and query again
+ *          before sending more.
+ *    -1  — the plugin does not expose buffered console RX (either its
+ *          receive path is unbounded, or this capability isn't supported
+ *          at all).  Host may fall back to a fixed-size burst strategy.
+ *
+ * Plugins that implement this should also set EMFE_CAP_CONSOLE_TX_SPACE
+ * in the capabilities bitmask returned by emfe_get_info. */
+EMFE_EXPORT int32_t EMFE_CALL emfe_console_tx_space(EmfeInstance instance);
 
 /*
  * String Utilities

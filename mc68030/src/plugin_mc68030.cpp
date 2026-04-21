@@ -1096,7 +1096,8 @@ static EmfeBoardInfo s_boardInfo = {
     EMFE_CAP_LOAD_ELF | EMFE_CAP_LOAD_SREC | EMFE_CAP_LOAD_BINARY |
     EMFE_CAP_STEP_OVER | EMFE_CAP_STEP_OUT | EMFE_CAP_CALL_STACK |
     EMFE_CAP_WATCHPOINTS | EMFE_CAP_FRAMEBUFFER |
-    EMFE_CAP_INPUT_KEYBOARD | EMFE_CAP_INPUT_MOUSE
+    EMFE_CAP_INPUT_KEYBOARD | EMFE_CAP_INPUT_MOUSE |
+    EMFE_CAP_CONSOLE_TX_SPACE
 };
 
 // ============================================================================
@@ -2024,6 +2025,30 @@ EmfeResult EMFE_CALL emfe_send_string(EmfeInstance instance, const char* str) {
         emfe_send_char(instance, *str++);
     }
     return EMFE_OK;
+}
+
+int32_t EMFE_CALL emfe_console_tx_space(EmfeInstance instance) {
+    if (!instance) return -1;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+
+    // Uart16550 has a strict 64-byte FIFO and silently drops past it.
+    // Z8530's QueueInput is unbounded, so it doesn't drop.  Report the
+    // tightest constraint so the host waits for whichever UART is
+    // currently in play.
+    int32_t space = INT32_MAX;
+    if (inst->uartDevice) {
+        size_t free_bytes = inst->uartDevice->GetRxFifoFreeSpace();
+        int32_t uart_space = free_bytes > static_cast<size_t>(INT32_MAX)
+                                 ? INT32_MAX
+                                 : static_cast<int32_t>(free_bytes);
+        if (uart_space < space) space = uart_space;
+    }
+    // sccDevice has no cap; don't narrow `space` for it.
+
+    // If neither console device is active, we can't meaningfully report
+    // space — pretend "unbounded" so the host doesn't throttle pointlessly.
+    if (!inst->uartDevice && !inst->sccDevice) return -1;
+    return space;
 }
 
 // ---------- File Loading (Phase 2 additions) ----------
