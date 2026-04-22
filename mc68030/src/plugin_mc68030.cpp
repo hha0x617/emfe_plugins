@@ -1034,24 +1034,25 @@ void EmfeInstanceData::EmulationLoop() {
                 }
             }
 
-            // Execute one instruction
-            try {
-                bool ok;
-                if (c.JitEnabled)
-                    ok = c.ExecuteNextFastJit();
-                else
-                    ok = c.ExecuteNextFast();
+            // Execute one instruction. Bus errors are signalled via the CPU's
+            // BusErrorPending flag (set by Mmu/Memory), and HandleBusError is
+            // invoked inside ExecuteNextFast/ExecuteNextFastJit before they
+            // return — so this loop no longer needs a try/catch around
+            // BusErrorException. The exception-based path was removed because
+            // its CRT unwinder intermittently AV'd under the .NET host.
+            bool ok;
+            if (c.JitEnabled)
+                ok = c.ExecuteNextFastJit();
+            else
+                ok = c.ExecuteNextFast();
 
-                if (!ok) {
-                    if (c.Halted || (!c.HasExternalDevices() && c.Stopped)) {
-                        NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT, c.PC,
-                                          c.StopReason.empty() ? "CPU halted" : c.StopReason.c_str());
-                        return;
-                    }
-                    continue; // STOP waiting for interrupt — keep looping
+            if (!ok) {
+                if (c.Halted || (!c.HasExternalDevices() && c.Stopped)) {
+                    NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT, c.PC,
+                                      c.StopReason.empty() ? "CPU halted" : c.StopReason.c_str());
+                    return;
                 }
-            } catch (const Em68030::Core::BusErrorException& ex) {
-                c.HandleBusError(ex);
+                continue; // STOP waiting for interrupt — keep looping
             }
             if (c.Halted) {
                 NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT, c.PC,
