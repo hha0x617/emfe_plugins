@@ -90,7 +90,15 @@ target_link_libraries(emfe_plugin_mc68030 PRIVATE
     ws2_32      # For SlirpNetworkHandler
 )
 
-# Statically link the MSVC runtime so the plugin DLL is self-contained.
-# Matches em8 and z8000 plugins — no msvcp140.dll/vcruntime140.dll deployment.
+# Dynamically link the MSVC runtime (/MD) so the plugin shares the
+# CRT with the host process. With /MT, the plugin has its own private
+# vcruntime/ucrt state — when the first C++ exception is thrown on the
+# plugin's emulation thread while hosted by a .NET process (emfe_CsWPF),
+# the CRT's per-thread-data allocation calls HeapAlloc, which reenters
+# and trips __vcrt_getptd_noexit's reentrancy sentinel → unhandled
+# ExecutionEngineException during BusErrorException unwind. /MD avoids
+# this by having a single CRT across the whole process (ucrtbase.dll +
+# vcruntime140.dll), so PTD already exists by the time the plugin throws.
+# Cost: the plugin now depends on vcruntime140.dll (redistributable).
 set_target_properties(emfe_plugin_mc68030 PROPERTIES
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
