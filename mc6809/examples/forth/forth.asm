@@ -310,6 +310,70 @@ code_SUB:   ldd     2,u             ; D = a
             std     ,u
             jmp     NEXT
 
+            ; * ( a b -- a*b )  16-bit multiply, low-16 result (sign-agnostic)
+            ; a = (ah:al) at 2,u, b = (bh:bl) at 0,u
+            ;   a*b = ah*bh*65536 + (ah*bl + al*bh)*256 + al*bl
+            ; For the low 16 bits we discard ah*bh, then add in the low bytes
+            ; of (ah*bl) and (al*bh) shifted up 8. Three MULs total.
+nfa_MUL     fcb     1
+            fcc     "*"
+lnk_MUL     fdb     prev_link
+cfa_MUL     fdb     code_MUL
+prev_link   set     nfa_MUL
+code_MUL:   lda     3,u             ; A = al
+            ldb     1,u             ; B = bl
+            mul                     ; D = al*bl
+            pshs    d               ; save partial: ,s=hi 1,s=lo
+            lda     2,u             ; A = ah
+            ldb     1,u             ; B = bl
+            mul                     ; D = ah*bl (we only want B, the low 8 bits)
+            addb    ,s              ; add into hi byte of partial
+            stb     ,s
+            lda     3,u             ; A = al
+            ldb     ,u              ; B = bh
+            mul                     ; D = al*bh
+            addb    ,s
+            stb     ,s
+            puls    d               ; D = final 16-bit product
+            leau    2,u
+            std     ,u
+            jmp     NEXT
+
+            ; /MOD ( a b -- rem quot )  16-bit signed division, truncate to zero.
+            ; Shared implementation used by /, MOD, and /MOD.
+            ; On divide-by-zero we leave the stack with rem=a, quot=0.
+nfa_SLMOD   fcb     4
+            fcc     "/MOD"
+lnk_SLMOD   fdb     prev_link
+cfa_SLMOD   fdb     code_SLMOD
+prev_link   set     nfa_SLMOD
+code_SLMOD: lbsr    divmod_core
+            jmp     NEXT
+
+            ; / ( a b -- a/b ) signed quotient (truncating toward zero).
+nfa_DIV     fcb     1
+            fcc     "/"
+lnk_DIV     fdb     prev_link
+cfa_DIV     fdb     code_DIV
+prev_link   set     nfa_DIV
+code_DIV:   lbsr    divmod_core     ; leaves ( rem quot ) on U stack
+            ldd     ,u              ; D = quot
+            leau    2,u             ; drop remainder slot
+            std     ,u              ; overwrite with quot only
+            jmp     NEXT
+
+            ; MOD ( a b -- a mod b ) signed remainder (sign of dividend).
+nfa_MOD     fcb     3
+            fcc     "MOD"
+lnk_MOD     fdb     prev_link
+cfa_MOD     fdb     code_MOD
+prev_link   set     nfa_MOD
+code_MOD:   lbsr    divmod_core     ; leaves ( rem quot ) on U stack
+            ldd     2,u             ; D = rem (below quot)
+            leau    2,u             ; drop quot
+            std     ,u              ; overwrite quot slot with rem
+            jmp     NEXT
+
             ; AND ( a b -- a&b )
 nfa_AND     fcb     3
             fcc     "AND"
@@ -718,6 +782,99 @@ pd_emit_done:
 
 pd_buf      fcb     0,0,0,0,0,0     ; up to "-32768" fits in 6 bytes (sign emitted separately)
 pd_buf_end
+
+; ---------------------------------------------------------------------------
+; divmod_core — signed 16/16 → quotient+remainder, used by /, MOD, /MOD.
+; Entry:  2,U = dividend (a), 0,U = divisor (b)
+; Exit:   U stack is rewritten as ( rem quot ):   2,U=rem, 0,U=quot
+;         (a.k.a. -2-slot net push — same cell count as the ( a b ) input)
+;         U itself is NOT adjusted; callers either return as-is (/MOD) or
+;         pop one extra cell and overwrite (/, MOD).
+; Sign rule: truncation toward zero. Quotient sign = sign(a) XOR sign(b).
+;            Remainder sign follows the dividend (C99 / ANS Forth SM/REM).
+; Divide-by-zero: leaves rem=a, quot=0 on stack (no trap).
+; ---------------------------------------------------------------------------
+            ; Scratch. Not DP-based — standard 16-bit addressing.
+dm_quot     fdb     0               ; quotient accumulator (also shifts dividend in)
+dm_dvsr     fdb     0               ; absolute divisor
+dm_signq    fcb     0               ; bit7 = quotient sign  (1 = negate at end)
+dm_signr    fcb     0               ; bit7 = remainder sign (1 = negate at end)
+
+divmod_core:
+            ldd     ,u              ; D = b
+            beq     dm_div_by_zero
+
+            ; --- take absolute values of a and b, track signs --------------
+            clr     dm_signq
+            clr     dm_signr
+            ldd     2,u             ; D = a
+            bpl     dm_a_pos
+            coma
+            comb
+            addd    #1
+            std     2,u             ; replace a with |a|
+            com     dm_signq        ; quotient sign: flip
+            com     dm_signr        ; remainder sign: follows dividend
+dm_a_pos:
+            ldd     ,u              ; D = b
+            bpl     dm_b_pos
+            coma
+            comb
+            addd    #1              ; D = |b|
+            com     dm_signq        ; quotient sign: flip again (XOR)
+dm_b_pos:
+            std     dm_dvsr
+
+            ; --- unsigned 16/16 divide via restoring shift-subtract --------
+            ; [rem:quot] starts as [0:|a|]. 16 iterations: shift left, if the
+            ; 16-bit rem is >= dvsr, subtract and set bit 0 of quot.
+            ldd     2,u             ; |a|
+            std     dm_quot         ; quot slot starts as dividend
+            ldd     #0              ; D = remainder
+            ldx     #16             ; loop counter
+dm_loop:
+            ; Shift quot left 1, carry-out into LSB of remainder.
+            ; We do it on the in-memory quot so we can use ROL directly.
+            lsl     dm_quot+1
+            rol     dm_quot
+            rolb                    ; remainder <<= 1, bit shifted in from quot
+            rola
+            ; Trial subtract: if rem >= dvsr, commit subtract and set quot bit 0.
+            cmpd    dm_dvsr
+            blo     dm_no_sub
+            subd    dm_dvsr
+            inc     dm_quot+1       ; set new quotient LSB (previous LSL left 0)
+dm_no_sub:
+            leax    -1,x
+            bne     dm_loop
+
+            ; --- apply signs -----------------------------------------------
+            tst     dm_signr
+            bpl     dm_rem_ok
+            coma
+            comb
+            addd    #1              ; negate remainder
+dm_rem_ok:
+            std     2,u             ; remainder -> slot a  (so NOS = rem)
+
+            ldd     dm_quot
+            tst     dm_signq
+            bpl     dm_quot_ok
+            coma
+            comb
+            addd    #1              ; negate quotient
+dm_quot_ok:
+            std     ,u              ; quotient -> slot b  (so TOS = quot)
+            rts
+
+dm_div_by_zero:
+            ; Leave dividend as remainder, 0 as quotient. Caller picks.
+            ldd     2,u             ; D = a (unchanged)
+            std     2,u             ; rem = a  (NOS)
+            clra
+            clrb
+            std     ,u              ; quot = 0 (TOS)
+            rts
 
 ; ---------------------------------------------------------------------------
 ; Outer-interpreter state + kernel helpers.
