@@ -3,9 +3,9 @@
 A compact Forth interpreter for the MC6809, running on the `em6809` +
 `emfe_plugin_mc6809` environment (MC6850 ACIA at `$FF00/$FF01`, 64 KB RAM).
 
-- **Single assembly source**: `forth.asm` (~1,500 lines)
-- **ROM image**: ~2.5 KB
-- **CFAs**: 63 (primitives + colon definitions combined)
+- **Single assembly source**: `forth.asm` (~1,700 lines)
+- **ROM image**: ~3 KB
+- **CFAs**: 79 (primitives + colon definitions combined)
 - **Tests**: 6 smoke tests, all passing
 
 An ITC (indirect-threaded code) Forth with colon definitions, `IF`/`THEN`/

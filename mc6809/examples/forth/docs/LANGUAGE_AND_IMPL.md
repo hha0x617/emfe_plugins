@@ -15,7 +15,7 @@ dictionary structure, inner interpreter) of
 | Assembly source | **1,535 lines** (single `forth.asm`) |
 | Raw binary | **2,605 bytes** (~2.5 KB) |
 | SREC file | 7,262 bytes (ASCII S-record) |
-| CFAs (primitive + colon definitions) | **63** |
+| CFAs (primitive + colon definitions) | **79** |
 | Smoke tests | **6**, all passing |
 
 **About 1/7 the size of Hha Lisp** (18.5 KB, 60 primitives).  In the
@@ -156,8 +156,11 @@ Per word:
 ## 6. Primitive categories
 
 - **Stack ops**: `DUP` `DROP` `SWAP` `OVER` `ROT` `>R` `R>` `R@`
-- **Arithmetic / logic**: `+` `-` `AND` `OR` `XOR` `INVERT` `NEGATE`
-  `0=` `0<` `=` `<`
+- **Arithmetic / logic**: `+` `-` `*` `/` `MOD` `/MOD`
+  `1+` `1-` `2+` `2-` `2*` `2/`
+  `NEGATE` `ABS` `MIN` `MAX`
+  `AND` `OR` `XOR` `INVERT` `NOT`
+  `0=` `0<` `=` `<>` `<` `>`
 - **Memory**: `@` `!` `C@` `C!`
 - **I/O**: `EMIT` `KEY` `CR` `SPACE` `TYPE` `COUNT` `.`
 - **Dict / variables**: `HERE` `,` `C,` `ALLOT` `STATE` `LATEST`

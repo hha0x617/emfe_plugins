@@ -14,7 +14,7 @@
 | ソース行数 | **1,535 行** (単一ファイル `forth.asm`) |
 | 生バイナリ | **2,605 bytes** (≒ 2.5 KB) |
 | SREC ファイル | 7,262 bytes (ASCII 形式) |
-| CFA (code-field address) | **63 個** — primitive + colon definition の総計 |
+| CFA (code-field address) | **79 個** — primitive + colon definition の総計 |
 | Smoke test | **6 件** (全件 passing) |
 
 **Hha Lisp (18.5 KB, 60 primitive) と比較して約 1/7 の規模**。古典的な
@@ -155,7 +155,11 @@ EXIT:       puls x           ; pop IP from return stack
 `DUP` `DROP` `SWAP` `OVER` `ROT` `>R` `R>` `R@`
 
 ### 6.2 算術・論理
-`+` `-` `AND` `OR` `XOR` `INVERT` `NEGATE` `0=` `0<` `=` `<`
+`+` `-` `*` `/` `MOD` `/MOD`
+`1+` `1-` `2+` `2-` `2*` `2/`
+`NEGATE` `ABS` `MIN` `MAX`
+`AND` `OR` `XOR` `INVERT` `NOT`
+`0=` `0<` `=` `<>` `<` `>`
 
 ### 6.3 メモリ
 `@` `!` `C@` `C!`

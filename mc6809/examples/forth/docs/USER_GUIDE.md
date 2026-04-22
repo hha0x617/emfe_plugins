@@ -108,12 +108,28 @@ and numeric literals compile as `(LIT) value`.
 | Word | Effect |
 |----|------|
 | `+` `-` | Addition / subtraction |
-| `AND` `OR` `XOR` | Bitwise |
-| `INVERT` | One's complement |
+| `*` | `( a b -- a*b )` 16-bit multiply, low-16 result (sign-agnostic) |
+| `/` | `( a b -- a/b )` Signed division, truncation toward zero |
+| `MOD` | `( a b -- a mod b )` Signed remainder; sign follows the dividend |
+| `/MOD` | `( a b -- rem quot )` Combined division; `/` and `MOD` each drop one of these |
+| `1+` `1-` | `( n -- n±1 )` Increment / decrement by one |
+| `2+` `2-` | `( n -- n±2 )` Increment / decrement by two |
+| `2*` | `( n -- n*2 )` Arithmetic shift left 1 |
+| `2/` | `( n -- n/2 )` FORTH-83 arithmetic (signed) shift right 1 |
 | `NEGATE` | Two's complement |
+| `ABS` | `( n -- \|n\| )` Absolute value |
+| `MIN` `MAX` | `( a b -- m )` Signed minimum / maximum |
+| `AND` `OR` `XOR` | Bitwise |
+| `INVERT` | One's complement (bitwise NOT) |
+| `NOT` | `( flag -- !flag )` FORTH-83 logical inversion (alias of `0=`) |
 | `0=` | `( n -- flag )` `-1` if zero, `0` otherwise |
 | `0<` | `( n -- flag )` `-1` if negative |
-| `=` `<` | Comparisons, returning `-1` / `0` |
+| `=` `<>` | Equality / inequality, returning `-1` / `0` |
+| `<` `>` | Signed ordering, returning `-1` / `0` |
+
+Divide by zero is non-trapping: `/`, `MOD`, and `/MOD` with `b=0` leave
+the remainder equal to the original dividend and the quotient at `0`,
+matching the kernel's general fail-soft behaviour on bad input.
 
 ### 4.3 Memory
 | Word | Stack effect | Notes |
