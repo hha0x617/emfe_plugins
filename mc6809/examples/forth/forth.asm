@@ -435,6 +435,113 @@ code_NEG:   ldd     ,u
             std     ,u
             jmp     NEXT
 
+            ; ABS ( n -- |n| )
+nfa_ABS     fcb     3
+            fcc     "ABS"
+lnk_ABS     fdb     prev_link
+cfa_ABS     fdb     code_ABS
+prev_link   set     nfa_ABS
+code_ABS:   ldd     ,u
+            bpl     abs_done
+            coma
+            comb
+            addd    #1
+            std     ,u
+abs_done:   jmp     NEXT
+
+            ; MIN ( a b -- min )  signed
+nfa_MIN     fcb     3
+            fcc     "MIN"
+lnk_MIN     fdb     prev_link
+cfa_MIN     fdb     code_MIN
+prev_link   set     nfa_MIN
+code_MIN:   ldd     2,u             ; D = a
+            cmpd    ,u              ; D - b
+            blt     min_keep_a      ; a < b: keep a
+            ldd     ,u              ; else overwrite slot with b
+            std     2,u
+min_keep_a: leau    2,u
+            jmp     NEXT
+
+            ; MAX ( a b -- max )  signed
+nfa_MAX     fcb     3
+            fcc     "MAX"
+lnk_MAX     fdb     prev_link
+cfa_MAX     fdb     code_MAX
+prev_link   set     nfa_MAX
+code_MAX:   ldd     2,u             ; D = a
+            cmpd    ,u              ; D - b
+            bgt     max_keep_a      ; a > b: keep a
+            ldd     ,u              ; else use b
+            std     2,u
+max_keep_a: leau    2,u
+            jmp     NEXT
+
+            ; 1+ ( n -- n+1 )
+nfa_1PLUS   fcb     2
+            fcc     "1+"
+lnk_1PLUS   fdb     prev_link
+cfa_1PLUS   fdb     code_1PLUS
+prev_link   set     nfa_1PLUS
+code_1PLUS: ldd     ,u
+            addd    #1
+            std     ,u
+            jmp     NEXT
+
+            ; 1- ( n -- n-1 )
+nfa_1MINUS  fcb     2
+            fcc     "1-"
+lnk_1MINUS  fdb     prev_link
+cfa_1MINUS  fdb     code_1MINUS
+prev_link   set     nfa_1MINUS
+code_1MINUS: ldd    ,u
+            subd    #1
+            std     ,u
+            jmp     NEXT
+
+            ; 2+ ( n -- n+2 )
+nfa_2PLUS   fcb     2
+            fcc     "2+"
+lnk_2PLUS   fdb     prev_link
+cfa_2PLUS   fdb     code_2PLUS
+prev_link   set     nfa_2PLUS
+code_2PLUS: ldd     ,u
+            addd    #2
+            std     ,u
+            jmp     NEXT
+
+            ; 2- ( n -- n-2 )
+nfa_2MINUS  fcb     2
+            fcc     "2-"
+lnk_2MINUS  fdb     prev_link
+cfa_2MINUS  fdb     code_2MINUS
+prev_link   set     nfa_2MINUS
+code_2MINUS: ldd    ,u
+            subd    #2
+            std     ,u
+            jmp     NEXT
+
+            ; 2* ( n -- n*2 )  arithmetic shift left (same bit pattern for
+            ; signed and unsigned — high bit replaced by bit 14).
+nfa_2MUL    fcb     2
+            fcc     "2*"
+lnk_2MUL    fdb     prev_link
+cfa_2MUL    fdb     code_2MUL
+prev_link   set     nfa_2MUL
+code_2MUL:  asl     1,u             ; low byte: bit 7 → C
+            rol     ,u              ; high byte: C → bit 0, bit 7 discarded
+            jmp     NEXT
+
+            ; 2/ ( n -- n/2 )  FORTH-83 arithmetic (signed) shift right.
+nfa_2DIV    fcb     2
+            fcc     "2/"
+lnk_2DIV    fdb     prev_link
+cfa_2DIV    fdb     code_2DIV
+prev_link   set     nfa_2DIV
+code_2DIV:  asr     ,u              ; high byte: sign bit preserved, bit 0 → C
+            ror     1,u             ; low byte: C → bit 7, bit 0 discarded
+            jmp     NEXT
+
             ; 0= ( a -- flag )   flag = -1 if a==0, else 0
 nfa_ZEQ     fcb     2
             fcc     "0="
@@ -465,6 +572,15 @@ code_ZLT:   ldd     ,u
 zlt_true:   ldd     #-1
             std     ,u
             jmp     NEXT
+
+            ; NOT ( flag -- !flag )  FORTH-83 logical inversion (same as 0=).
+            ; Bitwise complement is INVERT.
+nfa_NOT     fcb     3
+            fcc     "NOT"
+lnk_NOT     fdb     prev_link
+cfa_NOT     fdb     code_NOT
+prev_link   set     nfa_NOT
+code_NOT    equ     code_ZEQ        ; alias — identical semantics
 
             ; = ( a b -- flag )
 nfa_EQ      fcb     1
@@ -497,6 +613,40 @@ code_LT:    ldd     2,u             ; D = a
             jmp     NEXT
 lt_true:    leau    2,u
             ldd     #-1
+            std     ,u
+            jmp     NEXT
+
+            ; > ( a b -- flag )  signed
+nfa_GT      fcb     1
+            fcc     ">"
+lnk_GT      fdb     prev_link
+cfa_GT      fdb     code_GT
+prev_link   set     nfa_GT
+code_GT:    ldd     2,u             ; D = a
+            cmpd    ,u              ; compare a to b
+            bgt     gt_true
+            leau    2,u
+            ldd     #0
+            std     ,u
+            jmp     NEXT
+gt_true:    leau    2,u
+            ldd     #-1
+            std     ,u
+            jmp     NEXT
+
+            ; <> ( a b -- flag )  not-equal
+nfa_NE      fcb     2
+            fcc     "<>"
+lnk_NE      fdb     prev_link
+cfa_NE      fdb     code_NE
+prev_link   set     nfa_NE
+code_NE:    ldd     ,u++            ; D = b; advance U (drops b)
+            cmpd    ,u              ; compare b to a (equality is symmetric)
+            bne     ne_true
+            ldd     #0
+            std     ,u
+            jmp     NEXT
+ne_true:    ldd     #-1
             std     ,u
             jmp     NEXT
 
