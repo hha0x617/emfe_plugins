@@ -951,6 +951,9 @@ dm_signq    fcb     0               ; bit7 = quotient sign  (1 = negate at end)
 dm_signr    fcb     0               ; bit7 = remainder sign (1 = negate at end)
 
 divmod_core:
+            ; X is the Forth IP. Save it on the return stack so the inner
+            ; loop can use X as a counter without clobbering NEXT's state.
+            pshs    x
             ldd     ,u              ; D = b
             beq     dm_div_by_zero
 
@@ -1015,7 +1018,7 @@ dm_rem_ok:
             addd    #1              ; negate quotient
 dm_quot_ok:
             std     ,u              ; quotient -> slot b  (so TOS = quot)
-            rts
+            puls    x,pc            ; restore IP and return
 
 dm_div_by_zero:
             ; Leave dividend as remainder, 0 as quotient. Caller picks.
@@ -1024,7 +1027,7 @@ dm_div_by_zero:
             clra
             clrb
             std     ,u              ; quot = 0 (TOS)
-            rts
+            puls    x,pc            ; restore IP and return
 
 ; ---------------------------------------------------------------------------
 ; Outer-interpreter state + kernel helpers.

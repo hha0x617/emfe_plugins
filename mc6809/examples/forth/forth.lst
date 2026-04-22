@@ -61,7 +61,7 @@
                       (        forth.asm):00061                     ; Seed HERE / LATEST / STATE.
 0116 8E2000           (        forth.asm):00062                     ldx     #DICT_START
 0119 BF05B2           (        forth.asm):00063                     stx     var_HERE
-011C 8E0CB0           (        forth.asm):00064                     ldx     #last_builtin_link
+011C 8E0CB4           (        forth.asm):00064                     ldx     #last_builtin_link
 011F BF05B0           (        forth.asm):00065                     stx     var_LATEST
 0122 8E0000           (        forth.asm):00066                     ldx     #0
 0125 BF05A3           (        forth.asm):00067                     stx     var_STATE
@@ -69,7 +69,7 @@
 0128 8E012E           (        forth.asm):00069                     ldx     #boot_code
 012B 7E0183           (        forth.asm):00070                     jmp     NEXT
                       (        forth.asm):00071         
-012E 0CB7             (        forth.asm):00072         boot_code:  fdb     cfa_QUIT
+012E 0CBB             (        forth.asm):00072         boot_code:  fdb     cfa_QUIT
                       (        forth.asm):00073         
 0130 48686120466F7274 (        forth.asm):00074         msg_ready   fcc     "Hha Forth for MC6809 ready."
      6820666F72204D43
@@ -959,894 +959,897 @@
 0684 00               (        forth.asm):00951         dm_signr    fcb     0               ; bit7 = remainder sign (1 = negate at end)
                       (        forth.asm):00952         
 0685                  (        forth.asm):00953         divmod_core:
-0685 ECC4             (        forth.asm):00954                     ldd     ,u              ; D = b
-0687 2765             (        forth.asm):00955                     beq     dm_div_by_zero
-                      (        forth.asm):00956         
-                      (        forth.asm):00957                     ; --- take absolute values of a and b, track signs --------------
-0689 7F0683           (        forth.asm):00958                     clr     dm_signq
-068C 7F0684           (        forth.asm):00959                     clr     dm_signr
-068F EC42             (        forth.asm):00960                     ldd     2,u             ; D = a
-0691 2A0D             (        forth.asm):00961                     bpl     dm_a_pos
-0693 43               (        forth.asm):00962                     coma
-0694 53               (        forth.asm):00963                     comb
-0695 C30001           (        forth.asm):00964                     addd    #1
-0698 ED42             (        forth.asm):00965                     std     2,u             ; replace a with |a|
-069A 730683           (        forth.asm):00966                     com     dm_signq        ; quotient sign: flip
-069D 730684           (        forth.asm):00967                     com     dm_signr        ; remainder sign: follows dividend
-06A0                  (        forth.asm):00968         dm_a_pos:
-06A0 ECC4             (        forth.asm):00969                     ldd     ,u              ; D = b
-06A2 2A08             (        forth.asm):00970                     bpl     dm_b_pos
-06A4 43               (        forth.asm):00971                     coma
-06A5 53               (        forth.asm):00972                     comb
-06A6 C30001           (        forth.asm):00973                     addd    #1              ; D = |b|
-06A9 730683           (        forth.asm):00974                     com     dm_signq        ; quotient sign: flip again (XOR)
-06AC                  (        forth.asm):00975         dm_b_pos:
-06AC FD0681           (        forth.asm):00976                     std     dm_dvsr
-                      (        forth.asm):00977         
-                      (        forth.asm):00978                     ; --- unsigned 16/16 divide via restoring shift-subtract --------
-                      (        forth.asm):00979                     ; [rem:quot] starts as [0:|a|]. 16 iterations: shift left, if the
-                      (        forth.asm):00980                     ; 16-bit rem is >= dvsr, subtract and set bit 0 of quot.
-06AF EC42             (        forth.asm):00981                     ldd     2,u             ; |a|
-06B1 FD067F           (        forth.asm):00982                     std     dm_quot         ; quot slot starts as dividend
-06B4 CC0000           (        forth.asm):00983                     ldd     #0              ; D = remainder
-06B7 8E0010           (        forth.asm):00984                     ldx     #16             ; loop counter
-06BA                  (        forth.asm):00985         dm_loop:
-                      (        forth.asm):00986                     ; Shift quot left 1, carry-out into LSB of remainder.
-                      (        forth.asm):00987                     ; We do it on the in-memory quot so we can use ROL directly.
-06BA 780680           (        forth.asm):00988                     lsl     dm_quot+1
-06BD 79067F           (        forth.asm):00989                     rol     dm_quot
-06C0 59               (        forth.asm):00990                     rolb                    ; remainder <<= 1, bit shifted in from quot
-06C1 49               (        forth.asm):00991                     rola
-                      (        forth.asm):00992                     ; Trial subtract: if rem >= dvsr, commit subtract and set quot bit 0.
-06C2 10B30681         (        forth.asm):00993                     cmpd    dm_dvsr
-06C6 2506             (        forth.asm):00994                     blo     dm_no_sub
-06C8 B30681           (        forth.asm):00995                     subd    dm_dvsr
-06CB 7C0680           (        forth.asm):00996                     inc     dm_quot+1       ; set new quotient LSB (previous LSL left 0)
-06CE                  (        forth.asm):00997         dm_no_sub:
-06CE 301F             (        forth.asm):00998                     leax    -1,x
-06D0 26E8             (        forth.asm):00999                     bne     dm_loop
-                      (        forth.asm):01000         
-                      (        forth.asm):01001                     ; --- apply signs -----------------------------------------------
-06D2 7D0684           (        forth.asm):01002                     tst     dm_signr
-06D5 2A05             (        forth.asm):01003                     bpl     dm_rem_ok
-06D7 43               (        forth.asm):01004                     coma
-06D8 53               (        forth.asm):01005                     comb
-06D9 C30001           (        forth.asm):01006                     addd    #1              ; negate remainder
-06DC                  (        forth.asm):01007         dm_rem_ok:
-06DC ED42             (        forth.asm):01008                     std     2,u             ; remainder -> slot a  (so NOS = rem)
-                      (        forth.asm):01009         
-06DE FC067F           (        forth.asm):01010                     ldd     dm_quot
-06E1 7D0683           (        forth.asm):01011                     tst     dm_signq
-06E4 2A05             (        forth.asm):01012                     bpl     dm_quot_ok
-06E6 43               (        forth.asm):01013                     coma
-06E7 53               (        forth.asm):01014                     comb
-06E8 C30001           (        forth.asm):01015                     addd    #1              ; negate quotient
-06EB                  (        forth.asm):01016         dm_quot_ok:
-06EB EDC4             (        forth.asm):01017                     std     ,u              ; quotient -> slot b  (so TOS = quot)
-06ED 39               (        forth.asm):01018                     rts
-                      (        forth.asm):01019         
-06EE                  (        forth.asm):01020         dm_div_by_zero:
-                      (        forth.asm):01021                     ; Leave dividend as remainder, 0 as quotient. Caller picks.
-06EE EC42             (        forth.asm):01022                     ldd     2,u             ; D = a (unchanged)
-06F0 ED42             (        forth.asm):01023                     std     2,u             ; rem = a  (NOS)
-06F2 4F               (        forth.asm):01024                     clra
-06F3 5F               (        forth.asm):01025                     clrb
-06F4 EDC4             (        forth.asm):01026                     std     ,u              ; quot = 0 (TOS)
-06F6 39               (        forth.asm):01027                     rts
-                      (        forth.asm):01028         
-                      (        forth.asm):01029         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01030         ; Outer-interpreter state + kernel helpers.
-                      (        forth.asm):01031         ; ---------------------------------------------------------------------------
-06F7 0000             (        forth.asm):01032         var_TOIN    fdb     0               ; >IN — offset into TIB of next unread byte
-06F9 0000             (        forth.asm):01033         var_TIBLEN  fdb     0               ; #TIB — bytes currently valid in TIB
-                      (        forth.asm):01034         
-                      (        forth.asm):01035         ; --------- parse_name_kernel -----------------------------------------------
-                      (        forth.asm):01036         ; Skip leading blanks (chars <= $20) in TIB, then scan to the next blank or
-                      (        forth.asm):01037         ; end of buffer.  Updates var_TOIN.
-                      (        forth.asm):01038         ; Exit:  X = token addr (inside TIB)
-                      (        forth.asm):01039         ;        D = token length (0 when TIB is exhausted; A is always 0)
-06FB                  (        forth.asm):01040         parse_name_kernel:
-06FB FC06F9           (        forth.asm):01041                     ldd     var_TIBLEN
-06FE C3A000           (        forth.asm):01042                     addd    #TIB_ADDR
-0701 FD074C           (        forth.asm):01043                     std     pn_end          ; pn_end = TIB + TIBLEN
-0704 8EA000           (        forth.asm):01044                     ldx     #TIB_ADDR
-0707 FC06F7           (        forth.asm):01045                     ldd     var_TOIN
-070A 308B             (        forth.asm):01046                     leax    d,x             ; X = TIB + >IN
-070C BC074C           (        forth.asm):01047         pn_skip:    cmpx    pn_end
-070F 240A             (        forth.asm):01048                     bhs     pn_empty
-0711 A684             (        forth.asm):01049                     lda     ,x
-0713 8120             (        forth.asm):01050                     cmpa    #' '
-0715 2212             (        forth.asm):01051                     bhi     pn_start
-0717 3001             (        forth.asm):01052                     leax    1,x
-0719 20F1             (        forth.asm):01053                     bra     pn_skip
-071B 1F10             (        forth.asm):01054         pn_empty:   tfr     x,d
-071D 83A000           (        forth.asm):01055                     subd    #TIB_ADDR
-0720 FD06F7           (        forth.asm):01056                     std     var_TOIN
-0723 8EA000           (        forth.asm):01057                     ldx     #TIB_ADDR
-0726 4F               (        forth.asm):01058                     clra
-0727 5F               (        forth.asm):01059                     clrb
-0728 39               (        forth.asm):01060                     rts
-0729 BF074E           (        forth.asm):01061         pn_start:   stx     pn_start_addr   ; save token start
-072C BC074C           (        forth.asm):01062         pn_scan:    cmpx    pn_end
-072F 240A             (        forth.asm):01063                     bhs     pn_scan_done
-0731 A684             (        forth.asm):01064                     lda     ,x
-0733 8120             (        forth.asm):01065                     cmpa    #' '
-0735 2304             (        forth.asm):01066                     bls     pn_scan_done
-0737 3001             (        forth.asm):01067                     leax    1,x
-0739 20F1             (        forth.asm):01068                     bra     pn_scan
-073B                  (        forth.asm):01069         pn_scan_done:
-073B 1F10             (        forth.asm):01070                     tfr     x,d
-073D 83A000           (        forth.asm):01071                     subd    #TIB_ADDR
-0740 FD06F7           (        forth.asm):01072                     std     var_TOIN        ; >IN advanced past the token
-0743 1F10             (        forth.asm):01073                     tfr     x,d
-0745 B3074E           (        forth.asm):01074                     subd    pn_start_addr   ; D = end - start
-0748 BE074E           (        forth.asm):01075                     ldx     pn_start_addr   ; X = token start
-074B 39               (        forth.asm):01076                     rts
-                      (        forth.asm):01077         
-074C 0000             (        forth.asm):01078         pn_end        fdb   0
-074E 0000             (        forth.asm):01079         pn_start_addr fdb   0
+                      (        forth.asm):00954                     ; X is the Forth IP. Save it on the return stack so the inner
+                      (        forth.asm):00955                     ; loop can use X as a counter without clobbering NEXT's state.
+0685 3410             (        forth.asm):00956                     pshs    x
+0687 ECC4             (        forth.asm):00957                     ldd     ,u              ; D = b
+0689 2766             (        forth.asm):00958                     beq     dm_div_by_zero
+                      (        forth.asm):00959         
+                      (        forth.asm):00960                     ; --- take absolute values of a and b, track signs --------------
+068B 7F0683           (        forth.asm):00961                     clr     dm_signq
+068E 7F0684           (        forth.asm):00962                     clr     dm_signr
+0691 EC42             (        forth.asm):00963                     ldd     2,u             ; D = a
+0693 2A0D             (        forth.asm):00964                     bpl     dm_a_pos
+0695 43               (        forth.asm):00965                     coma
+0696 53               (        forth.asm):00966                     comb
+0697 C30001           (        forth.asm):00967                     addd    #1
+069A ED42             (        forth.asm):00968                     std     2,u             ; replace a with |a|
+069C 730683           (        forth.asm):00969                     com     dm_signq        ; quotient sign: flip
+069F 730684           (        forth.asm):00970                     com     dm_signr        ; remainder sign: follows dividend
+06A2                  (        forth.asm):00971         dm_a_pos:
+06A2 ECC4             (        forth.asm):00972                     ldd     ,u              ; D = b
+06A4 2A08             (        forth.asm):00973                     bpl     dm_b_pos
+06A6 43               (        forth.asm):00974                     coma
+06A7 53               (        forth.asm):00975                     comb
+06A8 C30001           (        forth.asm):00976                     addd    #1              ; D = |b|
+06AB 730683           (        forth.asm):00977                     com     dm_signq        ; quotient sign: flip again (XOR)
+06AE                  (        forth.asm):00978         dm_b_pos:
+06AE FD0681           (        forth.asm):00979                     std     dm_dvsr
+                      (        forth.asm):00980         
+                      (        forth.asm):00981                     ; --- unsigned 16/16 divide via restoring shift-subtract --------
+                      (        forth.asm):00982                     ; [rem:quot] starts as [0:|a|]. 16 iterations: shift left, if the
+                      (        forth.asm):00983                     ; 16-bit rem is >= dvsr, subtract and set bit 0 of quot.
+06B1 EC42             (        forth.asm):00984                     ldd     2,u             ; |a|
+06B3 FD067F           (        forth.asm):00985                     std     dm_quot         ; quot slot starts as dividend
+06B6 CC0000           (        forth.asm):00986                     ldd     #0              ; D = remainder
+06B9 8E0010           (        forth.asm):00987                     ldx     #16             ; loop counter
+06BC                  (        forth.asm):00988         dm_loop:
+                      (        forth.asm):00989                     ; Shift quot left 1, carry-out into LSB of remainder.
+                      (        forth.asm):00990                     ; We do it on the in-memory quot so we can use ROL directly.
+06BC 780680           (        forth.asm):00991                     lsl     dm_quot+1
+06BF 79067F           (        forth.asm):00992                     rol     dm_quot
+06C2 59               (        forth.asm):00993                     rolb                    ; remainder <<= 1, bit shifted in from quot
+06C3 49               (        forth.asm):00994                     rola
+                      (        forth.asm):00995                     ; Trial subtract: if rem >= dvsr, commit subtract and set quot bit 0.
+06C4 10B30681         (        forth.asm):00996                     cmpd    dm_dvsr
+06C8 2506             (        forth.asm):00997                     blo     dm_no_sub
+06CA B30681           (        forth.asm):00998                     subd    dm_dvsr
+06CD 7C0680           (        forth.asm):00999                     inc     dm_quot+1       ; set new quotient LSB (previous LSL left 0)
+06D0                  (        forth.asm):01000         dm_no_sub:
+06D0 301F             (        forth.asm):01001                     leax    -1,x
+06D2 26E8             (        forth.asm):01002                     bne     dm_loop
+                      (        forth.asm):01003         
+                      (        forth.asm):01004                     ; --- apply signs -----------------------------------------------
+06D4 7D0684           (        forth.asm):01005                     tst     dm_signr
+06D7 2A05             (        forth.asm):01006                     bpl     dm_rem_ok
+06D9 43               (        forth.asm):01007                     coma
+06DA 53               (        forth.asm):01008                     comb
+06DB C30001           (        forth.asm):01009                     addd    #1              ; negate remainder
+06DE                  (        forth.asm):01010         dm_rem_ok:
+06DE ED42             (        forth.asm):01011                     std     2,u             ; remainder -> slot a  (so NOS = rem)
+                      (        forth.asm):01012         
+06E0 FC067F           (        forth.asm):01013                     ldd     dm_quot
+06E3 7D0683           (        forth.asm):01014                     tst     dm_signq
+06E6 2A05             (        forth.asm):01015                     bpl     dm_quot_ok
+06E8 43               (        forth.asm):01016                     coma
+06E9 53               (        forth.asm):01017                     comb
+06EA C30001           (        forth.asm):01018                     addd    #1              ; negate quotient
+06ED                  (        forth.asm):01019         dm_quot_ok:
+06ED EDC4             (        forth.asm):01020                     std     ,u              ; quotient -> slot b  (so TOS = quot)
+06EF 3590             (        forth.asm):01021                     puls    x,pc            ; restore IP and return
+                      (        forth.asm):01022         
+06F1                  (        forth.asm):01023         dm_div_by_zero:
+                      (        forth.asm):01024                     ; Leave dividend as remainder, 0 as quotient. Caller picks.
+06F1 EC42             (        forth.asm):01025                     ldd     2,u             ; D = a (unchanged)
+06F3 ED42             (        forth.asm):01026                     std     2,u             ; rem = a  (NOS)
+06F5 4F               (        forth.asm):01027                     clra
+06F6 5F               (        forth.asm):01028                     clrb
+06F7 EDC4             (        forth.asm):01029                     std     ,u              ; quot = 0 (TOS)
+06F9 3590             (        forth.asm):01030                     puls    x,pc            ; restore IP and return
+                      (        forth.asm):01031         
+                      (        forth.asm):01032         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01033         ; Outer-interpreter state + kernel helpers.
+                      (        forth.asm):01034         ; ---------------------------------------------------------------------------
+06FB 0000             (        forth.asm):01035         var_TOIN    fdb     0               ; >IN — offset into TIB of next unread byte
+06FD 0000             (        forth.asm):01036         var_TIBLEN  fdb     0               ; #TIB — bytes currently valid in TIB
+                      (        forth.asm):01037         
+                      (        forth.asm):01038         ; --------- parse_name_kernel -----------------------------------------------
+                      (        forth.asm):01039         ; Skip leading blanks (chars <= $20) in TIB, then scan to the next blank or
+                      (        forth.asm):01040         ; end of buffer.  Updates var_TOIN.
+                      (        forth.asm):01041         ; Exit:  X = token addr (inside TIB)
+                      (        forth.asm):01042         ;        D = token length (0 when TIB is exhausted; A is always 0)
+06FF                  (        forth.asm):01043         parse_name_kernel:
+06FF FC06FD           (        forth.asm):01044                     ldd     var_TIBLEN
+0702 C3A000           (        forth.asm):01045                     addd    #TIB_ADDR
+0705 FD0750           (        forth.asm):01046                     std     pn_end          ; pn_end = TIB + TIBLEN
+0708 8EA000           (        forth.asm):01047                     ldx     #TIB_ADDR
+070B FC06FB           (        forth.asm):01048                     ldd     var_TOIN
+070E 308B             (        forth.asm):01049                     leax    d,x             ; X = TIB + >IN
+0710 BC0750           (        forth.asm):01050         pn_skip:    cmpx    pn_end
+0713 240A             (        forth.asm):01051                     bhs     pn_empty
+0715 A684             (        forth.asm):01052                     lda     ,x
+0717 8120             (        forth.asm):01053                     cmpa    #' '
+0719 2212             (        forth.asm):01054                     bhi     pn_start
+071B 3001             (        forth.asm):01055                     leax    1,x
+071D 20F1             (        forth.asm):01056                     bra     pn_skip
+071F 1F10             (        forth.asm):01057         pn_empty:   tfr     x,d
+0721 83A000           (        forth.asm):01058                     subd    #TIB_ADDR
+0724 FD06FB           (        forth.asm):01059                     std     var_TOIN
+0727 8EA000           (        forth.asm):01060                     ldx     #TIB_ADDR
+072A 4F               (        forth.asm):01061                     clra
+072B 5F               (        forth.asm):01062                     clrb
+072C 39               (        forth.asm):01063                     rts
+072D BF0752           (        forth.asm):01064         pn_start:   stx     pn_start_addr   ; save token start
+0730 BC0750           (        forth.asm):01065         pn_scan:    cmpx    pn_end
+0733 240A             (        forth.asm):01066                     bhs     pn_scan_done
+0735 A684             (        forth.asm):01067                     lda     ,x
+0737 8120             (        forth.asm):01068                     cmpa    #' '
+0739 2304             (        forth.asm):01069                     bls     pn_scan_done
+073B 3001             (        forth.asm):01070                     leax    1,x
+073D 20F1             (        forth.asm):01071                     bra     pn_scan
+073F                  (        forth.asm):01072         pn_scan_done:
+073F 1F10             (        forth.asm):01073                     tfr     x,d
+0741 83A000           (        forth.asm):01074                     subd    #TIB_ADDR
+0744 FD06FB           (        forth.asm):01075                     std     var_TOIN        ; >IN advanced past the token
+0747 1F10             (        forth.asm):01076                     tfr     x,d
+0749 B30752           (        forth.asm):01077                     subd    pn_start_addr   ; D = end - start
+074C BE0752           (        forth.asm):01078                     ldx     pn_start_addr   ; X = token start
+074F 39               (        forth.asm):01079                     rts
                       (        forth.asm):01080         
-                      (        forth.asm):01081         ; --------- sfind_kernel -----------------------------------------------------
-                      (        forth.asm):01082         ; Search the dictionary for (X = name addr, B = name length, A irrelevant).
-                      (        forth.asm):01083         ; Exit:  CC_Z=1 → not found (X=0, B=0).
-                      (        forth.asm):01084         ;        CC_Z=0 → X = CFA address, B = 1 (normal) or 2 (IMMEDIATE).
-0750                  (        forth.asm):01085         sfind_kernel:
-0750 BF07B1           (        forth.asm):01086                     stx     sf_target
-0753 F707B5           (        forth.asm):01087                     stb     sf_tlen
-0756 BE05B0           (        forth.asm):01088                     ldx     var_LATEST
-0759 8C0000           (        forth.asm):01089         sf_iter:    cmpx    #0
-075C 274E             (        forth.asm):01090                     beq     sf_fail
-075E A684             (        forth.asm):01091                     lda     ,x              ; A = flag/len byte
-0760 8540             (        forth.asm):01092                     bita    #F_HIDDEN
-0762 263B             (        forth.asm):01093                     bne     sf_advance      ; hidden — skip entry
-0764 B707B6           (        forth.asm):01094                     sta     sf_flags        ; stash flag for IMMED test below
-0767 841F             (        forth.asm):01095                     anda    #F_LENMASK
-0769 B107B5           (        forth.asm):01096                     cmpa    sf_tlen
-076C 2631             (        forth.asm):01097                     bne     sf_advance      ; length mismatch
-076E 4D               (        forth.asm):01098                     tsta
-076F 2717             (        forth.asm):01099                     beq     sf_hit          ; zero-length match
-0771 BF07B3           (        forth.asm):01100                     stx     sf_cur
-0774 3101             (        forth.asm):01101                     leay    1,x             ; Y = entry name
-0776 BE07B1           (        forth.asm):01102                     ldx     sf_target       ; X = target addr
-0779 F607B5           (        forth.asm):01103                     ldb     sf_tlen
-077C                  (        forth.asm):01104         sf_cmpbytes:
-077C A6A0             (        forth.asm):01105                     lda     ,y+
-077E A180             (        forth.asm):01106                     cmpa    ,x+
-0780 261A             (        forth.asm):01107                     bne     sf_miss
-0782 5A               (        forth.asm):01108                     decb
-0783 26F7             (        forth.asm):01109                     bne     sf_cmpbytes
-0785 BE07B3           (        forth.asm):01110                     ldx     sf_cur          ; restore NFA pointer
-0788 E684             (        forth.asm):01111         sf_hit:     ldb     ,x
-078A C41F             (        forth.asm):01112                     andb    #F_LENMASK
-078C CB03             (        forth.asm):01113                     addb    #3              ; CFA offset = flag(1) + name(len) + link(2)
-078E 3A               (        forth.asm):01114                     abx                     ; X = CFA address
-078F B607B6           (        forth.asm):01115                     lda     sf_flags
-0792 8580             (        forth.asm):01116                     bita    #F_IMMED
-0794 2703             (        forth.asm):01117                     beq     sf_normal
-0796 C602             (        forth.asm):01118                     ldb     #2              ; B=2 → CC.Z=0 since B is nonzero
-0798 39               (        forth.asm):01119                     rts
-0799 C601             (        forth.asm):01120         sf_normal:  ldb     #1              ; B=1 → CC.Z=0
-079B 39               (        forth.asm):01121                     rts
-079C BE07B3           (        forth.asm):01122         sf_miss:    ldx     sf_cur
-079F A684             (        forth.asm):01123         sf_advance: lda     ,x
-07A1 841F             (        forth.asm):01124                     anda    #F_LENMASK
-07A3 1F89             (        forth.asm):01125                     tfr     a,b
-07A5 CB01             (        forth.asm):01126                     addb    #1              ; link offset = flag(1) + name(len)
-07A7 3A               (        forth.asm):01127                     abx                     ; X = link field address
-07A8 AE84             (        forth.asm):01128                     ldx     ,x              ; X = next NFA (or 0)
-07AA 20AD             (        forth.asm):01129                     bra     sf_iter
-07AC 8E0000           (        forth.asm):01130         sf_fail:    ldx     #0
-07AF 5F               (        forth.asm):01131                     clrb                    ; B=0 → CC.Z=1 (and N=0)
-07B0 39               (        forth.asm):01132                     rts
-                      (        forth.asm):01133         
-07B1 0000             (        forth.asm):01134         sf_target   fdb     0
-07B3 0000             (        forth.asm):01135         sf_cur      fdb     0
-07B5 00               (        forth.asm):01136         sf_tlen     fcb     0
-07B6 00               (        forth.asm):01137         sf_flags    fcb     0
-                      (        forth.asm):01138         
-                      (        forth.asm):01139         ; --------- number_kernel ----------------------------------------------------
-                      (        forth.asm):01140         ; Parse (X = addr, D = len, only B used) as a signed decimal.  Accepts one
-                      (        forth.asm):01141         ; optional leading '-'.
-                      (        forth.asm):01142         ; Exit:  CC_Z=1 → parse failure.  CC_Z=0 → Y = value.
-07B7                  (        forth.asm):01143         number_kernel:
-07B7 5D               (        forth.asm):01144                     tstb
-07B8 2740             (        forth.asm):01145                     beq     num_fail
-07BA 7F07FF           (        forth.asm):01146                     clr     num_sign
-07BD 108E0000         (        forth.asm):01147                     ldy     #0
-07C1 A684             (        forth.asm):01148                     lda     ,x
-07C3 812D             (        forth.asm):01149                     cmpa    #'-'
-07C5 2608             (        forth.asm):01150                     bne     num_digit
-07C7 7C07FF           (        forth.asm):01151                     inc     num_sign
-07CA 3001             (        forth.asm):01152                     leax    1,x
-07CC 5A               (        forth.asm):01153                     decb
-07CD 272B             (        forth.asm):01154                     beq     num_fail
-07CF A680             (        forth.asm):01155         num_digit:  lda     ,x+
-07D1 8030             (        forth.asm):01156                     suba    #'0'
-07D3 2B25             (        forth.asm):01157                     bmi     num_fail
-07D5 8109             (        forth.asm):01158                     cmpa    #9
-07D7 2221             (        forth.asm):01159                     bhi     num_fail
-07D9 3404             (        forth.asm):01160                     pshs    b
-07DB 3402             (        forth.asm):01161                     pshs    a
-07DD 170020           (        forth.asm):01162                     lbsr    mul10_y
-07E0 3502             (        forth.asm):01163                     puls    a
-07E2 31A6             (        forth.asm):01164                     leay    a,y
-07E4 3504             (        forth.asm):01165                     puls    b
-07E6 5A               (        forth.asm):01166                     decb
-07E7 26E6             (        forth.asm):01167                     bne     num_digit
-07E9 7D07FF           (        forth.asm):01168                     tst     num_sign
-07EC 2709             (        forth.asm):01169                     beq     num_ok_pos
-07EE 1F20             (        forth.asm):01170                     tfr     y,d
-07F0 43               (        forth.asm):01171                     coma
-07F1 53               (        forth.asm):01172                     comb
-07F2 C30001           (        forth.asm):01173                     addd    #1
-07F5 1F02             (        forth.asm):01174                     tfr     d,y
-07F7 1CFB             (        forth.asm):01175         num_ok_pos: andcc   #$FB            ; clear Z
-07F9 39               (        forth.asm):01176                     rts
-07FA 4F               (        forth.asm):01177         num_fail:   clra
-07FB 5F               (        forth.asm):01178                     clrb
-07FC 1A04             (        forth.asm):01179                     orcc    #$04            ; set Z
-07FE 39               (        forth.asm):01180                     rts
-                      (        forth.asm):01181         
-07FF 00               (        forth.asm):01182         num_sign    fcb     0
-                      (        forth.asm):01183         
-                      (        forth.asm):01184         ; Y = Y * 10, clobbers D.
-0800 1F20             (        forth.asm):01185         mul10_y:    tfr     y,d
-0802 58               (        forth.asm):01186                     aslb
-0803 49               (        forth.asm):01187                     rola                    ; D = Y*2
-0804 3406             (        forth.asm):01188                     pshs    d
+0750 0000             (        forth.asm):01081         pn_end        fdb   0
+0752 0000             (        forth.asm):01082         pn_start_addr fdb   0
+                      (        forth.asm):01083         
+                      (        forth.asm):01084         ; --------- sfind_kernel -----------------------------------------------------
+                      (        forth.asm):01085         ; Search the dictionary for (X = name addr, B = name length, A irrelevant).
+                      (        forth.asm):01086         ; Exit:  CC_Z=1 → not found (X=0, B=0).
+                      (        forth.asm):01087         ;        CC_Z=0 → X = CFA address, B = 1 (normal) or 2 (IMMEDIATE).
+0754                  (        forth.asm):01088         sfind_kernel:
+0754 BF07B5           (        forth.asm):01089                     stx     sf_target
+0757 F707B9           (        forth.asm):01090                     stb     sf_tlen
+075A BE05B0           (        forth.asm):01091                     ldx     var_LATEST
+075D 8C0000           (        forth.asm):01092         sf_iter:    cmpx    #0
+0760 274E             (        forth.asm):01093                     beq     sf_fail
+0762 A684             (        forth.asm):01094                     lda     ,x              ; A = flag/len byte
+0764 8540             (        forth.asm):01095                     bita    #F_HIDDEN
+0766 263B             (        forth.asm):01096                     bne     sf_advance      ; hidden — skip entry
+0768 B707BA           (        forth.asm):01097                     sta     sf_flags        ; stash flag for IMMED test below
+076B 841F             (        forth.asm):01098                     anda    #F_LENMASK
+076D B107B9           (        forth.asm):01099                     cmpa    sf_tlen
+0770 2631             (        forth.asm):01100                     bne     sf_advance      ; length mismatch
+0772 4D               (        forth.asm):01101                     tsta
+0773 2717             (        forth.asm):01102                     beq     sf_hit          ; zero-length match
+0775 BF07B7           (        forth.asm):01103                     stx     sf_cur
+0778 3101             (        forth.asm):01104                     leay    1,x             ; Y = entry name
+077A BE07B5           (        forth.asm):01105                     ldx     sf_target       ; X = target addr
+077D F607B9           (        forth.asm):01106                     ldb     sf_tlen
+0780                  (        forth.asm):01107         sf_cmpbytes:
+0780 A6A0             (        forth.asm):01108                     lda     ,y+
+0782 A180             (        forth.asm):01109                     cmpa    ,x+
+0784 261A             (        forth.asm):01110                     bne     sf_miss
+0786 5A               (        forth.asm):01111                     decb
+0787 26F7             (        forth.asm):01112                     bne     sf_cmpbytes
+0789 BE07B7           (        forth.asm):01113                     ldx     sf_cur          ; restore NFA pointer
+078C E684             (        forth.asm):01114         sf_hit:     ldb     ,x
+078E C41F             (        forth.asm):01115                     andb    #F_LENMASK
+0790 CB03             (        forth.asm):01116                     addb    #3              ; CFA offset = flag(1) + name(len) + link(2)
+0792 3A               (        forth.asm):01117                     abx                     ; X = CFA address
+0793 B607BA           (        forth.asm):01118                     lda     sf_flags
+0796 8580             (        forth.asm):01119                     bita    #F_IMMED
+0798 2703             (        forth.asm):01120                     beq     sf_normal
+079A C602             (        forth.asm):01121                     ldb     #2              ; B=2 → CC.Z=0 since B is nonzero
+079C 39               (        forth.asm):01122                     rts
+079D C601             (        forth.asm):01123         sf_normal:  ldb     #1              ; B=1 → CC.Z=0
+079F 39               (        forth.asm):01124                     rts
+07A0 BE07B7           (        forth.asm):01125         sf_miss:    ldx     sf_cur
+07A3 A684             (        forth.asm):01126         sf_advance: lda     ,x
+07A5 841F             (        forth.asm):01127                     anda    #F_LENMASK
+07A7 1F89             (        forth.asm):01128                     tfr     a,b
+07A9 CB01             (        forth.asm):01129                     addb    #1              ; link offset = flag(1) + name(len)
+07AB 3A               (        forth.asm):01130                     abx                     ; X = link field address
+07AC AE84             (        forth.asm):01131                     ldx     ,x              ; X = next NFA (or 0)
+07AE 20AD             (        forth.asm):01132                     bra     sf_iter
+07B0 8E0000           (        forth.asm):01133         sf_fail:    ldx     #0
+07B3 5F               (        forth.asm):01134                     clrb                    ; B=0 → CC.Z=1 (and N=0)
+07B4 39               (        forth.asm):01135                     rts
+                      (        forth.asm):01136         
+07B5 0000             (        forth.asm):01137         sf_target   fdb     0
+07B7 0000             (        forth.asm):01138         sf_cur      fdb     0
+07B9 00               (        forth.asm):01139         sf_tlen     fcb     0
+07BA 00               (        forth.asm):01140         sf_flags    fcb     0
+                      (        forth.asm):01141         
+                      (        forth.asm):01142         ; --------- number_kernel ----------------------------------------------------
+                      (        forth.asm):01143         ; Parse (X = addr, D = len, only B used) as a signed decimal.  Accepts one
+                      (        forth.asm):01144         ; optional leading '-'.
+                      (        forth.asm):01145         ; Exit:  CC_Z=1 → parse failure.  CC_Z=0 → Y = value.
+07BB                  (        forth.asm):01146         number_kernel:
+07BB 5D               (        forth.asm):01147                     tstb
+07BC 2740             (        forth.asm):01148                     beq     num_fail
+07BE 7F0803           (        forth.asm):01149                     clr     num_sign
+07C1 108E0000         (        forth.asm):01150                     ldy     #0
+07C5 A684             (        forth.asm):01151                     lda     ,x
+07C7 812D             (        forth.asm):01152                     cmpa    #'-'
+07C9 2608             (        forth.asm):01153                     bne     num_digit
+07CB 7C0803           (        forth.asm):01154                     inc     num_sign
+07CE 3001             (        forth.asm):01155                     leax    1,x
+07D0 5A               (        forth.asm):01156                     decb
+07D1 272B             (        forth.asm):01157                     beq     num_fail
+07D3 A680             (        forth.asm):01158         num_digit:  lda     ,x+
+07D5 8030             (        forth.asm):01159                     suba    #'0'
+07D7 2B25             (        forth.asm):01160                     bmi     num_fail
+07D9 8109             (        forth.asm):01161                     cmpa    #9
+07DB 2221             (        forth.asm):01162                     bhi     num_fail
+07DD 3404             (        forth.asm):01163                     pshs    b
+07DF 3402             (        forth.asm):01164                     pshs    a
+07E1 170020           (        forth.asm):01165                     lbsr    mul10_y
+07E4 3502             (        forth.asm):01166                     puls    a
+07E6 31A6             (        forth.asm):01167                     leay    a,y
+07E8 3504             (        forth.asm):01168                     puls    b
+07EA 5A               (        forth.asm):01169                     decb
+07EB 26E6             (        forth.asm):01170                     bne     num_digit
+07ED 7D0803           (        forth.asm):01171                     tst     num_sign
+07F0 2709             (        forth.asm):01172                     beq     num_ok_pos
+07F2 1F20             (        forth.asm):01173                     tfr     y,d
+07F4 43               (        forth.asm):01174                     coma
+07F5 53               (        forth.asm):01175                     comb
+07F6 C30001           (        forth.asm):01176                     addd    #1
+07F9 1F02             (        forth.asm):01177                     tfr     d,y
+07FB 1CFB             (        forth.asm):01178         num_ok_pos: andcc   #$FB            ; clear Z
+07FD 39               (        forth.asm):01179                     rts
+07FE 4F               (        forth.asm):01180         num_fail:   clra
+07FF 5F               (        forth.asm):01181                     clrb
+0800 1A04             (        forth.asm):01182                     orcc    #$04            ; set Z
+0802 39               (        forth.asm):01183                     rts
+                      (        forth.asm):01184         
+0803 00               (        forth.asm):01185         num_sign    fcb     0
+                      (        forth.asm):01186         
+                      (        forth.asm):01187         ; Y = Y * 10, clobbers D.
+0804 1F20             (        forth.asm):01188         mul10_y:    tfr     y,d
 0806 58               (        forth.asm):01189                     aslb
-0807 49               (        forth.asm):01190                     rola
-0808 58               (        forth.asm):01191                     aslb
-0809 49               (        forth.asm):01192                     rola                    ; D = Y*8
-080A E3E1             (        forth.asm):01193                     addd    ,s++            ; D = Y*8 + Y*2
-080C 1F02             (        forth.asm):01194                     tfr     d,y
-080E 39               (        forth.asm):01195                     rts
-                      (        forth.asm):01196         
-                      (        forth.asm):01197         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01198         ; Outer-interpreter primitives
-                      (        forth.asm):01199         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01200                     ; ACCEPT ( c-addr +n1 -- +n2 )  blocking line input, echoes chars
-080F 06               (        forth.asm):01201         nfa_ACCEPT  fcb     6
-0810 414343455054     (        forth.asm):01202                     fcc     "ACCEPT"
-0816 061F             (        forth.asm):01203         lnk_ACCEPT  fdb     prev_link
-0818 081A             (        forth.asm):01204         cfa_ACCEPT  fdb     code_ACCEPT
-     080F             (        forth.asm):01205         prev_link   set     nfa_ACCEPT
-081A                  (        forth.asm):01206         code_ACCEPT:
-081A 3410             (        forth.asm):01207                     pshs    x               ; save IP — X is repurposed as buf ptr below
-081C ECC1             (        forth.asm):01208                     ldd     ,u++            ; D = maxlen (low byte used)
-081E 3406             (        forth.asm):01209                     pshs    d
-0820 AEC4             (        forth.asm):01210                     ldx     ,u              ; X = buffer addr
-0822 108E0000         (        forth.asm):01211                     ldy     #0              ; Y = count
-0826 F6FF00           (        forth.asm):01212         acc_rx:     ldb     ACIA_SR
-0829 C501             (        forth.asm):01213                     bitb    #$01
-082B 27F9             (        forth.asm):01214                     beq     acc_rx
-082D F6FF01           (        forth.asm):01215                     ldb     ACIA_DATA
-0830 C10D             (        forth.asm):01216                     cmpb    #$0D
-0832 2737             (        forth.asm):01217                     beq     acc_done
-0834 C10A             (        forth.asm):01218                     cmpb    #$0A
-0836 2733             (        forth.asm):01219                     beq     acc_done
-0838 C108             (        forth.asm):01220                     cmpb    #$08
-083A 2714             (        forth.asm):01221                     beq     acc_bs
-083C C17F             (        forth.asm):01222                     cmpb    #$7F
-083E 2710             (        forth.asm):01223                     beq     acc_bs
-0840 10ACE4           (        forth.asm):01224                     cmpy    ,s
-0843 24E1             (        forth.asm):01225                     bhs     acc_rx          ; buffer full → drop char
-0845 E780             (        forth.asm):01226                     stb     ,x+
-0847 3121             (        forth.asm):01227                     leay    1,y
-0849 1F98             (        forth.asm):01228                     tfr     b,a
-084B 17FD8C           (        forth.asm):01229                     lbsr    emit_a
-084E 20D6             (        forth.asm):01230                     bra     acc_rx
-0850 108C0000         (        forth.asm):01231         acc_bs:     cmpy    #0
-0854 27D0             (        forth.asm):01232                     beq     acc_rx
-0856 301F             (        forth.asm):01233                     leax    -1,x
-0858 313F             (        forth.asm):01234                     leay    -1,y
-085A 8608             (        forth.asm):01235                     lda     #$08
-085C 17FD7B           (        forth.asm):01236                     lbsr    emit_a
-085F 8620             (        forth.asm):01237                     lda     #' '
-0861 17FD76           (        forth.asm):01238                     lbsr    emit_a
-0864 8608             (        forth.asm):01239                     lda     #$08
-0866 17FD71           (        forth.asm):01240                     lbsr    emit_a
-0869 20BB             (        forth.asm):01241                     bra     acc_rx
-086B 860D             (        forth.asm):01242         acc_done:   lda     #$0D
-086D 17FD6A           (        forth.asm):01243                     lbsr    emit_a
-0870 860A             (        forth.asm):01244                     lda     #$0A
-0872 17FD65           (        forth.asm):01245                     lbsr    emit_a
-0875 3506             (        forth.asm):01246                     puls    d               ; discard saved maxlen (D clobbered next anyway)
-0877 1F20             (        forth.asm):01247                     tfr     y,d
-0879 EDC4             (        forth.asm):01248                     std     ,u              ; replace buffer addr with count
-087B 3510             (        forth.asm):01249                     puls    x               ; restore IP
-087D 7E0183           (        forth.asm):01250                     jmp     NEXT
-                      (        forth.asm):01251         
-                      (        forth.asm):01252                     ; PARSE-NAME ( -- c-addr u )
-0880 0A               (        forth.asm):01253         nfa_PARSEN  fcb     10
-0881 50415253452D4E41 (        forth.asm):01254                     fcc     "PARSE-NAME"
+0807 49               (        forth.asm):01190                     rola                    ; D = Y*2
+0808 3406             (        forth.asm):01191                     pshs    d
+080A 58               (        forth.asm):01192                     aslb
+080B 49               (        forth.asm):01193                     rola
+080C 58               (        forth.asm):01194                     aslb
+080D 49               (        forth.asm):01195                     rola                    ; D = Y*8
+080E E3E1             (        forth.asm):01196                     addd    ,s++            ; D = Y*8 + Y*2
+0810 1F02             (        forth.asm):01197                     tfr     d,y
+0812 39               (        forth.asm):01198                     rts
+                      (        forth.asm):01199         
+                      (        forth.asm):01200         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01201         ; Outer-interpreter primitives
+                      (        forth.asm):01202         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01203                     ; ACCEPT ( c-addr +n1 -- +n2 )  blocking line input, echoes chars
+0813 06               (        forth.asm):01204         nfa_ACCEPT  fcb     6
+0814 414343455054     (        forth.asm):01205                     fcc     "ACCEPT"
+081A 061F             (        forth.asm):01206         lnk_ACCEPT  fdb     prev_link
+081C 081E             (        forth.asm):01207         cfa_ACCEPT  fdb     code_ACCEPT
+     0813             (        forth.asm):01208         prev_link   set     nfa_ACCEPT
+081E                  (        forth.asm):01209         code_ACCEPT:
+081E 3410             (        forth.asm):01210                     pshs    x               ; save IP — X is repurposed as buf ptr below
+0820 ECC1             (        forth.asm):01211                     ldd     ,u++            ; D = maxlen (low byte used)
+0822 3406             (        forth.asm):01212                     pshs    d
+0824 AEC4             (        forth.asm):01213                     ldx     ,u              ; X = buffer addr
+0826 108E0000         (        forth.asm):01214                     ldy     #0              ; Y = count
+082A F6FF00           (        forth.asm):01215         acc_rx:     ldb     ACIA_SR
+082D C501             (        forth.asm):01216                     bitb    #$01
+082F 27F9             (        forth.asm):01217                     beq     acc_rx
+0831 F6FF01           (        forth.asm):01218                     ldb     ACIA_DATA
+0834 C10D             (        forth.asm):01219                     cmpb    #$0D
+0836 2737             (        forth.asm):01220                     beq     acc_done
+0838 C10A             (        forth.asm):01221                     cmpb    #$0A
+083A 2733             (        forth.asm):01222                     beq     acc_done
+083C C108             (        forth.asm):01223                     cmpb    #$08
+083E 2714             (        forth.asm):01224                     beq     acc_bs
+0840 C17F             (        forth.asm):01225                     cmpb    #$7F
+0842 2710             (        forth.asm):01226                     beq     acc_bs
+0844 10ACE4           (        forth.asm):01227                     cmpy    ,s
+0847 24E1             (        forth.asm):01228                     bhs     acc_rx          ; buffer full → drop char
+0849 E780             (        forth.asm):01229                     stb     ,x+
+084B 3121             (        forth.asm):01230                     leay    1,y
+084D 1F98             (        forth.asm):01231                     tfr     b,a
+084F 17FD88           (        forth.asm):01232                     lbsr    emit_a
+0852 20D6             (        forth.asm):01233                     bra     acc_rx
+0854 108C0000         (        forth.asm):01234         acc_bs:     cmpy    #0
+0858 27D0             (        forth.asm):01235                     beq     acc_rx
+085A 301F             (        forth.asm):01236                     leax    -1,x
+085C 313F             (        forth.asm):01237                     leay    -1,y
+085E 8608             (        forth.asm):01238                     lda     #$08
+0860 17FD77           (        forth.asm):01239                     lbsr    emit_a
+0863 8620             (        forth.asm):01240                     lda     #' '
+0865 17FD72           (        forth.asm):01241                     lbsr    emit_a
+0868 8608             (        forth.asm):01242                     lda     #$08
+086A 17FD6D           (        forth.asm):01243                     lbsr    emit_a
+086D 20BB             (        forth.asm):01244                     bra     acc_rx
+086F 860D             (        forth.asm):01245         acc_done:   lda     #$0D
+0871 17FD66           (        forth.asm):01246                     lbsr    emit_a
+0874 860A             (        forth.asm):01247                     lda     #$0A
+0876 17FD61           (        forth.asm):01248                     lbsr    emit_a
+0879 3506             (        forth.asm):01249                     puls    d               ; discard saved maxlen (D clobbered next anyway)
+087B 1F20             (        forth.asm):01250                     tfr     y,d
+087D EDC4             (        forth.asm):01251                     std     ,u              ; replace buffer addr with count
+087F 3510             (        forth.asm):01252                     puls    x               ; restore IP
+0881 7E0183           (        forth.asm):01253                     jmp     NEXT
+                      (        forth.asm):01254         
+                      (        forth.asm):01255                     ; PARSE-NAME ( -- c-addr u )
+0884 0A               (        forth.asm):01256         nfa_PARSEN  fcb     10
+0885 50415253452D4E41 (        forth.asm):01257                     fcc     "PARSE-NAME"
      4D45
-088B 080F             (        forth.asm):01255         lnk_PARSEN  fdb     prev_link
-088D 088F             (        forth.asm):01256         cfa_PARSEN  fdb     code_PARSEN
-     0880             (        forth.asm):01257         prev_link   set     nfa_PARSEN
-088F                  (        forth.asm):01258         code_PARSEN:
-088F 3410             (        forth.asm):01259                     pshs    x               ; save IP
-0891 17FE67           (        forth.asm):01260                     lbsr    parse_name_kernel
-0894 3406             (        forth.asm):01261                     pshs    d               ; save len
-0896 1F10             (        forth.asm):01262                     tfr     x,d
-0898 EDC3             (        forth.asm):01263                     std     ,--u            ; push c-addr
-089A 3506             (        forth.asm):01264                     puls    d
-089C EDC3             (        forth.asm):01265                     std     ,--u            ; push u
-089E 3510             (        forth.asm):01266                     puls    x               ; restore IP
-08A0 7E0183           (        forth.asm):01267                     jmp     NEXT
-                      (        forth.asm):01268         
-                      (        forth.asm):01269                     ; SFIND ( c-addr u -- xt flag )   flag 0=notfound, 1=normal, 2=immediate
-08A3 05               (        forth.asm):01270         nfa_SFIND   fcb     5
-08A4 5346494E44       (        forth.asm):01271                     fcc     "SFIND"
-08A9 0880             (        forth.asm):01272         lnk_SFIND   fdb     prev_link
-08AB 08AD             (        forth.asm):01273         cfa_SFIND   fdb     code_SFIND
-     08A3             (        forth.asm):01274         prev_link   set     nfa_SFIND
-08AD                  (        forth.asm):01275         code_SFIND:
-08AD 3410             (        forth.asm):01276                     pshs    x               ; save IP
-08AF ECC4             (        forth.asm):01277                     ldd     ,u              ; D = u
-08B1 AE42             (        forth.asm):01278                     ldx     2,u             ; X = c-addr
-08B3 17FE9A           (        forth.asm):01279                     lbsr    sfind_kernel
-08B6 270A             (        forth.asm):01280                     beq     sfind_miss
-08B8 AF42             (        forth.asm):01281                     stx     2,u             ; xt in place of c-addr
-08BA 4F               (        forth.asm):01282                     clra
-08BB EDC4             (        forth.asm):01283                     std     ,u              ; flag = B (1 or 2)
-08BD 3510             (        forth.asm):01284                     puls    x               ; restore IP
-08BF 7E0183           (        forth.asm):01285                     jmp     NEXT
-08C2 8E0000           (        forth.asm):01286         sfind_miss: ldx     #0
-08C5 AF42             (        forth.asm):01287                     stx     2,u
-08C7 AFC4             (        forth.asm):01288                     stx     ,u
-08C9 3510             (        forth.asm):01289                     puls    x               ; restore IP
-08CB 7E0183           (        forth.asm):01290                     jmp     NEXT
-                      (        forth.asm):01291         
-                      (        forth.asm):01292                     ; NUMBER? ( c-addr u -- value flag )   flag: 0=bad, -1=ok
-08CE 07               (        forth.asm):01293         nfa_NUMQ    fcb     7
-08CF 4E554D4245523F   (        forth.asm):01294                     fcc     "NUMBER?"
-08D6 08A3             (        forth.asm):01295         lnk_NUMQ    fdb     prev_link
-08D8 08DA             (        forth.asm):01296         cfa_NUMQ    fdb     code_NUMQ
-     08CE             (        forth.asm):01297         prev_link   set     nfa_NUMQ
-08DA 3410             (        forth.asm):01298         code_NUMQ:  pshs    x               ; save IP
-08DC ECC4             (        forth.asm):01299                     ldd     ,u
-08DE AE42             (        forth.asm):01300                     ldx     2,u
-08E0 17FED4           (        forth.asm):01301                     lbsr    number_kernel
-08E3 270D             (        forth.asm):01302                     beq     num_bad
-08E5 10AF42           (        forth.asm):01303                     sty     2,u
-08E8 CCFFFF           (        forth.asm):01304                     ldd     #-1
-08EB EDC4             (        forth.asm):01305                     std     ,u
-08ED 3510             (        forth.asm):01306                     puls    x               ; restore IP
-08EF 7E0183           (        forth.asm):01307                     jmp     NEXT
-08F2 CC0000           (        forth.asm):01308         num_bad:    ldd     #0
-08F5 ED42             (        forth.asm):01309                     std     2,u
-08F7 EDC4             (        forth.asm):01310                     std     ,u
-08F9 3510             (        forth.asm):01311                     puls    x               ; restore IP
-08FB 7E0183           (        forth.asm):01312                     jmp     NEXT
-                      (        forth.asm):01313         
-                      (        forth.asm):01314         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01315         ; Forth-visible variables: >IN, #TIB — each word pushes the address of its
-                      (        forth.asm):01316         ; kernel storage cell so the standard `@`/`!` primitives work on them.
+088F 0813             (        forth.asm):01258         lnk_PARSEN  fdb     prev_link
+0891 0893             (        forth.asm):01259         cfa_PARSEN  fdb     code_PARSEN
+     0884             (        forth.asm):01260         prev_link   set     nfa_PARSEN
+0893                  (        forth.asm):01261         code_PARSEN:
+0893 3410             (        forth.asm):01262                     pshs    x               ; save IP
+0895 17FE67           (        forth.asm):01263                     lbsr    parse_name_kernel
+0898 3406             (        forth.asm):01264                     pshs    d               ; save len
+089A 1F10             (        forth.asm):01265                     tfr     x,d
+089C EDC3             (        forth.asm):01266                     std     ,--u            ; push c-addr
+089E 3506             (        forth.asm):01267                     puls    d
+08A0 EDC3             (        forth.asm):01268                     std     ,--u            ; push u
+08A2 3510             (        forth.asm):01269                     puls    x               ; restore IP
+08A4 7E0183           (        forth.asm):01270                     jmp     NEXT
+                      (        forth.asm):01271         
+                      (        forth.asm):01272                     ; SFIND ( c-addr u -- xt flag )   flag 0=notfound, 1=normal, 2=immediate
+08A7 05               (        forth.asm):01273         nfa_SFIND   fcb     5
+08A8 5346494E44       (        forth.asm):01274                     fcc     "SFIND"
+08AD 0884             (        forth.asm):01275         lnk_SFIND   fdb     prev_link
+08AF 08B1             (        forth.asm):01276         cfa_SFIND   fdb     code_SFIND
+     08A7             (        forth.asm):01277         prev_link   set     nfa_SFIND
+08B1                  (        forth.asm):01278         code_SFIND:
+08B1 3410             (        forth.asm):01279                     pshs    x               ; save IP
+08B3 ECC4             (        forth.asm):01280                     ldd     ,u              ; D = u
+08B5 AE42             (        forth.asm):01281                     ldx     2,u             ; X = c-addr
+08B7 17FE9A           (        forth.asm):01282                     lbsr    sfind_kernel
+08BA 270A             (        forth.asm):01283                     beq     sfind_miss
+08BC AF42             (        forth.asm):01284                     stx     2,u             ; xt in place of c-addr
+08BE 4F               (        forth.asm):01285                     clra
+08BF EDC4             (        forth.asm):01286                     std     ,u              ; flag = B (1 or 2)
+08C1 3510             (        forth.asm):01287                     puls    x               ; restore IP
+08C3 7E0183           (        forth.asm):01288                     jmp     NEXT
+08C6 8E0000           (        forth.asm):01289         sfind_miss: ldx     #0
+08C9 AF42             (        forth.asm):01290                     stx     2,u
+08CB AFC4             (        forth.asm):01291                     stx     ,u
+08CD 3510             (        forth.asm):01292                     puls    x               ; restore IP
+08CF 7E0183           (        forth.asm):01293                     jmp     NEXT
+                      (        forth.asm):01294         
+                      (        forth.asm):01295                     ; NUMBER? ( c-addr u -- value flag )   flag: 0=bad, -1=ok
+08D2 07               (        forth.asm):01296         nfa_NUMQ    fcb     7
+08D3 4E554D4245523F   (        forth.asm):01297                     fcc     "NUMBER?"
+08DA 08A7             (        forth.asm):01298         lnk_NUMQ    fdb     prev_link
+08DC 08DE             (        forth.asm):01299         cfa_NUMQ    fdb     code_NUMQ
+     08D2             (        forth.asm):01300         prev_link   set     nfa_NUMQ
+08DE 3410             (        forth.asm):01301         code_NUMQ:  pshs    x               ; save IP
+08E0 ECC4             (        forth.asm):01302                     ldd     ,u
+08E2 AE42             (        forth.asm):01303                     ldx     2,u
+08E4 17FED4           (        forth.asm):01304                     lbsr    number_kernel
+08E7 270D             (        forth.asm):01305                     beq     num_bad
+08E9 10AF42           (        forth.asm):01306                     sty     2,u
+08EC CCFFFF           (        forth.asm):01307                     ldd     #-1
+08EF EDC4             (        forth.asm):01308                     std     ,u
+08F1 3510             (        forth.asm):01309                     puls    x               ; restore IP
+08F3 7E0183           (        forth.asm):01310                     jmp     NEXT
+08F6 CC0000           (        forth.asm):01311         num_bad:    ldd     #0
+08F9 ED42             (        forth.asm):01312                     std     2,u
+08FB EDC4             (        forth.asm):01313                     std     ,u
+08FD 3510             (        forth.asm):01314                     puls    x               ; restore IP
+08FF 7E0183           (        forth.asm):01315                     jmp     NEXT
+                      (        forth.asm):01316         
                       (        forth.asm):01317         ; ---------------------------------------------------------------------------
-08FE 03               (        forth.asm):01318         nfa_TOIN    fcb     3
-08FF 3E494E           (        forth.asm):01319                     fcc     ">IN"
-0902 08CE             (        forth.asm):01320         lnk_TOIN    fdb     prev_link
-0904 0906             (        forth.asm):01321         cfa_TOIN    fdb     code_TOIN
-     08FE             (        forth.asm):01322         prev_link   set     nfa_TOIN
-0906 CC06F7           (        forth.asm):01323         code_TOIN:  ldd     #var_TOIN
-0909 EDC3             (        forth.asm):01324                     std     ,--u
-090B 7E0183           (        forth.asm):01325                     jmp     NEXT
-                      (        forth.asm):01326         
-090E 04               (        forth.asm):01327         nfa_TIBL    fcb     4
-090F 23544942         (        forth.asm):01328                     fcc     "#TIB"
-0913 08FE             (        forth.asm):01329         lnk_TIBL    fdb     prev_link
-0915 0917             (        forth.asm):01330         cfa_TIBL    fdb     code_TIBL
-     090E             (        forth.asm):01331         prev_link   set     nfa_TIBL
-0917 CC06F9           (        forth.asm):01332         code_TIBL:  ldd     #var_TIBLEN
-091A EDC3             (        forth.asm):01333                     std     ,--u
-091C 7E0183           (        forth.asm):01334                     jmp     NEXT
-                      (        forth.asm):01335         
-                      (        forth.asm):01336         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01337         ; INTERPRET — native.  Parses tokens from TIB until exhausted.  On unknown
-                      (        forth.asm):01338         ; words prints "<word>? CR/LF" and continues.  Respects STATE:
-                      (        forth.asm):01339         ;   STATE@==0 → execute xt (or push number).
-                      (        forth.asm):01340         ;   STATE@!=0 → compile xt (or compile LIT+number); IMMEDIATE always executes.
-                      (        forth.asm):01341         ; ---------------------------------------------------------------------------
-091F 09               (        forth.asm):01342         nfa_INTERP  fcb     9
-0920 494E544552505245 (        forth.asm):01343                     fcc     "INTERPRET"
+                      (        forth.asm):01318         ; Forth-visible variables: >IN, #TIB — each word pushes the address of its
+                      (        forth.asm):01319         ; kernel storage cell so the standard `@`/`!` primitives work on them.
+                      (        forth.asm):01320         ; ---------------------------------------------------------------------------
+0902 03               (        forth.asm):01321         nfa_TOIN    fcb     3
+0903 3E494E           (        forth.asm):01322                     fcc     ">IN"
+0906 08D2             (        forth.asm):01323         lnk_TOIN    fdb     prev_link
+0908 090A             (        forth.asm):01324         cfa_TOIN    fdb     code_TOIN
+     0902             (        forth.asm):01325         prev_link   set     nfa_TOIN
+090A CC06FB           (        forth.asm):01326         code_TOIN:  ldd     #var_TOIN
+090D EDC3             (        forth.asm):01327                     std     ,--u
+090F 7E0183           (        forth.asm):01328                     jmp     NEXT
+                      (        forth.asm):01329         
+0912 04               (        forth.asm):01330         nfa_TIBL    fcb     4
+0913 23544942         (        forth.asm):01331                     fcc     "#TIB"
+0917 0902             (        forth.asm):01332         lnk_TIBL    fdb     prev_link
+0919 091B             (        forth.asm):01333         cfa_TIBL    fdb     code_TIBL
+     0912             (        forth.asm):01334         prev_link   set     nfa_TIBL
+091B CC06FD           (        forth.asm):01335         code_TIBL:  ldd     #var_TIBLEN
+091E EDC3             (        forth.asm):01336                     std     ,--u
+0920 7E0183           (        forth.asm):01337                     jmp     NEXT
+                      (        forth.asm):01338         
+                      (        forth.asm):01339         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01340         ; INTERPRET — native.  Parses tokens from TIB until exhausted.  On unknown
+                      (        forth.asm):01341         ; words prints "<word>? CR/LF" and continues.  Respects STATE:
+                      (        forth.asm):01342         ;   STATE@==0 → execute xt (or push number).
+                      (        forth.asm):01343         ;   STATE@!=0 → compile xt (or compile LIT+number); IMMEDIATE always executes.
+                      (        forth.asm):01344         ; ---------------------------------------------------------------------------
+0923 09               (        forth.asm):01345         nfa_INTERP  fcb     9
+0924 494E544552505245 (        forth.asm):01346                     fcc     "INTERPRET"
      54
-0929 090E             (        forth.asm):01344         lnk_INTERP  fdb     prev_link
-092B 092D             (        forth.asm):01345         cfa_INTERP  fdb     code_INTERPRET
-     091F             (        forth.asm):01346         prev_link   set     nfa_INTERP
-092D                  (        forth.asm):01347         code_INTERPRET:
-092D BF09CA           (        forth.asm):01348                     stx     int_saved_ip    ; preserve caller's IP
-0930 17FDC8           (        forth.asm):01349         int_top:    lbsr    parse_name_kernel
-0933 10830000         (        forth.asm):01350                     cmpd    #0
-0937 10270080         (        forth.asm):01351                     lbeq    int_done
-093B BF09CC           (        forth.asm):01352                     stx     int_tok_addr
-093E FD09CE           (        forth.asm):01353                     std     int_tok_len
-0941 17FE0C           (        forth.asm):01354                     lbsr    sfind_kernel
-0944 2723             (        forth.asm):01355                     beq     int_try_number
-0946 C102             (        forth.asm):01356                     cmpb    #2
-0948 2716             (        forth.asm):01357                     beq     int_exec
-094A FC05A3           (        forth.asm):01358                     ldd     var_STATE
-094D 10830000         (        forth.asm):01359                     cmpd    #0
-0951 270D             (        forth.asm):01360                     beq     int_exec
-                      (        forth.asm):01361                     ; Compile mode: write xt at HERE, HERE += 2
-0953 10BE05B2         (        forth.asm):01362                     ldy     var_HERE
-0957 AFA1             (        forth.asm):01363                     stx     ,y++
-0959 10BF05B2         (        forth.asm):01364                     sty     var_HERE
-095D 16FFD0           (        forth.asm):01365                     lbra    int_top
-0960 BF09C6           (        forth.asm):01366         int_exec:   stx     int_frame
-0963 8E09C6           (        forth.asm):01367                     ldx     #int_frame
-0966 7E0183           (        forth.asm):01368                     jmp     NEXT
-0969                  (        forth.asm):01369         int_try_number:
-0969 BE09CC           (        forth.asm):01370                     ldx     int_tok_addr
-096C FC09CE           (        forth.asm):01371                     ldd     int_tok_len
-096F 17FE45           (        forth.asm):01372                     lbsr    number_kernel
-0972 2720             (        forth.asm):01373                     beq     int_undefined
-                      (        forth.asm):01374                     ; Y = parsed value
-0974 FC05A3           (        forth.asm):01375                     ldd     var_STATE
-0977 10830000         (        forth.asm):01376                     cmpd    #0
-097B 2711             (        forth.asm):01377                     beq     int_push_val
-                      (        forth.asm):01378                     ; Compile mode: emit LIT <value>
-097D BE05B2           (        forth.asm):01379                     ldx     var_HERE
-0980 CC01B4           (        forth.asm):01380                     ldd     #cfa_LIT
-0983 ED81             (        forth.asm):01381                     std     ,x++
-0985 10AF81           (        forth.asm):01382                     sty     ,x++
-0988 BF05B2           (        forth.asm):01383                     stx     var_HERE
-098B 16FFA2           (        forth.asm):01384                     lbra    int_top
-098E                  (        forth.asm):01385         int_push_val:
-098E 10AFC3           (        forth.asm):01386                     sty     ,--u
-0991 16FF9C           (        forth.asm):01387                     lbra    int_top
-0994                  (        forth.asm):01388         int_undefined:
-                      (        forth.asm):01389                     ; Print "<tok> ?" then CR LF, then continue.
-0994 BE09CC           (        forth.asm):01390                     ldx     int_tok_addr
-0997 F609CF           (        forth.asm):01391                     ldb     int_tok_len+1
-099A                  (        forth.asm):01392         int_undef_lp:
-099A 5D               (        forth.asm):01393                     tstb
-099B 270C             (        forth.asm):01394                     beq     int_undef_q
-099D A680             (        forth.asm):01395                     lda     ,x+
-099F 3404             (        forth.asm):01396                     pshs    b
-09A1 17FC36           (        forth.asm):01397                     lbsr    emit_a
-09A4 3504             (        forth.asm):01398                     puls    b
-09A6 5A               (        forth.asm):01399                     decb
-09A7 20F1             (        forth.asm):01400                     bra     int_undef_lp
-09A9                  (        forth.asm):01401         int_undef_q:
-09A9 863F             (        forth.asm):01402                     lda     #'?'
-09AB 17FC2C           (        forth.asm):01403                     lbsr    emit_a
-09AE 860D             (        forth.asm):01404                     lda     #$0D
-09B0 17FC27           (        forth.asm):01405                     lbsr    emit_a
-09B3 860A             (        forth.asm):01406                     lda     #$0A
-09B5 17FC22           (        forth.asm):01407                     lbsr    emit_a
-09B8 16FF75           (        forth.asm):01408                     lbra    int_top
-09BB BE09CA           (        forth.asm):01409         int_done:   ldx     int_saved_ip
-09BE 7E0183           (        forth.asm):01410                     jmp     NEXT
-                      (        forth.asm):01411         
-                      (        forth.asm):01412         ; Trampoline: after EXECUTE finishes, NEXT lands on cfa_INTRET and its code
-                      (        forth.asm):01413         ; jumps back into int_top to parse the next token.
-09C1 09C3             (        forth.asm):01414         cfa_INTRET  fdb     code_INTRET
-09C3                  (        forth.asm):01415         code_INTRET:
-09C3 16FF6A           (        forth.asm):01416                     lbra    int_top
-                      (        forth.asm):01417         
-09C6 0000             (        forth.asm):01418         int_frame   fdb     0               ; slot 0: xt to execute
-09C8 09C1             (        forth.asm):01419                     fdb     cfa_INTRET      ; slot 1: post-exec hook (fixed)
-09CA 0000             (        forth.asm):01420         int_saved_ip fdb    0
-09CC 0000             (        forth.asm):01421         int_tok_addr fdb    0
-09CE 0000             (        forth.asm):01422         int_tok_len  fdb    0
-                      (        forth.asm):01423         
-                      (        forth.asm):01424         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01425         ; Colon compiler: `:` reads a name, creates a header, enters compile mode.
-                      (        forth.asm):01426         ; `;` is IMMEDIATE — compiles EXIT and leaves compile mode.
+092D 0912             (        forth.asm):01347         lnk_INTERP  fdb     prev_link
+092F 0931             (        forth.asm):01348         cfa_INTERP  fdb     code_INTERPRET
+     0923             (        forth.asm):01349         prev_link   set     nfa_INTERP
+0931                  (        forth.asm):01350         code_INTERPRET:
+0931 BF09CE           (        forth.asm):01351                     stx     int_saved_ip    ; preserve caller's IP
+0934 17FDC8           (        forth.asm):01352         int_top:    lbsr    parse_name_kernel
+0937 10830000         (        forth.asm):01353                     cmpd    #0
+093B 10270080         (        forth.asm):01354                     lbeq    int_done
+093F BF09D0           (        forth.asm):01355                     stx     int_tok_addr
+0942 FD09D2           (        forth.asm):01356                     std     int_tok_len
+0945 17FE0C           (        forth.asm):01357                     lbsr    sfind_kernel
+0948 2723             (        forth.asm):01358                     beq     int_try_number
+094A C102             (        forth.asm):01359                     cmpb    #2
+094C 2716             (        forth.asm):01360                     beq     int_exec
+094E FC05A3           (        forth.asm):01361                     ldd     var_STATE
+0951 10830000         (        forth.asm):01362                     cmpd    #0
+0955 270D             (        forth.asm):01363                     beq     int_exec
+                      (        forth.asm):01364                     ; Compile mode: write xt at HERE, HERE += 2
+0957 10BE05B2         (        forth.asm):01365                     ldy     var_HERE
+095B AFA1             (        forth.asm):01366                     stx     ,y++
+095D 10BF05B2         (        forth.asm):01367                     sty     var_HERE
+0961 16FFD0           (        forth.asm):01368                     lbra    int_top
+0964 BF09CA           (        forth.asm):01369         int_exec:   stx     int_frame
+0967 8E09CA           (        forth.asm):01370                     ldx     #int_frame
+096A 7E0183           (        forth.asm):01371                     jmp     NEXT
+096D                  (        forth.asm):01372         int_try_number:
+096D BE09D0           (        forth.asm):01373                     ldx     int_tok_addr
+0970 FC09D2           (        forth.asm):01374                     ldd     int_tok_len
+0973 17FE45           (        forth.asm):01375                     lbsr    number_kernel
+0976 2720             (        forth.asm):01376                     beq     int_undefined
+                      (        forth.asm):01377                     ; Y = parsed value
+0978 FC05A3           (        forth.asm):01378                     ldd     var_STATE
+097B 10830000         (        forth.asm):01379                     cmpd    #0
+097F 2711             (        forth.asm):01380                     beq     int_push_val
+                      (        forth.asm):01381                     ; Compile mode: emit LIT <value>
+0981 BE05B2           (        forth.asm):01382                     ldx     var_HERE
+0984 CC01B4           (        forth.asm):01383                     ldd     #cfa_LIT
+0987 ED81             (        forth.asm):01384                     std     ,x++
+0989 10AF81           (        forth.asm):01385                     sty     ,x++
+098C BF05B2           (        forth.asm):01386                     stx     var_HERE
+098F 16FFA2           (        forth.asm):01387                     lbra    int_top
+0992                  (        forth.asm):01388         int_push_val:
+0992 10AFC3           (        forth.asm):01389                     sty     ,--u
+0995 16FF9C           (        forth.asm):01390                     lbra    int_top
+0998                  (        forth.asm):01391         int_undefined:
+                      (        forth.asm):01392                     ; Print "<tok> ?" then CR LF, then continue.
+0998 BE09D0           (        forth.asm):01393                     ldx     int_tok_addr
+099B F609D3           (        forth.asm):01394                     ldb     int_tok_len+1
+099E                  (        forth.asm):01395         int_undef_lp:
+099E 5D               (        forth.asm):01396                     tstb
+099F 270C             (        forth.asm):01397                     beq     int_undef_q
+09A1 A680             (        forth.asm):01398                     lda     ,x+
+09A3 3404             (        forth.asm):01399                     pshs    b
+09A5 17FC32           (        forth.asm):01400                     lbsr    emit_a
+09A8 3504             (        forth.asm):01401                     puls    b
+09AA 5A               (        forth.asm):01402                     decb
+09AB 20F1             (        forth.asm):01403                     bra     int_undef_lp
+09AD                  (        forth.asm):01404         int_undef_q:
+09AD 863F             (        forth.asm):01405                     lda     #'?'
+09AF 17FC28           (        forth.asm):01406                     lbsr    emit_a
+09B2 860D             (        forth.asm):01407                     lda     #$0D
+09B4 17FC23           (        forth.asm):01408                     lbsr    emit_a
+09B7 860A             (        forth.asm):01409                     lda     #$0A
+09B9 17FC1E           (        forth.asm):01410                     lbsr    emit_a
+09BC 16FF75           (        forth.asm):01411                     lbra    int_top
+09BF BE09CE           (        forth.asm):01412         int_done:   ldx     int_saved_ip
+09C2 7E0183           (        forth.asm):01413                     jmp     NEXT
+                      (        forth.asm):01414         
+                      (        forth.asm):01415         ; Trampoline: after EXECUTE finishes, NEXT lands on cfa_INTRET and its code
+                      (        forth.asm):01416         ; jumps back into int_top to parse the next token.
+09C5 09C7             (        forth.asm):01417         cfa_INTRET  fdb     code_INTRET
+09C7                  (        forth.asm):01418         code_INTRET:
+09C7 16FF6A           (        forth.asm):01419                     lbra    int_top
+                      (        forth.asm):01420         
+09CA 0000             (        forth.asm):01421         int_frame   fdb     0               ; slot 0: xt to execute
+09CC 09C5             (        forth.asm):01422                     fdb     cfa_INTRET      ; slot 1: post-exec hook (fixed)
+09CE 0000             (        forth.asm):01423         int_saved_ip fdb    0
+09D0 0000             (        forth.asm):01424         int_tok_addr fdb    0
+09D2 0000             (        forth.asm):01425         int_tok_len  fdb    0
+                      (        forth.asm):01426         
                       (        forth.asm):01427         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01428                     ; `:` ( -- )  parses next name and builds a new colon-def header
-09D0 01               (        forth.asm):01429         nfa_COLON   fcb     1
-09D1 3A               (        forth.asm):01430                     fcc     ":"
-09D2 091F             (        forth.asm):01431         lnk_COLON   fdb     prev_link
-09D4 09D6             (        forth.asm):01432         cfa_COLON   fdb     code_COLON
-     09D0             (        forth.asm):01433         prev_link   set     nfa_COLON
-09D6                  (        forth.asm):01434         code_COLON:
-09D6 3410             (        forth.asm):01435                     pshs    x               ; save IP
-09D8 17FD20           (        forth.asm):01436                     lbsr    parse_name_kernel
-09DB 10830000         (        forth.asm):01437                     cmpd    #0
-09DF 10270034         (        forth.asm):01438                     lbeq    col_done        ; no name given → no-op
-09E3 BF0A1C           (        forth.asm):01439                     stx     col_name_addr
-09E6 F70A1E           (        forth.asm):01440                     stb     col_name_len
-09E9 10BE05B2         (        forth.asm):01441                     ldy     var_HERE
-09ED 10BF0A1F         (        forth.asm):01442                     sty     col_new_nfa
-09F1 E7A0             (        forth.asm):01443                     stb     ,y+             ; flag/len byte (no IMMED/HIDDEN)
-09F3 BE0A1C           (        forth.asm):01444                     ldx     col_name_addr
-09F6 A680             (        forth.asm):01445         col_copy:   lda     ,x+
-09F8 A7A0             (        forth.asm):01446                     sta     ,y+
-09FA 5A               (        forth.asm):01447                     decb
-09FB 26F9             (        forth.asm):01448                     bne     col_copy
-09FD BE05B0           (        forth.asm):01449                     ldx     var_LATEST      ; link = old LATEST
-0A00 AFA1             (        forth.asm):01450                     stx     ,y++
-0A02 8E0188           (        forth.asm):01451                     ldx     #DOCOL          ; CFA = DOCOL
-0A05 AFA1             (        forth.asm):01452                     stx     ,y++
-0A07 10BF05B2         (        forth.asm):01453                     sty     var_HERE
-0A0B BE0A1F           (        forth.asm):01454                     ldx     col_new_nfa
-0A0E BF05B0           (        forth.asm):01455                     stx     var_LATEST
-0A11 CC0001           (        forth.asm):01456                     ldd     #1
-0A14 FD05A3           (        forth.asm):01457                     std     var_STATE
-0A17 3510             (        forth.asm):01458         col_done:   puls    x
-0A19 7E0183           (        forth.asm):01459                     jmp     NEXT
-                      (        forth.asm):01460         
-0A1C 0000             (        forth.asm):01461         col_name_addr fdb 0
-0A1E 00               (        forth.asm):01462         col_name_len  fcb 0
-0A1F 0000             (        forth.asm):01463         col_new_nfa   fdb 0
-                      (        forth.asm):01464         
-                      (        forth.asm):01465                     ; `;` IMMEDIATE ( -- )  compiles EXIT, leaves compile mode
-0A21 81               (        forth.asm):01466         nfa_SEMI    fcb     F_IMMED|1
-0A22 3B               (        forth.asm):01467                     fcc     ";"
-0A23 09D0             (        forth.asm):01468         lnk_SEMI    fdb     prev_link
-0A25 0A27             (        forth.asm):01469         cfa_SEMI    fdb     code_SEMI
-     0A21             (        forth.asm):01470         prev_link   set     nfa_SEMI
-0A27                  (        forth.asm):01471         code_SEMI:
-0A27 3410             (        forth.asm):01472                     pshs    x
-0A29 10BE05B2         (        forth.asm):01473                     ldy     var_HERE
-0A2D 8E01A5           (        forth.asm):01474                     ldx     #cfa_EXIT
-0A30 AFA1             (        forth.asm):01475                     stx     ,y++
-0A32 10BF05B2         (        forth.asm):01476                     sty     var_HERE
-0A36 8E0000           (        forth.asm):01477                     ldx     #0
-0A39 BF05A3           (        forth.asm):01478                     stx     var_STATE
-0A3C 3510             (        forth.asm):01479                     puls    x
-0A3E 7E0183           (        forth.asm):01480                     jmp     NEXT
-                      (        forth.asm):01481         
-                      (        forth.asm):01482         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01483         ; Control structures — all IMMEDIATE.  Use placeholder offsets that get
-                      (        forth.asm):01484         ; patched when the matching THEN / UNTIL / AGAIN is seen.
+                      (        forth.asm):01428         ; Colon compiler: `:` reads a name, creates a header, enters compile mode.
+                      (        forth.asm):01429         ; `;` is IMMEDIATE — compiles EXIT and leaves compile mode.
+                      (        forth.asm):01430         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01431                     ; `:` ( -- )  parses next name and builds a new colon-def header
+09D4 01               (        forth.asm):01432         nfa_COLON   fcb     1
+09D5 3A               (        forth.asm):01433                     fcc     ":"
+09D6 0923             (        forth.asm):01434         lnk_COLON   fdb     prev_link
+09D8 09DA             (        forth.asm):01435         cfa_COLON   fdb     code_COLON
+     09D4             (        forth.asm):01436         prev_link   set     nfa_COLON
+09DA                  (        forth.asm):01437         code_COLON:
+09DA 3410             (        forth.asm):01438                     pshs    x               ; save IP
+09DC 17FD20           (        forth.asm):01439                     lbsr    parse_name_kernel
+09DF 10830000         (        forth.asm):01440                     cmpd    #0
+09E3 10270034         (        forth.asm):01441                     lbeq    col_done        ; no name given → no-op
+09E7 BF0A20           (        forth.asm):01442                     stx     col_name_addr
+09EA F70A22           (        forth.asm):01443                     stb     col_name_len
+09ED 10BE05B2         (        forth.asm):01444                     ldy     var_HERE
+09F1 10BF0A23         (        forth.asm):01445                     sty     col_new_nfa
+09F5 E7A0             (        forth.asm):01446                     stb     ,y+             ; flag/len byte (no IMMED/HIDDEN)
+09F7 BE0A20           (        forth.asm):01447                     ldx     col_name_addr
+09FA A680             (        forth.asm):01448         col_copy:   lda     ,x+
+09FC A7A0             (        forth.asm):01449                     sta     ,y+
+09FE 5A               (        forth.asm):01450                     decb
+09FF 26F9             (        forth.asm):01451                     bne     col_copy
+0A01 BE05B0           (        forth.asm):01452                     ldx     var_LATEST      ; link = old LATEST
+0A04 AFA1             (        forth.asm):01453                     stx     ,y++
+0A06 8E0188           (        forth.asm):01454                     ldx     #DOCOL          ; CFA = DOCOL
+0A09 AFA1             (        forth.asm):01455                     stx     ,y++
+0A0B 10BF05B2         (        forth.asm):01456                     sty     var_HERE
+0A0F BE0A23           (        forth.asm):01457                     ldx     col_new_nfa
+0A12 BF05B0           (        forth.asm):01458                     stx     var_LATEST
+0A15 CC0001           (        forth.asm):01459                     ldd     #1
+0A18 FD05A3           (        forth.asm):01460                     std     var_STATE
+0A1B 3510             (        forth.asm):01461         col_done:   puls    x
+0A1D 7E0183           (        forth.asm):01462                     jmp     NEXT
+                      (        forth.asm):01463         
+0A20 0000             (        forth.asm):01464         col_name_addr fdb 0
+0A22 00               (        forth.asm):01465         col_name_len  fcb 0
+0A23 0000             (        forth.asm):01466         col_new_nfa   fdb 0
+                      (        forth.asm):01467         
+                      (        forth.asm):01468                     ; `;` IMMEDIATE ( -- )  compiles EXIT, leaves compile mode
+0A25 81               (        forth.asm):01469         nfa_SEMI    fcb     F_IMMED|1
+0A26 3B               (        forth.asm):01470                     fcc     ";"
+0A27 09D4             (        forth.asm):01471         lnk_SEMI    fdb     prev_link
+0A29 0A2B             (        forth.asm):01472         cfa_SEMI    fdb     code_SEMI
+     0A25             (        forth.asm):01473         prev_link   set     nfa_SEMI
+0A2B                  (        forth.asm):01474         code_SEMI:
+0A2B 3410             (        forth.asm):01475                     pshs    x
+0A2D 10BE05B2         (        forth.asm):01476                     ldy     var_HERE
+0A31 8E01A5           (        forth.asm):01477                     ldx     #cfa_EXIT
+0A34 AFA1             (        forth.asm):01478                     stx     ,y++
+0A36 10BF05B2         (        forth.asm):01479                     sty     var_HERE
+0A3A 8E0000           (        forth.asm):01480                     ldx     #0
+0A3D BF05A3           (        forth.asm):01481                     stx     var_STATE
+0A40 3510             (        forth.asm):01482                     puls    x
+0A42 7E0183           (        forth.asm):01483                     jmp     NEXT
+                      (        forth.asm):01484         
                       (        forth.asm):01485         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01486                     ; IF ( -- addr )  IMMEDIATE
-0A41 82               (        forth.asm):01487         nfa_IF      fcb     F_IMMED|2
-0A42 4946             (        forth.asm):01488                     fcc     "IF"
-0A44 0A21             (        forth.asm):01489         lnk_IF      fdb     prev_link
-0A46 0A48             (        forth.asm):01490         cfa_IF      fdb     code_IF
-     0A41             (        forth.asm):01491         prev_link   set     nfa_IF
-0A48                  (        forth.asm):01492         code_IF:
-0A48 3410             (        forth.asm):01493                     pshs    x
-0A4A 10BE05B2         (        forth.asm):01494                     ldy     var_HERE
-0A4E 8E01C9           (        forth.asm):01495                     ldx     #cfa_0BR
-0A51 AFA1             (        forth.asm):01496                     stx     ,y++            ; compile (0BRANCH)
-0A53 10BF0B35         (        forth.asm):01497                     sty     ctrl_tmp        ; save offset-cell address
-0A57 8E0000           (        forth.asm):01498                     ldx     #0
-0A5A AFA1             (        forth.asm):01499                     stx     ,y++            ; placeholder offset
-0A5C 10BF05B2         (        forth.asm):01500                     sty     var_HERE
-0A60 BE0B35           (        forth.asm):01501                     ldx     ctrl_tmp
-0A63 AFC3             (        forth.asm):01502                     stx     ,--u            ; push offset-cell addr
-0A65 3510             (        forth.asm):01503                     puls    x
-0A67 7E0183           (        forth.asm):01504                     jmp     NEXT
-                      (        forth.asm):01505         
-                      (        forth.asm):01506                     ; THEN ( addr -- )  IMMEDIATE
-0A6A 84               (        forth.asm):01507         nfa_THEN    fcb     F_IMMED|4
-0A6B 5448454E         (        forth.asm):01508                     fcc     "THEN"
-0A6F 0A41             (        forth.asm):01509         lnk_THEN    fdb     prev_link
-0A71 0A73             (        forth.asm):01510         cfa_THEN    fdb     code_THEN
-     0A6A             (        forth.asm):01511         prev_link   set     nfa_THEN
-0A73                  (        forth.asm):01512         code_THEN:
-0A73 3410             (        forth.asm):01513                     pshs    x
-0A75 AEC1             (        forth.asm):01514                     ldx     ,u++            ; X = placeholder addr
-0A77 10BE05B2         (        forth.asm):01515                     ldy     var_HERE
-                      (        forth.asm):01516                     ; Offset = HERE - X
-0A7B 1F20             (        forth.asm):01517                     tfr     y,d
-0A7D 3410             (        forth.asm):01518                     pshs    x               ; save X
-0A7F A3E1             (        forth.asm):01519                     subd    ,s++            ; D = Y - X
-0A81 ED84             (        forth.asm):01520                     std     ,x              ; patch placeholder
-0A83 3510             (        forth.asm):01521                     puls    x
-0A85 7E0183           (        forth.asm):01522                     jmp     NEXT
-                      (        forth.asm):01523         
-                      (        forth.asm):01524                     ; ELSE ( addr1 -- addr2 )  IMMEDIATE
-0A88 84               (        forth.asm):01525         nfa_ELSE    fcb     F_IMMED|4
-0A89 454C5345         (        forth.asm):01526                     fcc     "ELSE"
-0A8D 0A6A             (        forth.asm):01527         lnk_ELSE    fdb     prev_link
-0A8F 0A91             (        forth.asm):01528         cfa_ELSE    fdb     code_ELSE
-     0A88             (        forth.asm):01529         prev_link   set     nfa_ELSE
-0A91                  (        forth.asm):01530         code_ELSE:
-0A91 3410             (        forth.asm):01531                     pshs    x
-0A93 AEC1             (        forth.asm):01532                     ldx     ,u++            ; X = addr1 (IF's placeholder)
-0A95 BF0B35           (        forth.asm):01533                     stx     ctrl_tmp        ; save addr1
-0A98 10BE05B2         (        forth.asm):01534                     ldy     var_HERE
-0A9C 8E01EA           (        forth.asm):01535                     ldx     #cfa_BR
-0A9F AFA1             (        forth.asm):01536                     stx     ,y++            ; compile (BRANCH)
-0AA1 10BF0B37         (        forth.asm):01537                     sty     ctrl_tmp2       ; save addr2 (our placeholder)
-0AA5 8E0000           (        forth.asm):01538                     ldx     #0
-0AA8 AFA1             (        forth.asm):01539                     stx     ,y++            ; placeholder
-0AAA 10BF05B2         (        forth.asm):01540                     sty     var_HERE
-                      (        forth.asm):01541                     ; Patch addr1: offset = HERE - addr1
-0AAE BE0B35           (        forth.asm):01542                     ldx     ctrl_tmp
-0AB1 1F20             (        forth.asm):01543                     tfr     y,d
-0AB3 3410             (        forth.asm):01544                     pshs    x
-0AB5 A3E1             (        forth.asm):01545                     subd    ,s++
-0AB7 ED84             (        forth.asm):01546                     std     ,x
-                      (        forth.asm):01547                     ; Push addr2
-0AB9 BE0B37           (        forth.asm):01548                     ldx     ctrl_tmp2
-0ABC AFC3             (        forth.asm):01549                     stx     ,--u
-0ABE 3510             (        forth.asm):01550                     puls    x
-0AC0 7E0183           (        forth.asm):01551                     jmp     NEXT
-                      (        forth.asm):01552         
-                      (        forth.asm):01553                     ; BEGIN ( -- addr )  IMMEDIATE
-0AC3 85               (        forth.asm):01554         nfa_BEGIN   fcb     F_IMMED|5
-0AC4 424547494E       (        forth.asm):01555                     fcc     "BEGIN"
-0AC9 0A88             (        forth.asm):01556         lnk_BEGIN   fdb     prev_link
-0ACB 0ACD             (        forth.asm):01557         cfa_BEGIN   fdb     code_BEGIN
-     0AC3             (        forth.asm):01558         prev_link   set     nfa_BEGIN
-0ACD                  (        forth.asm):01559         code_BEGIN:
-0ACD 3410             (        forth.asm):01560                     pshs    x
-0ACF FC05B2           (        forth.asm):01561                     ldd     var_HERE
-0AD2 EDC3             (        forth.asm):01562                     std     ,--u
-0AD4 3510             (        forth.asm):01563                     puls    x
-0AD6 7E0183           (        forth.asm):01564                     jmp     NEXT
-                      (        forth.asm):01565         
-                      (        forth.asm):01566                     ; UNTIL ( addr -- )  IMMEDIATE
-0AD9 85               (        forth.asm):01567         nfa_UNTIL   fcb     F_IMMED|5
-0ADA 554E54494C       (        forth.asm):01568                     fcc     "UNTIL"
-0ADF 0AC3             (        forth.asm):01569         lnk_UNTIL   fdb     prev_link
-0AE1 0AE3             (        forth.asm):01570         cfa_UNTIL   fdb     code_UNTIL
-     0AD9             (        forth.asm):01571         prev_link   set     nfa_UNTIL
-0AE3                  (        forth.asm):01572         code_UNTIL:
-0AE3 3410             (        forth.asm):01573                     pshs    x
-0AE5 ECC1             (        forth.asm):01574                     ldd     ,u++            ; B0 (BEGIN addr)
-0AE7 FD0B35           (        forth.asm):01575                     std     ctrl_tmp
-0AEA 10BE05B2         (        forth.asm):01576                     ldy     var_HERE
-0AEE 8E01C9           (        forth.asm):01577                     ldx     #cfa_0BR
-0AF1 AFA1             (        forth.asm):01578                     stx     ,y++            ; compile (0BRANCH); Y = offset-cell addr
-                      (        forth.asm):01579                     ; Offset = B0 - Y
-0AF3 1F20             (        forth.asm):01580                     tfr     y,d
-0AF5 3406             (        forth.asm):01581                     pshs    d               ; [S] = Y
-0AF7 FC0B35           (        forth.asm):01582                     ldd     ctrl_tmp        ; D = B0
-0AFA A3E1             (        forth.asm):01583                     subd    ,s++            ; D = B0 - Y
-0AFC EDA1             (        forth.asm):01584                     std     ,y++            ; write offset
-0AFE 10BF05B2         (        forth.asm):01585                     sty     var_HERE
-0B02 3510             (        forth.asm):01586                     puls    x
-0B04 7E0183           (        forth.asm):01587                     jmp     NEXT
-                      (        forth.asm):01588         
-                      (        forth.asm):01589                     ; AGAIN ( addr -- )  IMMEDIATE
-0B07 85               (        forth.asm):01590         nfa_AGAIN   fcb     F_IMMED|5
-0B08 414741494E       (        forth.asm):01591                     fcc     "AGAIN"
-0B0D 0AD9             (        forth.asm):01592         lnk_AGAIN   fdb     prev_link
-0B0F 0B11             (        forth.asm):01593         cfa_AGAIN   fdb     code_AGAIN
-     0B07             (        forth.asm):01594         prev_link   set     nfa_AGAIN
-0B11                  (        forth.asm):01595         code_AGAIN:
-0B11 3410             (        forth.asm):01596                     pshs    x
-0B13 ECC1             (        forth.asm):01597                     ldd     ,u++
-0B15 FD0B35           (        forth.asm):01598                     std     ctrl_tmp
-0B18 10BE05B2         (        forth.asm):01599                     ldy     var_HERE
-0B1C 8E01EA           (        forth.asm):01600                     ldx     #cfa_BR
-0B1F AFA1             (        forth.asm):01601                     stx     ,y++
-0B21 1F20             (        forth.asm):01602                     tfr     y,d
-0B23 3406             (        forth.asm):01603                     pshs    d
-0B25 FC0B35           (        forth.asm):01604                     ldd     ctrl_tmp
-0B28 A3E1             (        forth.asm):01605                     subd    ,s++
-0B2A EDA1             (        forth.asm):01606                     std     ,y++
-0B2C 10BF05B2         (        forth.asm):01607                     sty     var_HERE
-0B30 3510             (        forth.asm):01608                     puls    x
-0B32 7E0183           (        forth.asm):01609                     jmp     NEXT
-                      (        forth.asm):01610         
-0B35 0000             (        forth.asm):01611         ctrl_tmp    fdb     0
-0B37 0000             (        forth.asm):01612         ctrl_tmp2   fdb     0
+                      (        forth.asm):01486         ; Control structures — all IMMEDIATE.  Use placeholder offsets that get
+                      (        forth.asm):01487         ; patched when the matching THEN / UNTIL / AGAIN is seen.
+                      (        forth.asm):01488         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01489                     ; IF ( -- addr )  IMMEDIATE
+0A45 82               (        forth.asm):01490         nfa_IF      fcb     F_IMMED|2
+0A46 4946             (        forth.asm):01491                     fcc     "IF"
+0A48 0A25             (        forth.asm):01492         lnk_IF      fdb     prev_link
+0A4A 0A4C             (        forth.asm):01493         cfa_IF      fdb     code_IF
+     0A45             (        forth.asm):01494         prev_link   set     nfa_IF
+0A4C                  (        forth.asm):01495         code_IF:
+0A4C 3410             (        forth.asm):01496                     pshs    x
+0A4E 10BE05B2         (        forth.asm):01497                     ldy     var_HERE
+0A52 8E01C9           (        forth.asm):01498                     ldx     #cfa_0BR
+0A55 AFA1             (        forth.asm):01499                     stx     ,y++            ; compile (0BRANCH)
+0A57 10BF0B39         (        forth.asm):01500                     sty     ctrl_tmp        ; save offset-cell address
+0A5B 8E0000           (        forth.asm):01501                     ldx     #0
+0A5E AFA1             (        forth.asm):01502                     stx     ,y++            ; placeholder offset
+0A60 10BF05B2         (        forth.asm):01503                     sty     var_HERE
+0A64 BE0B39           (        forth.asm):01504                     ldx     ctrl_tmp
+0A67 AFC3             (        forth.asm):01505                     stx     ,--u            ; push offset-cell addr
+0A69 3510             (        forth.asm):01506                     puls    x
+0A6B 7E0183           (        forth.asm):01507                     jmp     NEXT
+                      (        forth.asm):01508         
+                      (        forth.asm):01509                     ; THEN ( addr -- )  IMMEDIATE
+0A6E 84               (        forth.asm):01510         nfa_THEN    fcb     F_IMMED|4
+0A6F 5448454E         (        forth.asm):01511                     fcc     "THEN"
+0A73 0A45             (        forth.asm):01512         lnk_THEN    fdb     prev_link
+0A75 0A77             (        forth.asm):01513         cfa_THEN    fdb     code_THEN
+     0A6E             (        forth.asm):01514         prev_link   set     nfa_THEN
+0A77                  (        forth.asm):01515         code_THEN:
+0A77 3410             (        forth.asm):01516                     pshs    x
+0A79 AEC1             (        forth.asm):01517                     ldx     ,u++            ; X = placeholder addr
+0A7B 10BE05B2         (        forth.asm):01518                     ldy     var_HERE
+                      (        forth.asm):01519                     ; Offset = HERE - X
+0A7F 1F20             (        forth.asm):01520                     tfr     y,d
+0A81 3410             (        forth.asm):01521                     pshs    x               ; save X
+0A83 A3E1             (        forth.asm):01522                     subd    ,s++            ; D = Y - X
+0A85 ED84             (        forth.asm):01523                     std     ,x              ; patch placeholder
+0A87 3510             (        forth.asm):01524                     puls    x
+0A89 7E0183           (        forth.asm):01525                     jmp     NEXT
+                      (        forth.asm):01526         
+                      (        forth.asm):01527                     ; ELSE ( addr1 -- addr2 )  IMMEDIATE
+0A8C 84               (        forth.asm):01528         nfa_ELSE    fcb     F_IMMED|4
+0A8D 454C5345         (        forth.asm):01529                     fcc     "ELSE"
+0A91 0A6E             (        forth.asm):01530         lnk_ELSE    fdb     prev_link
+0A93 0A95             (        forth.asm):01531         cfa_ELSE    fdb     code_ELSE
+     0A8C             (        forth.asm):01532         prev_link   set     nfa_ELSE
+0A95                  (        forth.asm):01533         code_ELSE:
+0A95 3410             (        forth.asm):01534                     pshs    x
+0A97 AEC1             (        forth.asm):01535                     ldx     ,u++            ; X = addr1 (IF's placeholder)
+0A99 BF0B39           (        forth.asm):01536                     stx     ctrl_tmp        ; save addr1
+0A9C 10BE05B2         (        forth.asm):01537                     ldy     var_HERE
+0AA0 8E01EA           (        forth.asm):01538                     ldx     #cfa_BR
+0AA3 AFA1             (        forth.asm):01539                     stx     ,y++            ; compile (BRANCH)
+0AA5 10BF0B3B         (        forth.asm):01540                     sty     ctrl_tmp2       ; save addr2 (our placeholder)
+0AA9 8E0000           (        forth.asm):01541                     ldx     #0
+0AAC AFA1             (        forth.asm):01542                     stx     ,y++            ; placeholder
+0AAE 10BF05B2         (        forth.asm):01543                     sty     var_HERE
+                      (        forth.asm):01544                     ; Patch addr1: offset = HERE - addr1
+0AB2 BE0B39           (        forth.asm):01545                     ldx     ctrl_tmp
+0AB5 1F20             (        forth.asm):01546                     tfr     y,d
+0AB7 3410             (        forth.asm):01547                     pshs    x
+0AB9 A3E1             (        forth.asm):01548                     subd    ,s++
+0ABB ED84             (        forth.asm):01549                     std     ,x
+                      (        forth.asm):01550                     ; Push addr2
+0ABD BE0B3B           (        forth.asm):01551                     ldx     ctrl_tmp2
+0AC0 AFC3             (        forth.asm):01552                     stx     ,--u
+0AC2 3510             (        forth.asm):01553                     puls    x
+0AC4 7E0183           (        forth.asm):01554                     jmp     NEXT
+                      (        forth.asm):01555         
+                      (        forth.asm):01556                     ; BEGIN ( -- addr )  IMMEDIATE
+0AC7 85               (        forth.asm):01557         nfa_BEGIN   fcb     F_IMMED|5
+0AC8 424547494E       (        forth.asm):01558                     fcc     "BEGIN"
+0ACD 0A8C             (        forth.asm):01559         lnk_BEGIN   fdb     prev_link
+0ACF 0AD1             (        forth.asm):01560         cfa_BEGIN   fdb     code_BEGIN
+     0AC7             (        forth.asm):01561         prev_link   set     nfa_BEGIN
+0AD1                  (        forth.asm):01562         code_BEGIN:
+0AD1 3410             (        forth.asm):01563                     pshs    x
+0AD3 FC05B2           (        forth.asm):01564                     ldd     var_HERE
+0AD6 EDC3             (        forth.asm):01565                     std     ,--u
+0AD8 3510             (        forth.asm):01566                     puls    x
+0ADA 7E0183           (        forth.asm):01567                     jmp     NEXT
+                      (        forth.asm):01568         
+                      (        forth.asm):01569                     ; UNTIL ( addr -- )  IMMEDIATE
+0ADD 85               (        forth.asm):01570         nfa_UNTIL   fcb     F_IMMED|5
+0ADE 554E54494C       (        forth.asm):01571                     fcc     "UNTIL"
+0AE3 0AC7             (        forth.asm):01572         lnk_UNTIL   fdb     prev_link
+0AE5 0AE7             (        forth.asm):01573         cfa_UNTIL   fdb     code_UNTIL
+     0ADD             (        forth.asm):01574         prev_link   set     nfa_UNTIL
+0AE7                  (        forth.asm):01575         code_UNTIL:
+0AE7 3410             (        forth.asm):01576                     pshs    x
+0AE9 ECC1             (        forth.asm):01577                     ldd     ,u++            ; B0 (BEGIN addr)
+0AEB FD0B39           (        forth.asm):01578                     std     ctrl_tmp
+0AEE 10BE05B2         (        forth.asm):01579                     ldy     var_HERE
+0AF2 8E01C9           (        forth.asm):01580                     ldx     #cfa_0BR
+0AF5 AFA1             (        forth.asm):01581                     stx     ,y++            ; compile (0BRANCH); Y = offset-cell addr
+                      (        forth.asm):01582                     ; Offset = B0 - Y
+0AF7 1F20             (        forth.asm):01583                     tfr     y,d
+0AF9 3406             (        forth.asm):01584                     pshs    d               ; [S] = Y
+0AFB FC0B39           (        forth.asm):01585                     ldd     ctrl_tmp        ; D = B0
+0AFE A3E1             (        forth.asm):01586                     subd    ,s++            ; D = B0 - Y
+0B00 EDA1             (        forth.asm):01587                     std     ,y++            ; write offset
+0B02 10BF05B2         (        forth.asm):01588                     sty     var_HERE
+0B06 3510             (        forth.asm):01589                     puls    x
+0B08 7E0183           (        forth.asm):01590                     jmp     NEXT
+                      (        forth.asm):01591         
+                      (        forth.asm):01592                     ; AGAIN ( addr -- )  IMMEDIATE
+0B0B 85               (        forth.asm):01593         nfa_AGAIN   fcb     F_IMMED|5
+0B0C 414741494E       (        forth.asm):01594                     fcc     "AGAIN"
+0B11 0ADD             (        forth.asm):01595         lnk_AGAIN   fdb     prev_link
+0B13 0B15             (        forth.asm):01596         cfa_AGAIN   fdb     code_AGAIN
+     0B0B             (        forth.asm):01597         prev_link   set     nfa_AGAIN
+0B15                  (        forth.asm):01598         code_AGAIN:
+0B15 3410             (        forth.asm):01599                     pshs    x
+0B17 ECC1             (        forth.asm):01600                     ldd     ,u++
+0B19 FD0B39           (        forth.asm):01601                     std     ctrl_tmp
+0B1C 10BE05B2         (        forth.asm):01602                     ldy     var_HERE
+0B20 8E01EA           (        forth.asm):01603                     ldx     #cfa_BR
+0B23 AFA1             (        forth.asm):01604                     stx     ,y++
+0B25 1F20             (        forth.asm):01605                     tfr     y,d
+0B27 3406             (        forth.asm):01606                     pshs    d
+0B29 FC0B39           (        forth.asm):01607                     ldd     ctrl_tmp
+0B2C A3E1             (        forth.asm):01608                     subd    ,s++
+0B2E EDA1             (        forth.asm):01609                     std     ,y++
+0B30 10BF05B2         (        forth.asm):01610                     sty     var_HERE
+0B34 3510             (        forth.asm):01611                     puls    x
+0B36 7E0183           (        forth.asm):01612                     jmp     NEXT
                       (        forth.asm):01613         
-                      (        forth.asm):01614         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01615         ; VARIABLE / CONSTANT / ."  / (  — defining words and string/comment helpers
-                      (        forth.asm):01616         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01617                     ; VARIABLE name ( -- )
-0B39 08               (        forth.asm):01618         nfa_VAR     fcb     8
-0B3A 5641524941424C45 (        forth.asm):01619                     fcc     "VARIABLE"
-0B42 0B07             (        forth.asm):01620         lnk_VAR     fdb     prev_link
-0B44 0B46             (        forth.asm):01621         cfa_VAR     fdb     code_VAR
-     0B39             (        forth.asm):01622         prev_link   set     nfa_VAR
-0B46                  (        forth.asm):01623         code_VAR:
-0B46 3410             (        forth.asm):01624                     pshs    x
-0B48 17FBB0           (        forth.asm):01625                     lbsr    parse_name_kernel
-0B4B 10830000         (        forth.asm):01626                     cmpd    #0
-0B4F 10270033         (        forth.asm):01627                     lbeq    var_done
-0B53 BF0A1C           (        forth.asm):01628                     stx     col_name_addr
-0B56 F70A1E           (        forth.asm):01629                     stb     col_name_len
-0B59 10BE05B2         (        forth.asm):01630                     ldy     var_HERE
-0B5D 10BF0A1F         (        forth.asm):01631                     sty     col_new_nfa
-0B61 E7A0             (        forth.asm):01632                     stb     ,y+
-0B63 BE0A1C           (        forth.asm):01633                     ldx     col_name_addr
-0B66 A680             (        forth.asm):01634         var_copy:   lda     ,x+
-0B68 A7A0             (        forth.asm):01635                     sta     ,y+
-0B6A 5A               (        forth.asm):01636                     decb
-0B6B 26F9             (        forth.asm):01637                     bne     var_copy
-0B6D BE05B0           (        forth.asm):01638                     ldx     var_LATEST
-0B70 AFA1             (        forth.asm):01639                     stx     ,y++
-0B72 8E018F           (        forth.asm):01640                     ldx     #DOVAR
-0B75 AFA1             (        forth.asm):01641                     stx     ,y++
-0B77 8E0000           (        forth.asm):01642                     ldx     #0
-0B7A AFA1             (        forth.asm):01643                     stx     ,y++            ; initial storage = 0
-0B7C 10BF05B2         (        forth.asm):01644                     sty     var_HERE
-0B80 BE0A1F           (        forth.asm):01645                     ldx     col_new_nfa
-0B83 BF05B0           (        forth.asm):01646                     stx     var_LATEST
-0B86 3510             (        forth.asm):01647         var_done:   puls    x
-0B88 7E0183           (        forth.asm):01648                     jmp     NEXT
-                      (        forth.asm):01649         
-                      (        forth.asm):01650                     ; CONSTANT name ( x -- )
-0B8B 08               (        forth.asm):01651         nfa_CONST   fcb     8
-0B8C 434F4E5354414E54 (        forth.asm):01652                     fcc     "CONSTANT"
-0B94 0B39             (        forth.asm):01653         lnk_CONST   fdb     prev_link
-0B96 0B98             (        forth.asm):01654         cfa_CONST   fdb     code_CONST
-     0B8B             (        forth.asm):01655         prev_link   set     nfa_CONST
-0B98                  (        forth.asm):01656         code_CONST:
-0B98 3410             (        forth.asm):01657                     pshs    x
-0B9A 17FB5E           (        forth.asm):01658                     lbsr    parse_name_kernel
-0B9D 10830000         (        forth.asm):01659                     cmpd    #0
-0BA1 10270032         (        forth.asm):01660                     lbeq    const_done
-0BA5 BF0A1C           (        forth.asm):01661                     stx     col_name_addr
-0BA8 F70A1E           (        forth.asm):01662                     stb     col_name_len
-0BAB 10BE05B2         (        forth.asm):01663                     ldy     var_HERE
-0BAF 10BF0A1F         (        forth.asm):01664                     sty     col_new_nfa
-0BB3 E7A0             (        forth.asm):01665                     stb     ,y+
-0BB5 BE0A1C           (        forth.asm):01666                     ldx     col_name_addr
-0BB8 A680             (        forth.asm):01667         const_copy: lda     ,x+
-0BBA A7A0             (        forth.asm):01668                     sta     ,y+
-0BBC 5A               (        forth.asm):01669                     decb
-0BBD 26F9             (        forth.asm):01670                     bne     const_copy
-0BBF BE05B0           (        forth.asm):01671                     ldx     var_LATEST
-0BC2 AFA1             (        forth.asm):01672                     stx     ,y++
-0BC4 8E0197           (        forth.asm):01673                     ldx     #DOCON
-0BC7 AFA1             (        forth.asm):01674                     stx     ,y++
-0BC9 ECC1             (        forth.asm):01675                     ldd     ,u++            ; pop value
-0BCB EDA1             (        forth.asm):01676                     std     ,y++
-0BCD 10BF05B2         (        forth.asm):01677                     sty     var_HERE
-0BD1 BE0A1F           (        forth.asm):01678                     ldx     col_new_nfa
-0BD4 BF05B0           (        forth.asm):01679                     stx     var_LATEST
-0BD7 3510             (        forth.asm):01680         const_done: puls    x
-0BD9 7E0183           (        forth.asm):01681                     jmp     NEXT
-                      (        forth.asm):01682         
-                      (        forth.asm):01683                     ; (LITSTR)  — inline counted-string literal primitive
-                      (        forth.asm):01684                     ; When the thread reaches this CFA, X (IP) points to the length
-                      (        forth.asm):01685                     ; byte; the chars follow.  Emit the chars, then advance X past
-                      (        forth.asm):01686                     ; the string so NEXT resumes with the following cell.
-0BDC 08               (        forth.asm):01687         nfa_LITSTR  fcb     8
-0BDD 284C495453545229 (        forth.asm):01688                     fcc     "(LITSTR)"
-0BE5 0B8B             (        forth.asm):01689         lnk_LITSTR  fdb     prev_link
-0BE7 0BE9             (        forth.asm):01690         cfa_LITSTR  fdb     code_LITSTR
-     0BDC             (        forth.asm):01691         prev_link   set     nfa_LITSTR
-0BE9                  (        forth.asm):01692         code_LITSTR:
-0BE9 E680             (        forth.asm):01693                     ldb     ,x+             ; len, X advances to string start
-0BEB 5D               (        forth.asm):01694                     tstb
-0BEC 270C             (        forth.asm):01695                     beq     ls_done
-0BEE A680             (        forth.asm):01696         ls_loop:    lda     ,x+
-0BF0 3404             (        forth.asm):01697                     pshs    b
-0BF2 17F9E5           (        forth.asm):01698                     lbsr    emit_a
-0BF5 3504             (        forth.asm):01699                     puls    b
-0BF7 5A               (        forth.asm):01700                     decb
-0BF8 26F4             (        forth.asm):01701                     bne     ls_loop
-0BFA 7E0183           (        forth.asm):01702         ls_done:    jmp     NEXT
-                      (        forth.asm):01703         
-                      (        forth.asm):01704                     ; ."  IMMEDIATE — parse until '"', compile (LITSTR)+len+chars
-0BFD 82               (        forth.asm):01705         nfa_DOTQ    fcb     F_IMMED|2
-0BFE 2E22             (        forth.asm):01706                     fcb     $2E,$22         ; ." (period + quote)
-0C00 0BDC             (        forth.asm):01707         lnk_DOTQ    fdb     prev_link
-0C02 0C04             (        forth.asm):01708         cfa_DOTQ    fdb     code_DOTQ
-     0BFD             (        forth.asm):01709         prev_link   set     nfa_DOTQ
-0C04                  (        forth.asm):01710         code_DOTQ:
-0C04 3410             (        forth.asm):01711                     pshs    x
-0C06 8EA000           (        forth.asm):01712                     ldx     #TIB_ADDR
-0C09 FC06F7           (        forth.asm):01713                     ldd     var_TOIN
-0C0C 308B             (        forth.asm):01714                     leax    d,x             ; X = TIB + >IN
-0C0E A684             (        forth.asm):01715                     lda     ,x
-0C10 8120             (        forth.asm):01716                     cmpa    #' '
-0C12 2602             (        forth.asm):01717                     bne     dq_have_start
-0C14 3001             (        forth.asm):01718                     leax    1,x             ; skip single leading space
-0C16                  (        forth.asm):01719         dq_have_start:
-0C16 BF0C75           (        forth.asm):01720                     stx     dq_start_addr
-0C19 108EA000         (        forth.asm):01721                     ldy     #TIB_ADDR
-0C1D FC06F9           (        forth.asm):01722                     ldd     var_TIBLEN
-0C20 31AB             (        forth.asm):01723                     leay    d,y
-0C22 10BF0C77         (        forth.asm):01724                     sty     dq_end
-0C26 BC0C77           (        forth.asm):01725         dq_scan:    cmpx    dq_end
-0C29 2416             (        forth.asm):01726                     bhs     dq_no_quote
-0C2B A684             (        forth.asm):01727                     lda     ,x
-0C2D 8122             (        forth.asm):01728                     cmpa    #'"'
-0C2F 2704             (        forth.asm):01729                     beq     dq_got_quote
-0C31 3001             (        forth.asm):01730                     leax    1,x
-0C33 20F1             (        forth.asm):01731                     bra     dq_scan
-0C35                  (        forth.asm):01732         dq_got_quote:
-                      (        forth.asm):01733                     ; X is at '"'.  Length = X - start.  Advance X past the '"'.
-0C35 1F10             (        forth.asm):01734                     tfr     x,d
-0C37 B30C75           (        forth.asm):01735                     subd    dq_start_addr
-0C3A FD0C79           (        forth.asm):01736                     std     dq_len
-0C3D 3001             (        forth.asm):01737                     leax    1,x
-0C3F 2008             (        forth.asm):01738                     bra     dq_update_toin
-0C41                  (        forth.asm):01739         dq_no_quote:
-                      (        forth.asm):01740                     ; No closing quote — length is X - start, leave X as-is.
-0C41 1F10             (        forth.asm):01741                     tfr     x,d
-0C43 B30C75           (        forth.asm):01742                     subd    dq_start_addr
-0C46 FD0C79           (        forth.asm):01743                     std     dq_len
-0C49                  (        forth.asm):01744         dq_update_toin:
-0C49 1F10             (        forth.asm):01745                     tfr     x,d
-0C4B 83A000           (        forth.asm):01746                     subd    #TIB_ADDR
-0C4E FD06F7           (        forth.asm):01747                     std     var_TOIN
-                      (        forth.asm):01748                     ; Compile (LITSTR)
-0C51 10BE05B2         (        forth.asm):01749                     ldy     var_HERE
-0C55 8E0BE7           (        forth.asm):01750                     ldx     #cfa_LITSTR
-0C58 AFA1             (        forth.asm):01751                     stx     ,y++
-0C5A F60C7A           (        forth.asm):01752                     ldb     dq_len+1
-0C5D E7A0             (        forth.asm):01753                     stb     ,y+             ; len byte
-0C5F 5D               (        forth.asm):01754                     tstb
-0C60 270A             (        forth.asm):01755                     beq     dq_compile_done
-0C62 BE0C75           (        forth.asm):01756                     ldx     dq_start_addr
-0C65 A680             (        forth.asm):01757         dq_copy:    lda     ,x+
-0C67 A7A0             (        forth.asm):01758                     sta     ,y+
-0C69 5A               (        forth.asm):01759                     decb
-0C6A 26F9             (        forth.asm):01760                     bne     dq_copy
-0C6C                  (        forth.asm):01761         dq_compile_done:
-0C6C 10BF05B2         (        forth.asm):01762                     sty     var_HERE
-0C70 3510             (        forth.asm):01763                     puls    x
-0C72 7E0183           (        forth.asm):01764                     jmp     NEXT
-                      (        forth.asm):01765         
-0C75 0000             (        forth.asm):01766         dq_start_addr fdb   0
-0C77 0000             (        forth.asm):01767         dq_end        fdb   0
-0C79 0000             (        forth.asm):01768         dq_len        fdb   0
-                      (        forth.asm):01769         
-                      (        forth.asm):01770                     ; (  IMMEDIATE — skip TIB chars until ')'
-0C7B 81               (        forth.asm):01771         nfa_PAREN   fcb     F_IMMED|1
-0C7C 28               (        forth.asm):01772                     fcc     "("
-0C7D 0BFD             (        forth.asm):01773         lnk_PAREN   fdb     prev_link
-0C7F 0C81             (        forth.asm):01774         cfa_PAREN   fdb     code_PAREN
-     0C7B             (        forth.asm):01775         prev_link   set     nfa_PAREN
-0C81                  (        forth.asm):01776         code_PAREN:
-0C81 3410             (        forth.asm):01777                     pshs    x
-0C83 8EA000           (        forth.asm):01778                     ldx     #TIB_ADDR
-0C86 FC06F7           (        forth.asm):01779                     ldd     var_TOIN
-0C89 308B             (        forth.asm):01780                     leax    d,x
-0C8B 108EA000         (        forth.asm):01781                     ldy     #TIB_ADDR
-0C8F FC06F9           (        forth.asm):01782                     ldd     var_TIBLEN
-0C92 31AB             (        forth.asm):01783                     leay    d,y
-0C94 10BF0B35         (        forth.asm):01784                     sty     ctrl_tmp
-0C98 BC0B35           (        forth.asm):01785         par_scan:   cmpx    ctrl_tmp
-0C9B 2406             (        forth.asm):01786                     bhs     par_done
-0C9D A680             (        forth.asm):01787                     lda     ,x+
-0C9F 8129             (        forth.asm):01788                     cmpa    #')'
-0CA1 26F5             (        forth.asm):01789                     bne     par_scan
-0CA3 1F10             (        forth.asm):01790         par_done:   tfr     x,d
-0CA5 83A000           (        forth.asm):01791                     subd    #TIB_ADDR
-0CA8 FD06F7           (        forth.asm):01792                     std     var_TOIN
-0CAB 3510             (        forth.asm):01793                     puls    x
-0CAD 7E0183           (        forth.asm):01794                     jmp     NEXT
-                      (        forth.asm):01795         
-                      (        forth.asm):01796         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01797         ; QUIT — REPL loop: ACCEPT into TIB, INTERPRET, print " ok", CR, repeat.
-                      (        forth.asm):01798         ; ---------------------------------------------------------------------------
-0CB0 04               (        forth.asm):01799         nfa_QUIT    fcb     4
-0CB1 51554954         (        forth.asm):01800                     fcc     "QUIT"
-0CB5 0C7B             (        forth.asm):01801         lnk_QUIT    fdb     prev_link
-0CB7 0188             (        forth.asm):01802         cfa_QUIT    fdb     DOCOL
-0CB9                  (        forth.asm):01803         pfa_QUIT:
-0CB9 01B4             (        forth.asm):01804                     fdb     cfa_LIT
-0CBB A000             (        forth.asm):01805                     fdb     TIB_ADDR
-0CBD 01B4             (        forth.asm):01806                     fdb     cfa_LIT
-0CBF 0080             (        forth.asm):01807                     fdb     TIB_SIZE
-0CC1 0818             (        forth.asm):01808                     fdb     cfa_ACCEPT                  ; ( -- len )
-0CC3 01B4             (        forth.asm):01809                     fdb     cfa_LIT
-0CC5 06F9             (        forth.asm):01810                     fdb     var_TIBLEN
-0CC7 04E5             (        forth.asm):01811                     fdb     cfa_STORE                   ; len → #TIB
-0CC9 01B4             (        forth.asm):01812                     fdb     cfa_LIT
-0CCB 0000             (        forth.asm):01813                     fdb     0
-0CCD 01B4             (        forth.asm):01814                     fdb     cfa_LIT
-0CCF 06F7             (        forth.asm):01815                     fdb     var_TOIN
-0CD1 04E5             (        forth.asm):01816                     fdb     cfa_STORE                   ; 0   → >IN
-0CD3 092B             (        forth.asm):01817                     fdb     cfa_INTERP
-0CD5 01B4             (        forth.asm):01818                     fdb     cfa_LIT
-0CD7 0020             (        forth.asm):01819                     fdb     $20                         ; ' '
-0CD9 051B             (        forth.asm):01820                     fdb     cfa_EMIT
-0CDB 01B4             (        forth.asm):01821                     fdb     cfa_LIT
-0CDD 006F             (        forth.asm):01822                     fdb     'o'
-0CDF 051B             (        forth.asm):01823                     fdb     cfa_EMIT
-0CE1 01B4             (        forth.asm):01824                     fdb     cfa_LIT
-0CE3 006B             (        forth.asm):01825                     fdb     'k'
-0CE5 051B             (        forth.asm):01826                     fdb     cfa_EMIT
-0CE7 05B9             (        forth.asm):01827                     fdb     cfa_CR
-0CE9 01EA             (        forth.asm):01828                     fdb     cfa_BR
-0CEB                  (        forth.asm):01829         quit_br_tgt:
-0CEB FFCE             (        forth.asm):01830                     fdb     (pfa_QUIT)-(quit_br_tgt)
-     0CB0             (        forth.asm):01831         prev_link   set     nfa_QUIT
-                      (        forth.asm):01832         
-     0CB0             (        forth.asm):01833         last_builtin_link equ prev_link
-                      (        forth.asm):01834         
+0B39 0000             (        forth.asm):01614         ctrl_tmp    fdb     0
+0B3B 0000             (        forth.asm):01615         ctrl_tmp2   fdb     0
+                      (        forth.asm):01616         
+                      (        forth.asm):01617         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01618         ; VARIABLE / CONSTANT / ."  / (  — defining words and string/comment helpers
+                      (        forth.asm):01619         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01620                     ; VARIABLE name ( -- )
+0B3D 08               (        forth.asm):01621         nfa_VAR     fcb     8
+0B3E 5641524941424C45 (        forth.asm):01622                     fcc     "VARIABLE"
+0B46 0B0B             (        forth.asm):01623         lnk_VAR     fdb     prev_link
+0B48 0B4A             (        forth.asm):01624         cfa_VAR     fdb     code_VAR
+     0B3D             (        forth.asm):01625         prev_link   set     nfa_VAR
+0B4A                  (        forth.asm):01626         code_VAR:
+0B4A 3410             (        forth.asm):01627                     pshs    x
+0B4C 17FBB0           (        forth.asm):01628                     lbsr    parse_name_kernel
+0B4F 10830000         (        forth.asm):01629                     cmpd    #0
+0B53 10270033         (        forth.asm):01630                     lbeq    var_done
+0B57 BF0A20           (        forth.asm):01631                     stx     col_name_addr
+0B5A F70A22           (        forth.asm):01632                     stb     col_name_len
+0B5D 10BE05B2         (        forth.asm):01633                     ldy     var_HERE
+0B61 10BF0A23         (        forth.asm):01634                     sty     col_new_nfa
+0B65 E7A0             (        forth.asm):01635                     stb     ,y+
+0B67 BE0A20           (        forth.asm):01636                     ldx     col_name_addr
+0B6A A680             (        forth.asm):01637         var_copy:   lda     ,x+
+0B6C A7A0             (        forth.asm):01638                     sta     ,y+
+0B6E 5A               (        forth.asm):01639                     decb
+0B6F 26F9             (        forth.asm):01640                     bne     var_copy
+0B71 BE05B0           (        forth.asm):01641                     ldx     var_LATEST
+0B74 AFA1             (        forth.asm):01642                     stx     ,y++
+0B76 8E018F           (        forth.asm):01643                     ldx     #DOVAR
+0B79 AFA1             (        forth.asm):01644                     stx     ,y++
+0B7B 8E0000           (        forth.asm):01645                     ldx     #0
+0B7E AFA1             (        forth.asm):01646                     stx     ,y++            ; initial storage = 0
+0B80 10BF05B2         (        forth.asm):01647                     sty     var_HERE
+0B84 BE0A23           (        forth.asm):01648                     ldx     col_new_nfa
+0B87 BF05B0           (        forth.asm):01649                     stx     var_LATEST
+0B8A 3510             (        forth.asm):01650         var_done:   puls    x
+0B8C 7E0183           (        forth.asm):01651                     jmp     NEXT
+                      (        forth.asm):01652         
+                      (        forth.asm):01653                     ; CONSTANT name ( x -- )
+0B8F 08               (        forth.asm):01654         nfa_CONST   fcb     8
+0B90 434F4E5354414E54 (        forth.asm):01655                     fcc     "CONSTANT"
+0B98 0B3D             (        forth.asm):01656         lnk_CONST   fdb     prev_link
+0B9A 0B9C             (        forth.asm):01657         cfa_CONST   fdb     code_CONST
+     0B8F             (        forth.asm):01658         prev_link   set     nfa_CONST
+0B9C                  (        forth.asm):01659         code_CONST:
+0B9C 3410             (        forth.asm):01660                     pshs    x
+0B9E 17FB5E           (        forth.asm):01661                     lbsr    parse_name_kernel
+0BA1 10830000         (        forth.asm):01662                     cmpd    #0
+0BA5 10270032         (        forth.asm):01663                     lbeq    const_done
+0BA9 BF0A20           (        forth.asm):01664                     stx     col_name_addr
+0BAC F70A22           (        forth.asm):01665                     stb     col_name_len
+0BAF 10BE05B2         (        forth.asm):01666                     ldy     var_HERE
+0BB3 10BF0A23         (        forth.asm):01667                     sty     col_new_nfa
+0BB7 E7A0             (        forth.asm):01668                     stb     ,y+
+0BB9 BE0A20           (        forth.asm):01669                     ldx     col_name_addr
+0BBC A680             (        forth.asm):01670         const_copy: lda     ,x+
+0BBE A7A0             (        forth.asm):01671                     sta     ,y+
+0BC0 5A               (        forth.asm):01672                     decb
+0BC1 26F9             (        forth.asm):01673                     bne     const_copy
+0BC3 BE05B0           (        forth.asm):01674                     ldx     var_LATEST
+0BC6 AFA1             (        forth.asm):01675                     stx     ,y++
+0BC8 8E0197           (        forth.asm):01676                     ldx     #DOCON
+0BCB AFA1             (        forth.asm):01677                     stx     ,y++
+0BCD ECC1             (        forth.asm):01678                     ldd     ,u++            ; pop value
+0BCF EDA1             (        forth.asm):01679                     std     ,y++
+0BD1 10BF05B2         (        forth.asm):01680                     sty     var_HERE
+0BD5 BE0A23           (        forth.asm):01681                     ldx     col_new_nfa
+0BD8 BF05B0           (        forth.asm):01682                     stx     var_LATEST
+0BDB 3510             (        forth.asm):01683         const_done: puls    x
+0BDD 7E0183           (        forth.asm):01684                     jmp     NEXT
+                      (        forth.asm):01685         
+                      (        forth.asm):01686                     ; (LITSTR)  — inline counted-string literal primitive
+                      (        forth.asm):01687                     ; When the thread reaches this CFA, X (IP) points to the length
+                      (        forth.asm):01688                     ; byte; the chars follow.  Emit the chars, then advance X past
+                      (        forth.asm):01689                     ; the string so NEXT resumes with the following cell.
+0BE0 08               (        forth.asm):01690         nfa_LITSTR  fcb     8
+0BE1 284C495453545229 (        forth.asm):01691                     fcc     "(LITSTR)"
+0BE9 0B8F             (        forth.asm):01692         lnk_LITSTR  fdb     prev_link
+0BEB 0BED             (        forth.asm):01693         cfa_LITSTR  fdb     code_LITSTR
+     0BE0             (        forth.asm):01694         prev_link   set     nfa_LITSTR
+0BED                  (        forth.asm):01695         code_LITSTR:
+0BED E680             (        forth.asm):01696                     ldb     ,x+             ; len, X advances to string start
+0BEF 5D               (        forth.asm):01697                     tstb
+0BF0 270C             (        forth.asm):01698                     beq     ls_done
+0BF2 A680             (        forth.asm):01699         ls_loop:    lda     ,x+
+0BF4 3404             (        forth.asm):01700                     pshs    b
+0BF6 17F9E1           (        forth.asm):01701                     lbsr    emit_a
+0BF9 3504             (        forth.asm):01702                     puls    b
+0BFB 5A               (        forth.asm):01703                     decb
+0BFC 26F4             (        forth.asm):01704                     bne     ls_loop
+0BFE 7E0183           (        forth.asm):01705         ls_done:    jmp     NEXT
+                      (        forth.asm):01706         
+                      (        forth.asm):01707                     ; ."  IMMEDIATE — parse until '"', compile (LITSTR)+len+chars
+0C01 82               (        forth.asm):01708         nfa_DOTQ    fcb     F_IMMED|2
+0C02 2E22             (        forth.asm):01709                     fcb     $2E,$22         ; ." (period + quote)
+0C04 0BE0             (        forth.asm):01710         lnk_DOTQ    fdb     prev_link
+0C06 0C08             (        forth.asm):01711         cfa_DOTQ    fdb     code_DOTQ
+     0C01             (        forth.asm):01712         prev_link   set     nfa_DOTQ
+0C08                  (        forth.asm):01713         code_DOTQ:
+0C08 3410             (        forth.asm):01714                     pshs    x
+0C0A 8EA000           (        forth.asm):01715                     ldx     #TIB_ADDR
+0C0D FC06FB           (        forth.asm):01716                     ldd     var_TOIN
+0C10 308B             (        forth.asm):01717                     leax    d,x             ; X = TIB + >IN
+0C12 A684             (        forth.asm):01718                     lda     ,x
+0C14 8120             (        forth.asm):01719                     cmpa    #' '
+0C16 2602             (        forth.asm):01720                     bne     dq_have_start
+0C18 3001             (        forth.asm):01721                     leax    1,x             ; skip single leading space
+0C1A                  (        forth.asm):01722         dq_have_start:
+0C1A BF0C79           (        forth.asm):01723                     stx     dq_start_addr
+0C1D 108EA000         (        forth.asm):01724                     ldy     #TIB_ADDR
+0C21 FC06FD           (        forth.asm):01725                     ldd     var_TIBLEN
+0C24 31AB             (        forth.asm):01726                     leay    d,y
+0C26 10BF0C7B         (        forth.asm):01727                     sty     dq_end
+0C2A BC0C7B           (        forth.asm):01728         dq_scan:    cmpx    dq_end
+0C2D 2416             (        forth.asm):01729                     bhs     dq_no_quote
+0C2F A684             (        forth.asm):01730                     lda     ,x
+0C31 8122             (        forth.asm):01731                     cmpa    #'"'
+0C33 2704             (        forth.asm):01732                     beq     dq_got_quote
+0C35 3001             (        forth.asm):01733                     leax    1,x
+0C37 20F1             (        forth.asm):01734                     bra     dq_scan
+0C39                  (        forth.asm):01735         dq_got_quote:
+                      (        forth.asm):01736                     ; X is at '"'.  Length = X - start.  Advance X past the '"'.
+0C39 1F10             (        forth.asm):01737                     tfr     x,d
+0C3B B30C79           (        forth.asm):01738                     subd    dq_start_addr
+0C3E FD0C7D           (        forth.asm):01739                     std     dq_len
+0C41 3001             (        forth.asm):01740                     leax    1,x
+0C43 2008             (        forth.asm):01741                     bra     dq_update_toin
+0C45                  (        forth.asm):01742         dq_no_quote:
+                      (        forth.asm):01743                     ; No closing quote — length is X - start, leave X as-is.
+0C45 1F10             (        forth.asm):01744                     tfr     x,d
+0C47 B30C79           (        forth.asm):01745                     subd    dq_start_addr
+0C4A FD0C7D           (        forth.asm):01746                     std     dq_len
+0C4D                  (        forth.asm):01747         dq_update_toin:
+0C4D 1F10             (        forth.asm):01748                     tfr     x,d
+0C4F 83A000           (        forth.asm):01749                     subd    #TIB_ADDR
+0C52 FD06FB           (        forth.asm):01750                     std     var_TOIN
+                      (        forth.asm):01751                     ; Compile (LITSTR)
+0C55 10BE05B2         (        forth.asm):01752                     ldy     var_HERE
+0C59 8E0BEB           (        forth.asm):01753                     ldx     #cfa_LITSTR
+0C5C AFA1             (        forth.asm):01754                     stx     ,y++
+0C5E F60C7E           (        forth.asm):01755                     ldb     dq_len+1
+0C61 E7A0             (        forth.asm):01756                     stb     ,y+             ; len byte
+0C63 5D               (        forth.asm):01757                     tstb
+0C64 270A             (        forth.asm):01758                     beq     dq_compile_done
+0C66 BE0C79           (        forth.asm):01759                     ldx     dq_start_addr
+0C69 A680             (        forth.asm):01760         dq_copy:    lda     ,x+
+0C6B A7A0             (        forth.asm):01761                     sta     ,y+
+0C6D 5A               (        forth.asm):01762                     decb
+0C6E 26F9             (        forth.asm):01763                     bne     dq_copy
+0C70                  (        forth.asm):01764         dq_compile_done:
+0C70 10BF05B2         (        forth.asm):01765                     sty     var_HERE
+0C74 3510             (        forth.asm):01766                     puls    x
+0C76 7E0183           (        forth.asm):01767                     jmp     NEXT
+                      (        forth.asm):01768         
+0C79 0000             (        forth.asm):01769         dq_start_addr fdb   0
+0C7B 0000             (        forth.asm):01770         dq_end        fdb   0
+0C7D 0000             (        forth.asm):01771         dq_len        fdb   0
+                      (        forth.asm):01772         
+                      (        forth.asm):01773                     ; (  IMMEDIATE — skip TIB chars until ')'
+0C7F 81               (        forth.asm):01774         nfa_PAREN   fcb     F_IMMED|1
+0C80 28               (        forth.asm):01775                     fcc     "("
+0C81 0C01             (        forth.asm):01776         lnk_PAREN   fdb     prev_link
+0C83 0C85             (        forth.asm):01777         cfa_PAREN   fdb     code_PAREN
+     0C7F             (        forth.asm):01778         prev_link   set     nfa_PAREN
+0C85                  (        forth.asm):01779         code_PAREN:
+0C85 3410             (        forth.asm):01780                     pshs    x
+0C87 8EA000           (        forth.asm):01781                     ldx     #TIB_ADDR
+0C8A FC06FB           (        forth.asm):01782                     ldd     var_TOIN
+0C8D 308B             (        forth.asm):01783                     leax    d,x
+0C8F 108EA000         (        forth.asm):01784                     ldy     #TIB_ADDR
+0C93 FC06FD           (        forth.asm):01785                     ldd     var_TIBLEN
+0C96 31AB             (        forth.asm):01786                     leay    d,y
+0C98 10BF0B39         (        forth.asm):01787                     sty     ctrl_tmp
+0C9C BC0B39           (        forth.asm):01788         par_scan:   cmpx    ctrl_tmp
+0C9F 2406             (        forth.asm):01789                     bhs     par_done
+0CA1 A680             (        forth.asm):01790                     lda     ,x+
+0CA3 8129             (        forth.asm):01791                     cmpa    #')'
+0CA5 26F5             (        forth.asm):01792                     bne     par_scan
+0CA7 1F10             (        forth.asm):01793         par_done:   tfr     x,d
+0CA9 83A000           (        forth.asm):01794                     subd    #TIB_ADDR
+0CAC FD06FB           (        forth.asm):01795                     std     var_TOIN
+0CAF 3510             (        forth.asm):01796                     puls    x
+0CB1 7E0183           (        forth.asm):01797                     jmp     NEXT
+                      (        forth.asm):01798         
+                      (        forth.asm):01799         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01800         ; QUIT — REPL loop: ACCEPT into TIB, INTERPRET, print " ok", CR, repeat.
+                      (        forth.asm):01801         ; ---------------------------------------------------------------------------
+0CB4 04               (        forth.asm):01802         nfa_QUIT    fcb     4
+0CB5 51554954         (        forth.asm):01803                     fcc     "QUIT"
+0CB9 0C7F             (        forth.asm):01804         lnk_QUIT    fdb     prev_link
+0CBB 0188             (        forth.asm):01805         cfa_QUIT    fdb     DOCOL
+0CBD                  (        forth.asm):01806         pfa_QUIT:
+0CBD 01B4             (        forth.asm):01807                     fdb     cfa_LIT
+0CBF A000             (        forth.asm):01808                     fdb     TIB_ADDR
+0CC1 01B4             (        forth.asm):01809                     fdb     cfa_LIT
+0CC3 0080             (        forth.asm):01810                     fdb     TIB_SIZE
+0CC5 081C             (        forth.asm):01811                     fdb     cfa_ACCEPT                  ; ( -- len )
+0CC7 01B4             (        forth.asm):01812                     fdb     cfa_LIT
+0CC9 06FD             (        forth.asm):01813                     fdb     var_TIBLEN
+0CCB 04E5             (        forth.asm):01814                     fdb     cfa_STORE                   ; len → #TIB
+0CCD 01B4             (        forth.asm):01815                     fdb     cfa_LIT
+0CCF 0000             (        forth.asm):01816                     fdb     0
+0CD1 01B4             (        forth.asm):01817                     fdb     cfa_LIT
+0CD3 06FB             (        forth.asm):01818                     fdb     var_TOIN
+0CD5 04E5             (        forth.asm):01819                     fdb     cfa_STORE                   ; 0   → >IN
+0CD7 092F             (        forth.asm):01820                     fdb     cfa_INTERP
+0CD9 01B4             (        forth.asm):01821                     fdb     cfa_LIT
+0CDB 0020             (        forth.asm):01822                     fdb     $20                         ; ' '
+0CDD 051B             (        forth.asm):01823                     fdb     cfa_EMIT
+0CDF 01B4             (        forth.asm):01824                     fdb     cfa_LIT
+0CE1 006F             (        forth.asm):01825                     fdb     'o'
+0CE3 051B             (        forth.asm):01826                     fdb     cfa_EMIT
+0CE5 01B4             (        forth.asm):01827                     fdb     cfa_LIT
+0CE7 006B             (        forth.asm):01828                     fdb     'k'
+0CE9 051B             (        forth.asm):01829                     fdb     cfa_EMIT
+0CEB 05B9             (        forth.asm):01830                     fdb     cfa_CR
+0CED 01EA             (        forth.asm):01831                     fdb     cfa_BR
+0CEF                  (        forth.asm):01832         quit_br_tgt:
+0CEF FFCE             (        forth.asm):01833                     fdb     (pfa_QUIT)-(quit_br_tgt)
+     0CB4             (        forth.asm):01834         prev_link   set     nfa_QUIT
                       (        forth.asm):01835         
-                      (        forth.asm):01836         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01837         ; Reset vector
-                      (        forth.asm):01838         ; ---------------------------------------------------------------------------
-                      (        forth.asm):01839                     org     $FFFE
-FFFE 0100             (        forth.asm):01840                     fdb     cold
-                      (        forth.asm):01841         
-                      (        forth.asm):01842                     end     cold
+     0CB4             (        forth.asm):01836         last_builtin_link equ prev_link
+                      (        forth.asm):01837         
+                      (        forth.asm):01838         
+                      (        forth.asm):01839         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01840         ; Reset vector
+                      (        forth.asm):01841         ; ---------------------------------------------------------------------------
+                      (        forth.asm):01842                     org     $FFFE
+FFFE 0100             (        forth.asm):01843                     fdb     cold
+                      (        forth.asm):01844         
+                      (        forth.asm):01845                     end     cold
