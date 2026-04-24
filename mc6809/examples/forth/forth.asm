@@ -59,11 +59,12 @@ cold:
             ; Greeting so the user knows the REPL is alive.
             ldx     #msg_ready
             bsr     puts_native
-            ; Seed HERE / LATEST / STATE.
+            ; Seed HERE / LATEST / STATE and sync FORTH's vocab cell.
             ldx     #DICT_START
             stx     var_HERE
             ldx     #last_builtin_link
-            stx     var_LATEST
+            stx     var_LATEST           ; live cache
+            stx     pfa_FORTH_LATEST     ; FORTH vocab's persistent cell
             ldx     #0
             stx     var_STATE
             ; Enter the Forth VM: IP → boot_code → cfa_QUIT → DOCOL → QUIT body.
@@ -147,6 +148,22 @@ DOMARKER:
             std     var_LATEST
             ldd     2,y             ; saved HERE
             std     var_HERE
+            jmp     NEXT
+
+; DOVOC: code field for VOCABULARY-created words.  PFA layout:
+;   PFA+0 : latest NFA in this vocabulary (0 = empty)
+;   PFA+2 : parent-vocab's PFA+0 address (0 = root)
+; Executing a vocab switches the active search/define namespace to it.
+; Before switching, var_LATEST (the cache) is flushed back to the OLD
+; vocab's PFA+0; then the NEW vocab's PFA+0 is loaded into var_LATEST.
+DOVOC:
+            leay    2,y                  ; Y = new vocab's PFA+0
+            ldx     var_LATEST_PTR       ; X = old vocab's PFA+0
+            ldd     var_LATEST
+            std     ,x                   ; flush cache to old vocab
+            sty     var_LATEST_PTR
+            ldd     ,y                   ; load new vocab's latest
+            std     var_LATEST
             jmp     NEXT
 
 ; ---------------------------------------------------------------------------
@@ -2401,12 +2418,15 @@ cfa_STATE   fdb     DOVAR
 pfa_STATE   fdb     0                       ; storage; 0=interpret, 1=compile
 prev_link   set     nfa_STATE
 
-            ; LATEST ( -- addr )
+            ; LATEST ( -- addr )  address of the ACTIVE vocabulary's
+            ; latest-NFA cache cell.  In a multi-vocab world, that cell
+            ; is always kept in sync with the active vocab's PFA+0 by
+            ; DOVOC's flush/reload sequence.
 nfa_LATEST  fcb     6
             fcc     "LATEST"
 lnk_LATEST  fdb     prev_link
 cfa_LATEST  fdb     DOVAR
-pfa_LATEST  fdb     0
+pfa_LATEST  fdb     0          ; RAM cache; active vocab's current latest
 prev_link   set     nfa_LATEST
 
             ; BASE ( -- addr )  current input/output radix (default 10)
@@ -2444,6 +2464,11 @@ var_LATEST  equ     pfa_LATEST
 var_BASE    equ     pfa_BASE
 
 here_var    fdb     DICT_START              ; separate 16-bit RAM cell
+
+; var_LATEST_PTR points at the active vocabulary's PFA+0 cell (where the
+; vocab's latest NFA is stored permanently, separate from the var_LATEST
+; cache).  Initialized at cold to pfa_FORTH_LATEST.
+var_LATEST_PTR fdb pfa_FORTH_LATEST
 
 ; ---------------------------------------------------------------------------
 ; Additional I/O primitives
@@ -2962,9 +2987,12 @@ pn_start_addr fdb   0
 sfind_kernel:
             stx     sf_target
             stb     sf_tlen
+            ; Start walking from the active vocabulary (its cached head).
+            ldd     var_LATEST_PTR
+            std     sf_cur_voc
             ldx     var_LATEST
 sf_iter:    cmpx    #0
-            beq     sf_fail
+            beq     sf_next_voc     ; end of this vocab → try parent
             lda     ,x              ; A = flag/len byte
             bita    #F_HIDDEN
             bne     sf_advance      ; hidden — skip entry
@@ -3004,12 +3032,23 @@ sf_advance: lda     ,x
             abx                     ; X = link field address
             ldx     ,x              ; X = next NFA (or 0)
             bra     sf_iter
+sf_next_voc:
+            ; Finished current vocab's chain.  Follow the parent pointer
+            ; to continue the search; if no parent, fail.
+            ldy     sf_cur_voc
+            ldy     2,y             ; Y = parent's PFA+0 address (or 0)
+            cmpy    #0
+            beq     sf_fail
+            sty     sf_cur_voc
+            ldx     ,y              ; X = parent vocab's latest NFA
+            bra     sf_iter
 sf_fail:    ldx     #0
             clrb                    ; B=0 → CC.Z=1 (and N=0)
             rts
 
 sf_target   fdb     0
 sf_cur      fdb     0
+sf_cur_voc  fdb     0
 sf_tlen     fcb     0
 sf_flags    fcb     0
 
@@ -3252,6 +3291,39 @@ sfind_miss: ldx     #0
             stx     2,u
             stx     ,u
             puls    x               ; restore IP
+            jmp     NEXT
+
+            ; FIND ( c-addr -- c-addr 0 | xt 1 | xt -1 )
+            ; Classic FORTH-83 signature. c-addr is a counted string.
+            ;   0  : not found (c-addr preserved)
+            ;   1  : found, non-IMMEDIATE (c-addr → xt)
+            ;   -1 : found, IMMEDIATE     (c-addr → xt)
+nfa_FIND    fcb     4
+            fcc     "FIND"
+lnk_FIND    fdb     prev_link
+cfa_FIND    fdb     code_FIND
+prev_link   set     nfa_FIND
+code_FIND:
+            pshs    x               ; save IP
+            ldx     ,u              ; X = c-addr (counted string)
+            ldb     ,x+             ; B = length; X now points at name bytes
+            clra                    ; D = 0:length
+            lbsr    sfind_kernel    ; X=xt (or 0), B=0 (miss) / 1 (normal) / 2 (IMMEDIATE)
+            beq     find_miss
+            stx     ,u              ; replace c-addr with xt
+            cmpb    #2
+            beq     find_immed
+            ldd     #1
+            std     ,--u
+            puls    x
+            jmp     NEXT
+find_immed: ldd     #-1
+            std     ,--u
+            puls    x
+            jmp     NEXT
+find_miss:  ldd     #0
+            std     ,--u
+            puls    x
             jmp     NEXT
 
             ; WORD ( char -- c-addr )
@@ -4681,6 +4753,107 @@ pfa_QUIT:
 quit_br_tgt:
             fdb     (pfa_QUIT)-(quit_br_tgt)
 prev_link   set     nfa_QUIT
+
+            ; FORTH ( -- )  the base vocabulary.  Executing it selects
+            ; FORTH as the active search/define vocabulary.  PFA holds
+            ; the vocab's latest-NFA cell (PFA+0) and parent pointer
+            ; (PFA+2, NIL for the root FORTH vocab).
+nfa_FORTH   fcb     5
+            fcc     "FORTH"
+lnk_FORTH   fdb     prev_link
+cfa_FORTH   fdb     DOVOC
+pfa_FORTH_LATEST fdb 0             ; initialised at cold to last builtin link
+pfa_FORTH_PARENT fdb 0             ; root: no parent
+prev_link   set     nfa_FORTH
+
+            ; CONTEXT ( -- addr )  address of the search-vocab pointer cell.
+nfa_CONTEXT fcb     7
+            fcc     "CONTEXT"
+lnk_CONTEXT fdb     prev_link
+cfa_CONTEXT fdb     code_CONTEXT
+prev_link   set     nfa_CONTEXT
+code_CONTEXT: ldd   #var_LATEST_PTR
+            std     ,--u
+            jmp     NEXT
+
+            ; CURRENT ( -- addr )  same as CONTEXT here — this kernel does
+            ; not split CURRENT / CONTEXT because DOVOC switches both at
+            ; once.  Provided for FORTH-83 API compatibility.
+nfa_CURRENT fcb     7
+            fcc     "CURRENT"
+lnk_CURRENT fdb     prev_link
+cfa_CURRENT fdb     code_CURRENT
+prev_link   set     nfa_CURRENT
+code_CURRENT: ldd   #var_LATEST_PTR
+            std     ,--u
+            jmp     NEXT
+
+            ; DEFINITIONS ( -- )  no-op on this kernel (CURRENT == CONTEXT
+            ; is always true).  Present for source-level compatibility.
+nfa_DEFS    fcb     11
+            fcc     "DEFINITIONS"
+lnk_DEFS    fdb     prev_link
+cfa_DEFS    fdb     code_DEFS
+prev_link   set     nfa_DEFS
+code_DEFS:  jmp     NEXT
+
+            ; ONLY ( -- )  switch to the FORTH vocabulary.  A full ONLY
+            ; would install a minimal ROOT vocab; our implementation
+            ; collapses ONLY to a FORTH switch which is the closest
+            ; reasonable approximation with a single namespace system.
+nfa_ONLY    fcb     4
+            fcc     "ONLY"
+lnk_ONLY    fdb     prev_link
+cfa_ONLY    fdb     code_ONLY
+prev_link   set     nfa_ONLY
+code_ONLY:  ; Write-back current var_LATEST to current vocab, then switch
+            ; to FORTH (same sequence DOVOC would do).
+            ldx     var_LATEST_PTR
+            ldd     var_LATEST
+            std     ,x
+            ldx     #pfa_FORTH_LATEST
+            stx     var_LATEST_PTR
+            ldd     ,x
+            std     var_LATEST
+            jmp     NEXT
+
+            ; VOCABULARY ( "name" -- )
+            ; Create a new named vocabulary.  Header is linked into the
+            ; active (CURRENT) vocab.  PFA layout: (latest=0, parent=
+            ; current_vocab).  Executing the name later selects it.
+nfa_VOC     fcb     10
+            fcc     "VOCABULARY"
+lnk_VOC     fdb     prev_link
+cfa_VOC     fdb     code_VOC
+prev_link   set     nfa_VOC
+code_VOC:
+            pshs    x                     ; save IP
+            lbsr    parse_name_kernel     ; X=name addr, B=length
+            cmpd    #0
+            lbeq    voc_done
+            stx     col_name_addr
+            stb     col_name_len
+            ldy     var_HERE
+            sty     col_new_nfa
+            stb     ,y+                   ; flags/length byte
+            ldx     col_name_addr
+voc_copy:   lda     ,x+
+            sta     ,y+
+            decb
+            bne     voc_copy
+            ldx     var_LATEST            ; link into the active vocab
+            stx     ,y++
+            ldx     #DOVOC
+            stx     ,y++                  ; CFA = DOVOC
+            ldx     #0
+            stx     ,y++                  ; PFA+0 = 0 (empty vocab)
+            ldx     var_LATEST_PTR
+            stx     ,y++                  ; PFA+2 = parent pointer
+            sty     var_HERE
+            ldx     col_new_nfa
+            stx     var_LATEST            ; new word is now latest
+voc_done:   puls    x
+            jmp     NEXT
 
 last_builtin_link equ prev_link
 

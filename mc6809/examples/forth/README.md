@@ -3,10 +3,11 @@
 A compact Forth interpreter for the MC6809, running on the `em6809` +
 `emfe_plugin_mc6809` environment (MC6850 ACIA at `$FF00/$FF01`, 64 KB RAM).
 
-- **Single assembly source**: `forth.asm` (~4,700 lines)
-- **ROM image**: ~8 KB
-- **CFAs**: 183 (primitives + colon definitions combined)
-- **FORTH-83 Required Word Set coverage**: ~98%
+- **Single assembly source**: `forth.asm` (~4,900 lines)
+- **ROM image**: ~8.4 KB
+- **CFAs**: 190 (primitives + colon definitions combined)
+- **FORTH-83 Required Word Set coverage**: ~100% (everything except
+  block-storage words, which have no hardware target here)
 - **Tests**: 7 smoke tests, all passing
 
 An ITC (indirect-threaded code) Forth with colon definitions;

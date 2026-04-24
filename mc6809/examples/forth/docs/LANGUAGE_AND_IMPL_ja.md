@@ -11,11 +11,11 @@
 
 | 指標 | 値 |
 |---|---|
-| ソース行数 | **4,694 行** (単一ファイル `forth.asm`) |
-| 生バイナリ | **8,149 bytes** (≒ 8 KB) |
-| SREC ファイル | 約 22.5 KB (ASCII 形式) |
-| CFA (code-field address) | **183 個** — primitive + colon definition の総計 |
-| FORTH-83 Required Word Set カバー率 | **約 98%** |
+| ソース行数 | **4,867 行** (単一ファイル `forth.asm`) |
+| 生バイナリ | **8,455 bytes** (≒ 8.3 KB) |
+| SREC ファイル | 約 23 KB (ASCII 形式) |
+| CFA (code-field address) | **190 個** — primitive + colon definition の総計 |
+| FORTH-83 Required Word Set カバー率 | **約 100%** |
 | Smoke test | **7 件** (全件 passing) |
 
 Hha Lisp (18.5 KB) の半分以下のサイズながら、FORTH-83 Required
@@ -60,7 +60,7 @@ Word Set の大半をカバー。コロン定義、`IF`/`ELSE`/`THEN`、
 
 ### 2.4 FORTH-83 / ANS Forth 互換性
 
-**カバー済み (FORTH-83 Required Word Set の約 98%)**:
+**カバー済み (FORTH-83 Required Word Set の約 100%)**:
 - ✅ 制御構造: `:` `;` `IF` `THEN` `ELSE` `BEGIN` `UNTIL` `AGAIN`
       `WHILE` `REPEAT` `DO` `LOOP` `+LOOP` `I` `J` `LEAVE` `UNLOOP`
       `."` `S"` `ABORT"` `(` `\`
@@ -84,14 +84,14 @@ Word Set の大半をカバー。コロン定義、`IF`/`ELSE`/`THEN`、
 - ✅ 混合/倍精度: `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `M/`
       `*/` `*/MOD` `D+` `D-` `DNEGATE` `DABS`
 - ✅ 外側インタプリタ: `ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME`
-      `WORD` `SFIND` `NUMBER?` `INTERPRET` `EXECUTE`
+      `WORD` `SFIND` `FIND` `NUMBER?` `INTERPRET` `EXECUTE`
+- ✅ 語彙: `VOCABULARY` `FORTH` `CONTEXT` `CURRENT`
+      `DEFINITIONS` `ONLY` (CURRENT == CONTEXT 実装、DEFINITIONS は
+      無操作、ONLY は FORTH へ切替)
 - ✅ エラー処理: `ABORT` `ABORT"`
 - ✅ デバッグ: `.S` `WORDS` `DUMP`
 
 **意図的に除外**:
-- ❌ `VOCABULARY` / `DEFINITIONS` / `ONLY` — カーネルは単一名前空間
-      (複数 wordlist を `SFIND` で辿る必要があり、実装コストが大きい)
-- ❌ `FIND` — 代わりに `PARSE-NAME` + `SFIND` / `'` を提供
 - ❌ 大容量記憶ワード (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`)
       — このハードウェア構成ではブロックデバイスが無く非対応
 
@@ -225,8 +225,11 @@ EXIT:       puls x           ; pop IP from return stack
 `HERE` `,` `C,` `ALLOT` `STATE` `LATEST` `>IN` `#TIB`
 
 ### 6.10 Outer interpreter building blocks
-`ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME` `WORD` `SFIND` `NUMBER?`
-`INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
+`ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME` `WORD` `SFIND` `FIND`
+`NUMBER?` `INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
+
+### 6.10a 語彙 (Vocabularies)
+`VOCABULARY` `FORTH` `CONTEXT` `CURRENT` `DEFINITIONS` `ONLY`
 
 ### 6.11 コンパイル用内部プリミティブ
 `(LIT)` `(BRANCH)` `(0BRANCH)` `(LITSTR)` `(SLITERAL)`

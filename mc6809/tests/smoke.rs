@@ -3097,6 +3097,29 @@ fn forth_new_features() {
         // Just verify SPAN at least returns an address (not 0).
         send(b"SPAN 0= .\r");                                // 0 (SPAN returns non-zero addr)
 
+        // ---- FIND ----------------------------------------------------
+        // FIND takes a counted string. Easiest to build via HERE.
+        // Write a counted name "DUP" at HERE transiently, then FIND it.
+        send(b": TEST-FIND HERE 3 , CHAR D C, CHAR U C, CHAR P C, HERE 8 - FIND . . ; TEST-FIND\r");
+        // Actually easier: use WORD which leaves counted string at HERE.
+        send(b": FFIND BL WORD FIND SWAP DROP . ; FFIND DUP\r"); // finds DUP → flag=1
+        send(b": FMISS BL WORD FIND SWAP DROP . ; FMISS NOPE\r"); // NOPE not found → 0
+
+        // ---- VOCABULARY / DEFINITIONS / ONLY / FORTH ------------------
+        send(b"VOCABULARY MYVOC\r");
+        send(b"MYVOC\r");                                    // switch to MYVOC
+        send(b": PRIVATE 42 ;\r");                           // defined in MYVOC
+        send(b"PRIVATE .\r");                                // 42 — MYVOC has PRIVATE
+        send(b"FORTH\r");                                    // back to FORTH
+        send(b"PRIVATE .\r");                                // PRIVATE? — gone from FORTH's search
+        send(b"MYVOC PRIVATE .\r");                          // 42 again in MYVOC
+        send(b"FORTH\r");
+        // CONTEXT / CURRENT return addresses (non-zero)
+        send(b"CONTEXT 0= .\r");                             // 0
+        send(b"CURRENT 0= .\r");                             // 0
+        send(b"DEFINITIONS 55 .\r");                         // 55 (DEFINITIONS no-op)
+        send(b"ONLY 66 .\r");                                // 66 (ONLY switches to FORTH)
+
         // ---- Comparisons ---------------------------------------------
         send(b"3 5 U< .\r");                        // -1
         send(b"5 3 U< .\r");                        // 0
@@ -3235,6 +3258,12 @@ fn forth_new_features() {
             "2  ok",           // SP@ SP@ - → NOS(=U_orig) - TOS(=U_orig-2) = 2
             "-4  ok",          // M/ floored: -7/2 = -4
             "3  ok",           // M/: 7/2 = 3 (already present elsewhere)
+            "1  ok",           // FFIND finds DUP → flag=1
+            "0  ok",           // FMISS NOPE not found → flag=0 (already present)
+            "42  ok",          // PRIVATE in MYVOC returns 42
+            "PRIVATE?",        // PRIVATE is not in FORTH → undefined
+            "55  ok",          // DEFINITIONS no-op; 55 . still works
+            "66  ok",          // ONLY switches to FORTH; 66 . still works
             "99  ok",          // many 99 . markers
             "22  ok",          // PICK 2
             "44  ok",          // PICK 0

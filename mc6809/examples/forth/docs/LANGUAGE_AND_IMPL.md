@@ -12,11 +12,11 @@ dictionary structure, inner interpreter) of
 
 | Metric | Value |
 |---|---|
-| Assembly source | **4,694 lines** (single `forth.asm`) |
-| Raw binary | **8,149 bytes** (~8 KB) |
-| SREC file | ~22.5 KB (ASCII S-record) |
-| CFAs (primitive + colon definitions) | **183** |
-| FORTH-83 required word-set coverage | **~98%** |
+| Assembly source | **4,867 lines** (single `forth.asm`) |
+| Raw binary | **8,455 bytes** (~8.3 KB) |
+| SREC file | ~23 KB (ASCII S-record) |
+| CFAs (primitive + colon definitions) | **190** |
+| FORTH-83 required word-set coverage | **~100%** |
 | Smoke tests | **7**, all passing |
 
 Still under half the size of Hha Lisp (18.5 KB) while covering the
@@ -62,7 +62,7 @@ jonesforth family of minimal-but-usable implementations.
 
 ### 2.4 FORTH-83 / ANS Forth compatibility
 
-**Covered (~98% of the FORTH-83 Required Word Set):**
+**Covered (~100% of the FORTH-83 Required Word Set):**
 - ✅ Control flow: `:` `;` `IF` `THEN` `ELSE` `BEGIN` `UNTIL` `AGAIN`
       `WHILE` `REPEAT` `DO` `LOOP` `+LOOP` `I` `J` `LEAVE` `UNLOOP`
       `."` `S"` `ABORT"` `(` `\`
@@ -86,15 +86,14 @@ jonesforth family of minimal-but-usable implementations.
 - ✅ Mixed / double: `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `M/`
       `*/` `*/MOD` `D+` `D-` `DNEGATE` `DABS`
 - ✅ Outer interpreter: `ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME`
-      `WORD` `SFIND` `NUMBER?` `INTERPRET` `EXECUTE`
+      `WORD` `SFIND` `FIND` `NUMBER?` `INTERPRET` `EXECUTE`
+- ✅ Vocabularies: `VOCABULARY` `FORTH` `CONTEXT` `CURRENT`
+      `DEFINITIONS` `ONLY` (CURRENT == CONTEXT; DEFINITIONS is a
+      documented no-op, ONLY resets to FORTH)
 - ✅ Error handling: `ABORT` `ABORT"`
 - ✅ Debug: `.S` `WORDS` `DUMP`
 
 **Intentionally excluded:**
-- ❌ `VOCABULARY` / `DEFINITIONS` / `ONLY` — vocabulary system (kernel
-      uses a single namespace; adding this would require walking multiple
-      wordlists in `SFIND`)
-- ❌ `FIND` — `PARSE-NAME` + `SFIND` / `'` are provided instead
 - ❌ Mass-storage words (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`) —
       not applicable on this hardware target (no block device)
 
@@ -212,7 +211,10 @@ Per word:
 - **Dict / variables**: `HERE` `,` `C,` `ALLOT` `STATE` `LATEST`
   `>IN` `#TIB`
 - **Outer interp**: `ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME`
-  `WORD` `SFIND` `NUMBER?` `INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
+  `WORD` `SFIND` `FIND` `NUMBER?` `INTERPRET` `EXECUTE` `'` `CHAR`
+  `[CHAR]`
+- **Vocabularies**: `VOCABULARY` `FORTH` `CONTEXT` `CURRENT`
+  `DEFINITIONS` `ONLY`
 - **Compile-time helpers**: `(LIT)` `(BRANCH)` `(0BRANCH)` `(LITSTR)`
   `(SLITERAL)` `(DO)` `(LOOP)` `(+LOOP)` `(;DOES)` `(ABORT")` `EXIT`
 - **Defining / control**: `:` `;` `VARIABLE` `CONSTANT` `CREATE` `DOES>`
