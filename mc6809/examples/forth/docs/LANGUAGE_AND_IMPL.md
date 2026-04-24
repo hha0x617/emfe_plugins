@@ -12,11 +12,11 @@ dictionary structure, inner interpreter) of
 
 | Metric | Value |
 |---|---|
-| Assembly source | **4,561 lines** (single `forth.asm`) |
-| Raw binary | **7,955 bytes** (~7.8 KB) |
-| SREC file | 22,034 bytes (ASCII S-record) |
-| CFAs (primitive + colon definitions) | **175** |
-| FORTH-83 required word-set coverage | **~95%** |
+| Assembly source | **4,694 lines** (single `forth.asm`) |
+| Raw binary | **8,149 bytes** (~8 KB) |
+| SREC file | ~22.5 KB (ASCII S-record) |
+| CFAs (primitive + colon definitions) | **183** |
+| FORTH-83 required word-set coverage | **~98%** |
 | Smoke tests | **7**, all passing |
 
 Still under half the size of Hha Lisp (18.5 KB) while covering the
@@ -62,7 +62,7 @@ jonesforth family of minimal-but-usable implementations.
 
 ### 2.4 FORTH-83 / ANS Forth compatibility
 
-**Covered (~95% of the FORTH-83 Required Word Set):**
+**Covered (~98% of the FORTH-83 Required Word Set):**
 - ✅ Control flow: `:` `;` `IF` `THEN` `ELSE` `BEGIN` `UNTIL` `AGAIN`
       `WHILE` `REPEAT` `DO` `LOOP` `+LOOP` `I` `J` `LEAVE` `UNLOOP`
       `."` `S"` `ABORT"` `(` `\`
@@ -72,6 +72,7 @@ jonesforth family of minimal-but-usable implementations.
 - ✅ Stack: `DUP` `?DUP` `DROP` `SWAP` `OVER` `NIP` `TUCK` `ROT`
       `-ROT` `PICK` `ROLL` `DEPTH`
       `2DUP` `2DROP` `2SWAP` `2OVER` `>R` `R>` `R@`
+      `SP@` `SP!` `RP@` `RP!`
 - ✅ Memory: `@` `!` `+!` `C@` `C!` `2@` `2!` `CELL+` `CELLS`
       `ALIGN` `ALIGNED` `CMOVE` `CMOVE>` `MOVE` `FILL` `ERASE` `BLANK`
 - ✅ Strings: `COUNT` `COMPARE` `/STRING` `-TRAILING`
@@ -82,20 +83,20 @@ jonesforth family of minimal-but-usable implementations.
 - ✅ Constants / vars: `TRUE` `FALSE` `BL` `BASE` `HEX` `DECIMAL`
 - ✅ Number I/O: `.` `U.` `.R` `U.R` `D.` `D.R` `SPACES`
       `<#` `#` `#S` `#>` `HOLD` `SIGN`
-- ✅ Mixed / double: `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD`
+- ✅ Mixed / double: `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `M/`
       `*/` `*/MOD` `D+` `D-` `DNEGATE` `DABS`
+- ✅ Outer interpreter: `ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME`
+      `WORD` `SFIND` `NUMBER?` `INTERPRET` `EXECUTE`
 - ✅ Error handling: `ABORT` `ABORT"`
 - ✅ Debug: `.S` `WORDS` `DUMP`
 
-**Intentionally excluded (low value or security concern):**
-- ❌ `SP@` / `SP!` / `RP@` / `RP!` — stack-pointer introspection
-- ❌ `EXPECT` / `QUERY` — redundant with `ACCEPT`
-- ❌ `VOCABULARY` / `DEFINITIONS` / `ONLY` — vocabulary system (single
-      namespace here)
-- ❌ `WORD` + `FIND` — `WORD` is provided; `FIND` replaced by
-      `PARSE-NAME` + `SFIND`
+**Intentionally excluded:**
+- ❌ `VOCABULARY` / `DEFINITIONS` / `ONLY` — vocabulary system (kernel
+      uses a single namespace; adding this would require walking multiple
+      wordlists in `SFIND`)
+- ❌ `FIND` — `PARSE-NAME` + `SFIND` / `'` are provided instead
 - ❌ Mass-storage words (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`) —
-      not applicable on this hardware target
+      not applicable on this hardware target (no block device)
 
 ---
 
@@ -192,14 +193,14 @@ Per word:
 
 - **Stack ops**: `DUP` `?DUP` `DROP` `SWAP` `OVER` `NIP` `TUCK` `ROT`
   `-ROT` `PICK` `ROLL` `DEPTH` `2DUP` `2DROP` `2SWAP` `2OVER`
-  `>R` `R>` `R@`
+  `>R` `R>` `R@` `SP@` `SP!` `RP@` `RP!`
 - **Arithmetic / logic (16-bit)**: `+` `-` `*` `/` `MOD` `/MOD`
   `1+` `1-` `2+` `2-` `2*` `2/` `LSHIFT` `RSHIFT`
   `NEGATE` `ABS` `MIN` `MAX`
   `AND` `OR` `XOR` `INVERT` `NOT`
   `0=` `0<` `0>` `=` `<>` `<` `>` `U<` `U>`
 - **Mixed / double**: `2@` `2!` `D+` `D-` `DNEGATE` `DABS` `D.` `D.R`
-  `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `*/` `*/MOD`
+  `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `M/` `*/` `*/MOD`
 - **Constants**: `TRUE` `FALSE` `BL`
 - **Memory**: `@` `!` `+!` `C@` `C!` `CELL+` `CELLS`
   `ALIGN` `ALIGNED` `CMOVE` `CMOVE>` `MOVE` `FILL` `ERASE` `BLANK`
@@ -210,8 +211,8 @@ Per word:
 - **Radix**: `BASE` `HEX` `DECIMAL`
 - **Dict / variables**: `HERE` `,` `C,` `ALLOT` `STATE` `LATEST`
   `>IN` `#TIB`
-- **Outer interp**: `ACCEPT` `PARSE-NAME` `WORD` `SFIND` `NUMBER?`
-  `INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
+- **Outer interp**: `ACCEPT` `EXPECT` `SPAN` `QUERY` `PARSE-NAME`
+  `WORD` `SFIND` `NUMBER?` `INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
 - **Compile-time helpers**: `(LIT)` `(BRANCH)` `(0BRANCH)` `(LITSTR)`
   `(SLITERAL)` `(DO)` `(LOOP)` `(+LOOP)` `(;DOES)` `(ABORT")` `EXIT`
 - **Defining / control**: `:` `;` `VARIABLE` `CONSTANT` `CREATE` `DOES>`

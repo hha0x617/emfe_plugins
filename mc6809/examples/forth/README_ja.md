@@ -4,10 +4,10 @@ MC6809 上で動作する小規模 Forth 処理系です。
 `em6809` + `emfe_plugin_mc6809` 環境 (MC6850 ACIA at `$FF00/$FF01`、64 KB RAM)
 で動きます。
 
-- **単一アセンブリソース**: `forth.asm` (約 4,500 行)
+- **単一アセンブリソース**: `forth.asm` (約 4,700 行)
 - **ROM イメージ**: 約 8 KB
-- **CFA 数**: 175 (primitive + colon 定義合計)
-- **FORTH-83 Required Word Set カバー率**: 約 95%
+- **CFA 数**: 183 (primitive + colon 定義合計)
+- **FORTH-83 Required Word Set カバー率**: 約 98%
 - **テスト**: 7 smoke test すべて passing
 
 ITC (indirect-threaded code) 方式のコンパクトな Forth で、

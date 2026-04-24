@@ -287,6 +287,54 @@ code_ROT:   ldd     4,u             ; a
             std     ,u
             jmp     NEXT
 
+            ; SP@ ( -- addr )  push the current data stack pointer.
+            ; Standard-compliant: addr points to the current TOS cell,
+            ; BEFORE SP@ pushes its own result.
+nfa_SPFETCH fcb     3
+            fcc     "SP@"
+lnk_SPFETCH fdb     prev_link
+cfa_SPFETCH fdb     code_SPFETCH
+prev_link   set     nfa_SPFETCH
+code_SPFETCH: tfr   u,d
+            std     ,--u
+            jmp     NEXT
+
+            ; SP! ( addr -- )  set the data stack pointer.
+            ; The caller is responsible for ensuring the new U is valid
+            ; (coherent stack frame).
+nfa_SPSTORE fcb     3
+            fcc     "SP!"
+lnk_SPSTORE fdb     prev_link
+cfa_SPSTORE fdb     code_SPSTORE
+prev_link   set     nfa_SPSTORE
+code_SPSTORE: ldu   ,u
+            jmp     NEXT
+
+            ; RP@ ( -- addr )  push the current return stack pointer.
+            ; addr points at the current TOP of the return stack.
+nfa_RPFETCH fcb     3
+            fcc     "RP@"
+lnk_RPFETCH fdb     prev_link
+cfa_RPFETCH fdb     code_RPFETCH
+prev_link   set     nfa_RPFETCH
+code_RPFETCH: tfr   s,d
+            std     ,--u
+            jmp     NEXT
+
+            ; RP! ( addr -- )  set the return stack pointer.
+            ; WARNING: changes S mid-flight.  Current code is designed to
+            ; NOT need S until the next EXIT, which will then pull from the
+            ; new location.  The caller must have arranged the new R-stack
+            ; contents accordingly.
+nfa_RPSTORE fcb     3
+            fcc     "RP!"
+lnk_RPSTORE fdb     prev_link
+cfa_RPSTORE fdb     code_RPSTORE
+prev_link   set     nfa_RPSTORE
+code_RPSTORE: ldd   ,u++
+            tfr     d,s
+            jmp     NEXT
+
             ; >R ( n -- ) ( R: -- n )
 nfa_TOR     fcb     2
             fcc     ">R"
@@ -1265,6 +1313,33 @@ fm_done:    puls    x
             jmp     NEXT
 
 fm_dvsr     fdb     0
+
+            ; M/ ( d n -- quot )  signed 32/16 floored division, single
+            ; quotient (remainder dropped).  Equivalent to  FM/MOD NIP.
+nfa_MSLASH  fcb     2
+            fcc     "M/"
+lnk_MSLASH  fdb     prev_link
+cfa_MSLASH  fdb     code_MSLASH
+prev_link   set     nfa_MSLASH
+code_MSLASH:
+            pshs    x
+            ldd     ,u
+            std     fm_dvsr
+            lbsr    smrem_body             ; ( rem quot )
+            ldd     2,u                    ; rem
+            beq     ms_no_adj
+            ldd     2,u
+            eora    fm_dvsr
+            bpl     ms_no_adj
+            ldd     ,u
+            subd    #1
+            std     ,u
+ms_no_adj:  ; Drop remainder — stack ( rem quot ) → ( quot ).
+            ldd     ,u                     ; quot
+            leau    2,u                    ; drop rem slot
+            std     ,u
+            puls    x
+            jmp     NEXT
 
 ; smrem_body: same as code_SMREM but as a callable subroutine (no
 ; NEXT dispatch at the end).  Expects stack ( d n ); leaves ( rem quot ).
@@ -2832,6 +2907,7 @@ dm_div_by_zero:
 ; ---------------------------------------------------------------------------
 var_TOIN    fdb     0               ; >IN — offset into TIB of next unread byte
 var_TIBLEN  fdb     0               ; #TIB — bytes currently valid in TIB
+var_SPAN    fdb     0               ; SPAN — bytes read by last EXPECT
 
 ; --------- parse_name_kernel -----------------------------------------------
 ; Skip leading blanks (chars <= $20) in TIB, then scan to the next blank or
@@ -3036,7 +3112,16 @@ lnk_ACCEPT  fdb     prev_link
 cfa_ACCEPT  fdb     code_ACCEPT
 prev_link   set     nfa_ACCEPT
 code_ACCEPT:
-            pshs    x               ; save IP — X is repurposed as buf ptr below
+            pshs    x                ; save IP
+            lbsr    code_ACCEPT_body
+            puls    x
+            jmp     NEXT
+
+; code_ACCEPT_body ( c-addr +n -- +n2 )
+; Shared read-a-line-from-ACIA engine.  Callable subroutine (not a
+; primitive itself).  Caller is responsible for saving the Forth IP (X);
+; this routine uses X and Y as scratch.
+code_ACCEPT_body:
             ldd     ,u++            ; D = maxlen (low byte used)
             pshs    d
             ldx     ,u              ; X = buffer addr
@@ -3075,10 +3160,58 @@ acc_done:   lda     #$0D
             lbsr    emit_a
             lda     #$0A
             lbsr    emit_a
-            puls    d               ; discard saved maxlen (D clobbered next anyway)
+            puls    d                ; discard saved maxlen
             tfr     y,d
-            std     ,u              ; replace buffer addr with count
-            puls    x               ; restore IP
+            std     ,u               ; replace buffer addr with count
+            rts
+
+            ; EXPECT ( c-addr +n -- )  like ACCEPT but stores count in SPAN.
+            ; FORTH-83 convention: no value left on the data stack; the
+            ; caller fetches the actual read length from SPAN.
+nfa_EXPECT  fcb     6
+            fcc     "EXPECT"
+lnk_EXPECT  fdb     prev_link
+cfa_EXPECT  fdb     code_EXPECT
+prev_link   set     nfa_EXPECT
+code_EXPECT:
+            pshs    x
+            lbsr    code_ACCEPT_body       ; leaves count at ,u, returns count in Y
+            ; ACCEPT's body leaves ( len ) on data stack; EXPECT should
+            ; instead store len in SPAN and drop the cell.
+            ldd     ,u++
+            std     var_SPAN
+            puls    x
+            jmp     NEXT
+
+            ; SPAN ( -- addr )  address of the SPAN variable.
+nfa_SPAN    fcb     4
+            fcc     "SPAN"
+lnk_SPAN    fdb     prev_link
+cfa_SPAN    fdb     code_SPAN
+prev_link   set     nfa_SPAN
+code_SPAN:  ldd     #var_SPAN
+            std     ,--u
+            jmp     NEXT
+
+            ; QUERY ( -- )  read one line into TIB; reset #TIB / >IN.
+nfa_QUERY   fcb     5
+            fcc     "QUERY"
+lnk_QUERY   fdb     prev_link
+cfa_QUERY   fdb     code_QUERY
+prev_link   set     nfa_QUERY
+code_QUERY:
+            ; Push (TIB_ADDR, TIB_SIZE) then call ACCEPT.
+            ldd     #TIB_ADDR
+            std     ,--u
+            ldd     #TIB_SIZE
+            std     ,--u
+            pshs    x
+            lbsr    code_ACCEPT_body       ; leaves count on stack
+            ldd     ,u++                   ; D = count
+            std     var_TIBLEN
+            ldd     #0
+            std     var_TOIN
+            puls    x
             jmp     NEXT
 
             ; PARSE-NAME ( -- c-addr u )

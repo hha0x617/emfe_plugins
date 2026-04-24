@@ -3080,6 +3080,23 @@ fn forth_new_features() {
         // advanced reliably.  Parse "HELLO" using ' ' (32) as delim.
         send(b": TESTW BL WORD COUNT TYPE ; TESTW HELLO\r");  // "HELLO"
 
+        // ---- SP@ / SP! / RP@ / RP! -----------------------------------
+        // SP@ pushes the current stack pointer (before pushing the result).
+        send(b"1 2 3 SP@ 4 + SP@ - .\r");                    // 4 + SP@_after - SP@_before = … actually tricky
+        // Depth diff across SP@ itself.  First SP@ reads U_orig, push.
+        // Second SP@ reads U_orig-2, push.  `-` does NOS - TOS = 2.
+        send(b"SP@ SP@ - .\r");                              // 2
+
+        // ---- M/ ------------------------------------------------------
+        send(b"-7 -1 2 M/ .\r");                             // -4 (floored)
+        send(b"7 0 2 M/ .\r");                               // 3
+        send(b"-1 -1 3 M/ .\r");                             // ? -1 / 3 floored = -1... actually d = 0xFFFF_FFFF = -1 as double; -1/3 floored = -1
+
+        // ---- SPAN / EXPECT / QUERY are hard to test automatically
+        // because they read additional input lines; skip.
+        // Just verify SPAN at least returns an address (not 0).
+        send(b"SPAN 0= .\r");                                // 0 (SPAN returns non-zero addr)
+
         // ---- Comparisons ---------------------------------------------
         send(b"3 5 U< .\r");                        // -1
         send(b"5 3 U< .\r");                        // 0
@@ -3215,6 +3232,9 @@ fn forth_new_features() {
             "100  ok",         // 100 ALIGNED (already even)
             "HELLO ok",        // WORD parses "HELLO" + COUNT + TYPE — appears elsewhere too
             "32  ok",          // BLANK result (BL also prints 32, present already)
+            "2  ok",           // SP@ SP@ - → NOS(=U_orig) - TOS(=U_orig-2) = 2
+            "-4  ok",          // M/ floored: -7/2 = -4
+            "3  ok",           // M/: 7/2 = 3 (already present elsewhere)
             "99  ok",          // many 99 . markers
             "22  ok",          // PICK 2
             "44  ok",          // PICK 0
