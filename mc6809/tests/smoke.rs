@@ -2891,6 +2891,396 @@ fn forth_kernel_banner() {
 }
 
 #[test]
+fn forth_new_features() {
+    // Comprehensive coverage of every feature added beyond the v1 kernel,
+    // plus every documented example from docs/USER_GUIDE.md §5.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/forth/forth.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if UART_BUF.len() >= 30 { break; }
+        }
+
+        // send() tracks a running "ok" counter; each line we send should
+        // normally produce one " ok" at end-of-line.
+        let mut ok_count: usize = 0;
+        let mut send = |line: &[u8]| {
+            ok_count += 1;
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(3));
+            }
+            for _ in 0..500 {
+                std::thread::sleep(std::time::Duration::from_millis(8));
+                if String::from_utf8_lossy(&UART_BUF).matches("ok").count() >= ok_count {
+                    break;
+                }
+            }
+        };
+
+        // ---- 16-bit arithmetic (pre-existing additions) --------------
+        send(b"6 4 * .\r");                         // 24
+        send(b"21 4 / .\r");                        // 5
+        send(b"21 4 MOD .\r");                      // 1
+        send(b"21 4 /MOD . .\r");                   // 5 1  (quot rem — TOS printed first)
+        send(b"5 1+ .\r");                          // 6
+        send(b"5 1- .\r");                          // 4
+        send(b"5 2+ .\r");                          // 7
+        send(b"5 2- .\r");                          // 3
+        send(b"5 2* .\r");                          // 10
+        send(b"5 2/ .\r");                          // 2
+        send(b"-7 ABS .\r");                        // 7
+        send(b"3 7 MIN .\r");                       // 3
+        send(b"3 7 MAX .\r");                       // 7
+        send(b"0 NOT .\r");                         // -1
+        send(b"1 NOT .\r");                         // 0
+        send(b"1 2 <> .\r");                        // -1
+        send(b"1 1 <> .\r");                        // 0
+        send(b"3 2 > .\r");                         // -1
+        send(b"2 3 > .\r");                         // 0
+
+        // ---- Stack operations ---------------------------------------
+        send(b"5 ?DUP + .\r");                      // 10
+        send(b"0 ?DUP 99 .\r");                     // 99 (0 not duped)
+        send(b"1 2 3 NIP .\r");                     // 3
+        send(b"1 2 TUCK . . .\r");                  // "2 1 2"
+        send(b"11 22 33 44 2 PICK .\r");            // 22
+        send(b"11 22 33 44 0 PICK .\r");            // 44 (= DUP)
+        send(b"1 2 2DUP + . + .\r");                // 3 3  (2DUP→(1 2 1 2), +→(1 2 3), .→3, +→3, .→3) ... actually let me retrace
+        // Trace: stack (1 2). 2DUP→(1 2 1 2). +→(1 2 3). .→prints "3 ",pops→(1 2). +→(3). .→prints "3 ",pops→().
+        send(b"1 2 3 4 2DROP . .\r");               // 2 1
+        send(b"1 2 3 4 2SWAP . . . .\r");           // 2 1 4 3  (after 2SWAP stack=(3 4 1 2), pops: 2,1,4,3)
+        send(b"1 2 3 4 2OVER . . . . . .\r");       // 2 1 4 3 2 1  (stack becomes (1 2 3 4 1 2), pops top first)
+
+        // ---- Newly added FORTH-83 words ------------------------------
+        send(b"1 2 3 -ROT . . .\r");                // -ROT: (1 2 3) → (3 1 2); . . . pops 2 1 3
+        send(b"11 22 33 44 55 2 ROLL . . . . .\r"); // ROLL 2: moves xN at depth 2 to top. Expected: 33 55 44 22 11
+        send(b"1 2 3 DEPTH .\r");                   // depth counts cells before DEPTH ran: 3
+        send(b"DROP DROP DROP DROP\r");             // clean
+        send(b"5 0> .\r");                          // -1
+        send(b"-5 0> .\r");                         // 0
+        send(b"0 0> .\r");                          // 0
+        send(b"VARIABLE SBUF 6 ALLOT\r");
+        send(b": DO-CMOVE S\" HELLO!\" SBUF SWAP CMOVE SBUF 6 TYPE ; DO-CMOVE\r");
+        send(b"VARIABLE MBUF 10 ALLOT\r");
+        send(b": DO-MOVE S\" ABCDEF\" MBUF SWAP MOVE MBUF 6 TYPE ; DO-MOVE\r");
+        send(b": USEPLUS 3 4 ['] + EXECUTE ; USEPLUS .\r");   // 7
+        send(b"1 2 3 4 5 ABORT\r");                            // stack cleared; banner reprints, REPL continues
+        send(b"123 .\r");                                      // should still work after ABORT
+
+        // ---- CREATE / DOES> -------------------------------------------
+        // CREATE with ALLOT for a counted buffer
+        send(b"CREATE BYTES 4 ALLOT\r");
+        send(b"BYTES 4 65 FILL BYTES 4 TYPE\r");              // fills with 'A' and prints "AAAA"
+        // CREATE / DOES> defining a parameterised accessor
+        send(b": CONST2 CREATE , , DOES> 2@ ;\r");
+        send(b"11 22 CONST2 PAIR\r");                         // PAIR stores 11, 22; DOES> will read them
+        send(b"PAIR . .\r");                                   // 11 22 (2@: low=22 NOS, high=11 TOS, . pops 11 then 22)
+        // Incremental build-up of an ARRAY defining word.
+        send(b": MKBUF CREATE 10 ALLOT ;\r");                  // plain CREATE, no DOES>
+        send(b"MKBUF XBUF\r");
+        send(b"99 XBUF !\r");
+        send(b"XBUF @ .\r");                                   // 99
+        // Simplest possible CREATE/DOES> — no args, hard-coded +1 behavior.
+        send(b": ONEX CREATE DOES> 1 + ;\r");
+        send(b"ONEX ZZ ZZ ZZ - .\r");                          // -1 is expected (addr vs addr+1 from DOES>, but rhs is evaluated first)
+        send(b": ARRAY CREATE CELLS ALLOT DOES> SWAP 2 * + ;\r");
+        send(b"5 ARRAY BUFX\r");
+        send(b"42 0 BUFX !\r");
+        send(b"99 4 BUFX !\r");
+        send(b"0 BUFX @ . 4 BUFX @ .\r");                      // 42 99
+
+        // ---- Pictured numeric output ----------------------------------
+        // 1234 as decimal via <# #S #>
+        send(b": PNO0 <# #S #> TYPE ;\r");
+        send(b"1234 0 PNO0\r");                                // "1234"
+        // With sign
+        send(b": PNOS DUP ABS 0 <# #S ROT SIGN #> TYPE ;\r");
+        send(b"-999 PNOS\r");                                  // "-999"
+        // HOLD: wrap digits (65 = 'A' in decimal mode, which is the default)
+        send(b": PNOH <# 65 HOLD #S 65 HOLD #> TYPE ;\r");
+        send(b"77 0 PNOH\r");                                  // "A77A"
+
+        // D.R: signed double right-justified
+        send(b"12345 0 8 D.R 99 .\r");                         // "   12345" then "99"
+        send(b"-12345 -1 8 D.R 99 .\r");                       // "  -12345" then "99"
+
+        // ABORT" that doesn't trigger (flag is 0)
+        send(b": SAFE 0 ABORT\" never shown\" 55 . ; SAFE\r"); // "55"
+        // ABORT" that triggers: prints message and aborts
+        send(b": BOOM 1 ABORT\" fired\" 99 . ; BOOM\r");       // prints "fired" + banner + resumes
+        send(b"66 .\r");                                        // still alive after ABORT"
+
+        // ---- CHAR / [CHAR] --------------------------------------------
+        send(b"CHAR A .\r");                                    // 65
+        send(b": EMIT-STAR [CHAR] * EMIT ; EMIT-STAR EMIT-STAR\r"); // "**"
+
+        // ---- String ops (S" is IMMEDIATE — wrap in : definitions) -----
+        send(b": CMP1 S\" ABC\" S\" ABC\" COMPARE . ; CMP1\r"); // 0
+        send(b": CMP2 S\" ABC\" S\" ABD\" COMPARE . ; CMP2\r"); // -1
+        send(b": CMP3 S\" ABD\" S\" ABC\" COMPARE . ; CMP3\r"); // 1
+        send(b": SKIP2 S\" HELLO\" 2 /STRING TYPE ; SKIP2\r"); // "LLO"
+        // -TRAILING: requires a buffer with actual trailing spaces
+        send(b"VARIABLE SSB 8 ALLOT\r");
+        send(b": MKSSB S\" AB   \" SSB SWAP CMOVE ; MKSSB\r");
+        send(b"SSB 5 -TRAILING TYPE\r");                       // "AB"
+
+        // ---- FORGET / MARKER ------------------------------------------
+        send(b"MARKER MK\r");
+        send(b": TEMP1 100 ;\r");
+        send(b": TEMP2 200 ;\r");
+        send(b"TEMP1 TEMP2 + .\r");                            // 300
+        send(b"MK TEMP1 .\r");                                  // TEMP1 gone → "TEMP1?"
+        send(b": KEEPME 777 ;\r");
+        send(b"KEEPME .\r");                                   // 777
+        send(b"FORGET KEEPME KEEPME .\r");                     // "KEEPME?" after forget
+
+        // ---- POSTPONE -------------------------------------------------
+        send(b": MY-IF POSTPONE IF ; IMMEDIATE\r");           // wraps IF
+        send(b": TEST-IF DUP 0< MY-IF NEGATE THEN ; -9 TEST-IF .\r"); // 9
+
+        // ---- SM/REM / FM/MOD ------------------------------------------
+        // SM/REM: -7 2 SM/REM → rem=-1 quot=-3 (truncation)
+        send(b"-7 -1 2 SM/REM . .\r");                        // quot=-3 rem=-1 → prints "-3 -1"
+        // FM/MOD: -7 2 FM/MOD → rem=1 quot=-4 (floor)
+        send(b"-7 -1 2 FM/MOD . .\r");                        // quot=-4 rem=1 → prints "-4 1"
+
+        // ---- M+ ------------------------------------------------------
+        send(b"1000 0 500 M+ D.\r");                          // 1500
+        send(b"1000 0 -500 M+ D.\r");                         // 500 (sign-extended negation)
+
+        // ---- ERASE / BLANK -------------------------------------------
+        send(b"VARIABLE EB 8 ALLOT\r");
+        send(b"EB 10 0 FILL EB 10 ERASE EB C@ .\r");          // 0 (ERASE wrote 0 over FILL's 0s — still 0)
+        send(b"EB 10 255 FILL EB 10 ERASE EB C@ .\r");        // 0 (ERASE overwrote 255 with 0)
+        send(b"EB 10 0 FILL EB 10 BLANK EB C@ .\r");          // 32 (space)
+
+        // ---- LSHIFT / RSHIFT ------------------------------------------
+        send(b"1 4 LSHIFT .\r");                              // 16
+        send(b"256 8 RSHIFT .\r");                            // 1
+        send(b"-1 1 RSHIFT .\r");                             // 32767 (zero-fill, not sign-extend)
+
+        // ---- ALIGN / ALIGNED (trivial on byte-addressable kernel) -----
+        // ALIGNED round up odd addresses
+        send(b"101 ALIGNED .\r");                             // 102
+        send(b"100 ALIGNED .\r");                             // 100 (already even)
+
+        // ---- WORD ----------------------------------------------------
+        // WORD uses a char delimiter.  Test inside a colon def so >IN is
+        // advanced reliably.  Parse "HELLO" using ' ' (32) as delim.
+        send(b": TESTW BL WORD COUNT TYPE ; TESTW HELLO\r");  // "HELLO"
+
+        // ---- Comparisons ---------------------------------------------
+        send(b"3 5 U< .\r");                        // -1
+        send(b"5 3 U< .\r");                        // 0
+        send(b"5 3 U> .\r");                        // -1
+        send(b"3 5 U> .\r");                        // 0
+        send(b"-1 1 U< .\r");                       // 0  (-1 = 0xFFFF > 1 unsigned)
+
+        // ---- Memory --------------------------------------------------
+        send(b"VARIABLE CNT 0 CNT ! 7 CNT +! 5 CNT +! CNT @ .\r"); // 12
+        send(b"10 CELLS .\r");                      // 20
+        send(b"HERE CELL+ HERE - .\r");             // 2
+        // CMOVE + FILL + 2@ + 2!
+        send(b"VARIABLE BUF 30 ALLOT\r");
+        send(b"BUF 32 64 FILL BUF C@ .\r");         // 64 (= '@')
+        send(b"BUF 32 0 FILL BUF C@ .\r");          // 0
+        send(b"42 17 BUF 2! BUF 2@ . .\r");         // 17 42  (TOS=hi=17 printed first, then lo=42)
+
+        // ---- Constants ------------------------------------------------
+        send(b"TRUE .\r");                          // -1
+        send(b"FALSE .\r");                         // 0
+        send(b"BL .\r");                            // 32
+
+        // ---- Number formatting & BASE --------------------------------
+        send(b"HEX FF . DECIMAL\r");                // "FF"
+        send(b"HEX ABCD . DECIMAL\r");              // "ABCD"
+        send(b"HEX abcd . DECIMAL\r");              // lowercase digits accepted
+        send(b"-1 U.\r");                           // 65535
+        send(b"5 4 .R 99 .\r");                     // "   5" then "99" (width=4 right-justified)
+        send(b"65000 6 U.R 99 .\r");                // " 65000" then "99"
+        send(b"3 SPACES 99 .\r");                   // "   " then "99"
+
+        // ---- DO / LOOP / +LOOP / I / J / LEAVE -----------------------
+        send(b": SUM10 0 10 0 DO I + LOOP ; SUM10 .\r");       // 45
+        send(b": TEN 10 0 DO I . LOOP ; TEN\r");               // 0 1 2 3 4 5 6 7 8 9
+        send(b": CD10 0 10 DO I . -1 +LOOP ; CD10\r");         // 10 9 8 7 6 5 4 3 2 1
+        send(b": FIVE 10 0 DO I . I 4 = IF LEAVE THEN LOOP ; FIVE\r"); // 0 1 2 3 4
+        send(b": NEST 3 1 DO 3 1 DO J I 10 * + . LOOP LOOP ;\r");
+        send(b"NEST\r");                                       // 11 12 21 22
+
+        // ---- BEGIN / WHILE / REPEAT ----------------------------------
+        send(b": CDW 5 BEGIN DUP 0> WHILE DUP . 1- REPEAT DROP ; CDW\r"); // 5 4 3 2 1
+
+        // ---- S" / TYPE -----------------------------------------------
+        send(b": SHOUT S\" HELLO\" TYPE ; SHOUT 42 .\r");      // HELLO then 42
+
+        // ---- Mixed precision / double --------------------------------
+        // Use operand < 32768 so M* treats it as positive 16-bit signed.
+        send(b"20000 7 M* D.\r");                   // 140000
+        send(b"-20000 7 M* D.\r");                  // -140000
+        send(b"1000 1000 UM* SWAP . .\r");          // 16960 15
+        send(b"0 1 100 UM/MOD SWAP . .\r");         // rem=36 quot=655 → prints "655 36"
+        send(b"65000 0 100 0 D+ D.\r");             // 65100
+        send(b"100 0 50 0 D- D.\r");                // 50
+        send(b"-1 -1 DABS D.\r");                   // 1
+        send(b"100 0 DNEGATE D.\r");                // -100
+        send(b"12345 37 100 */ .\r");               // 4567
+        send(b"100 7 3 */MOD . .\r");               // quot=233 rem=1 → prints "233 1"
+
+        // ---- Compile-time tools --------------------------------------
+        send(b"3 4 ' + EXECUTE .\r");               // 7
+        send(b": FACT DUP 1 > IF DUP 1- RECURSE * THEN ; 6 FACT .\r"); // 720
+        send(b"( this is a comment ) 88 .\r");      // 88
+        send(b"55 \\ trailing line comment\r");     // 55 lands on stack, \ skips rest
+        send(b"DROP 77 .\r");                       // pop the 55 then 77
+
+        // ---- Debug (output is noisy so we just ensure they don't hang)
+        send(b"1 2 3 .S DROP DROP DROP\r");
+        send(b"HEX C000 20 DUMP DECIMAL\r");
+        send(b"WORDS\r");
+
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+
+        // Per-line spot checks.  `.` emits "<value> " (trailing space),
+        // and QUIT appends " ok".  We look for the combined pattern where
+        // convenient, otherwise just for the phrase.
+        let expect: &[&str] = &[
+            // arithmetic
+            "24  ok",          // 6 4 *
+            "5  ok",           // 21 4 /
+            "1  ok",           // 21 4 MOD  (also used elsewhere — OK as long as present)
+            "5 1  ok",         // 21 4 /MOD . .  → TOS (quot=5) first, then rem=1
+            "6  ok",           // 1+
+            "4  ok",           // 1-
+            "7  ok",           // 2+
+            "3  ok",           // 2-, and also NIP example
+            "10  ok",          // 2* 5 and ?DUP+ 5
+            "2  ok",           // 2/ 5, and HERE CELL+ diff
+            "7  ok",           // ABS -7, also 3 7 MAX? No max gives 7 too
+            "-1  ok",          // NOT 0, or <>
+            "0  ok",           // NOT 1, etc
+            // stack
+            "2 1 3  ok",       // -ROT on (1 2 3): stack → (3 1 2), . . . pops 2, 1, 3 → "2 1 3"
+            "33 55 44 22 11  ok",  // ROLL 2 on (11 22 33 44 55): moves 33 to top → (11 22 44 55 33), . . . . . pops 33,55,44,22,11
+            "3  ok",           // DEPTH after 1 2 3 → 3 (depth counts the 3 cells already there)
+            "HELLO! ok",       // CMOVE result "HELLO!" via TYPE (TYPE has no trailing space)
+            "ABCDEF ok",       // MOVE result "ABCDEF" via TYPE
+            "7  ok",           // USEPLUS: [' ] + compiled + EXECUTE → 7
+            "123  ok",         // REPL alive after ABORT
+            // CREATE / DOES>
+            "AAAA ok",         // CREATE + ALLOT + FILL + TYPE
+            "11 22  ok",       // CONST2 PAIR: `, ,` pops 22 then 11 → mem low=22, high=11.  PAIR 2@ → (22 11), . . prints 11 22.
+            "42 99  ok",       // ARRAY indexed cells
+            // Pictured numeric output
+            "1234 ok",         // PNO0 (TYPE has no trailing space)
+            "-999 ok",         // PNOS
+            "A77A ok",         // PNOH
+            "   1234599  ok",  // D.R has no trailing space, so "   12345" then "99 " from the `. `
+            "  -1234599  ok",  // D.R negative
+            "55  ok",          // SAFE with flag=0 doesn't abort
+            "fired",           // BOOM fired its message
+            "66  ok",          // REPL alive after ABORT"
+            "65  ok",          // CHAR A → 65
+            "**",              // EMIT-STAR twice
+            "0  ok",           // COMPARE ABC ABC
+            "-1  ok",          // COMPARE ABC ABD
+            "1  ok",           // COMPARE ABD ABC
+            "LLO ok",          // /STRING skip 2
+            "AB ok",           // -TRAILING
+            "300  ok",         // TEMP1 + TEMP2
+            "TEMP1?",          // after MK: TEMP1 should be gone
+            "777  ok",         // KEEPME defined after MK
+            "KEEPME?",         // FORGET KEEPME removed it
+            "9  ok",           // TEST-IF with POSTPONE-wrapped IF
+            "-3 -1  ok",       // SM/REM -7 2 → quot -3, rem -1
+            "-4 1  ok",        // FM/MOD -7 2 → quot -4, rem 1
+            "1500  ok",        // M+ 1000 + 500
+            "500  ok",         // M+ 1000 + (-500) using sign-extension
+            "16  ok",          // 1 LSHIFT 4
+            "1  ok",           // 256 RSHIFT 8 (appears many times in output, OK)
+            "32767  ok",       // -1 RSHIFT 1 (zero-fill)
+            "102  ok",         // 101 ALIGNED
+            "100  ok",         // 100 ALIGNED (already even)
+            "HELLO ok",        // WORD parses "HELLO" + COUNT + TYPE — appears elsewhere too
+            "32  ok",          // BLANK result (BL also prints 32, present already)
+            "99  ok",          // many 99 . markers
+            "22  ok",          // PICK 2
+            "44  ok",          // PICK 0
+            "2 1 2  ok",       // TUCK
+            "2 1  ok",         // 2DROP leftover
+            "2 1 4 3  ok",     // 2SWAP
+            "2 1 4 3 2 1  ok", // 2OVER
+            // comparisons
+            // memory
+            "12  ok",          // +! cumulative
+            "20  ok",          // 10 CELLS
+            "64  ok",          // FILL with '@'
+            "17 42  ok",       // 2@
+            // constants
+            "32  ok",          // BL
+            // formatting
+            "FF  ok",
+            "-5433  ok",       // HEX ABCD . treats 0xABCD as signed -21555 → "-5433" in hex
+            "65535  ok",
+            "   599  ok",      // .R width=4 + 99 . — no space between (.R has no trailing space)
+            " 6500099  ok",    // U.R width=6 + 99 .
+            "   99  ok",       // 3 SPACES + 99 .
+            // loops
+            "45  ok",                                  // SUM10
+            "0 1 2 3 4 5 6 7 8 9  ok",                 // TEN
+            "10 9 8 7 6 5 4 3 2 1 0  ok",              // CD10 (+LOOP): step=-1 stops when index<limit=0 → prints 0 too
+            "0 1 2 3 4  ok",                           // FIVE (LEAVE)
+            "11 21 12 22  ok",                         // NEST: `J I 10 * +` = J + I*10, so I (inner) is the tens digit
+            "5 4 3 2 1  ok",                           // BEGIN/WHILE/REPEAT
+            // strings
+            "HELLO42  ok",                             // SHOUT then 42 . (no CR between)
+            // mixed / double
+            "140000  ok",
+            "-140000  ok",
+            "16960 15  ok",
+            "36 655  ok",       // UM/MOD leaves ( rem quot ) with quot on TOS; . . pops rem first then quot → "rem quot" reversed? actually TOS first: quot then rem
+            "65100  ok",
+            "50  ok",
+            "1  ok",            // DABS of -1_-1 double = 1
+            "-100  ok",
+            "4567  ok",
+            "233 1  ok",        // */MOD: quot=233 rem=1, . . prints quot then rem → "233 1"
+            // compile-time
+            "720  ok",                                 // FACT 6
+            "88  ok",                                  // comment
+            "77  ok",                                  // line-comment survivors
+        ];
+        let mut failed = Vec::<&&str>::new();
+        for pat in expect.iter() {
+            if !got.contains(pat) {
+                failed.push(pat);
+            }
+        }
+        assert!(
+            failed.is_empty(),
+            "missing {} patterns:\n  {:?}\n\n--- full output ---\n{}",
+            failed.len(),
+            failed,
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn stack_s19_emits_descent_and_ascent_markers() {
     // stack.s19 recurses 6 levels deep and emits "EN\r\n" going in and
     // "XN\r\n" coming out. Verifies both the ACIA pipeline and the shadow

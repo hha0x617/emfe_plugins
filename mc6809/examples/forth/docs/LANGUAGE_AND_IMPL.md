@@ -12,14 +12,20 @@ dictionary structure, inner interpreter) of
 
 | Metric | Value |
 |---|---|
-| Assembly source | **1,535 lines** (single `forth.asm`) |
-| Raw binary | **2,605 bytes** (~2.5 KB) |
-| SREC file | 7,262 bytes (ASCII S-record) |
-| CFAs (primitive + colon definitions) | **79** |
-| Smoke tests | **6**, all passing |
+| Assembly source | **4,561 lines** (single `forth.asm`) |
+| Raw binary | **7,955 bytes** (~7.8 KB) |
+| SREC file | 22,034 bytes (ASCII S-record) |
+| CFAs (primitive + colon definitions) | **175** |
+| FORTH-83 required word-set coverage | **~95%** |
+| Smoke tests | **7**, all passing |
 
-**About 1/7 the size of Hha Lisp** (18.5 KB, 60 primitives).  In the
-figForth / jonesforth family of minimal-but-usable implementations.
+Still under half the size of Hha Lisp (18.5 KB) while covering the
+bulk of the FORTH-83 Required Word Set: colon definitions,
+`IF`/`ELSE`/`THEN`, `BEGIN`/`UNTIL`/`AGAIN`/`WHILE`/`REPEAT`,
+`DO`/`LOOP`/`+LOOP`, `CREATE`/`DOES>`, runtime-base switching,
+mixed-precision / double arithmetic, pictured numeric output,
+string ops, `FORGET` / `MARKER`, and `ABORT"`.  In the figForth /
+jonesforth family of minimal-but-usable implementations.
 
 ---
 
@@ -32,8 +38,11 @@ figForth / jonesforth family of minimal-but-usable implementations.
   (colon definitions).  NEXT performs a two-level indirect jump.
 - **Separate data / return stacks**: U is the data stack, S is the
   return stack.  Both grow downward; TOS is at the lower address.
-- **16-bit cell**: every cell is a signed 16-bit integer.  Numeric
-  input is decimal only.
+- **16-bit cell**: every cell is a signed 16-bit integer.
+- **Double cell**: 32-bit, stored as low-at-`addr` / high-at-`addr+2`,
+  and on the stack as `( low high )` with the high word as TOS.
+- **Runtime radix**: `BASE` (default 10) is honoured by both
+  `NUMBER?` and every output word.
 
 ### 2.2 REPL (outer interpreter)
 
@@ -51,24 +60,50 @@ figForth / jonesforth family of minimal-but-usable implementations.
   - Numbers → `(LIT)` + value (two cells)
   - IMMEDIATE words → executed immediately
 
-### 2.4 ANS Forth compatibility
+### 2.4 FORTH-83 / ANS Forth compatibility
 
-**Partial:**
-- ✅ `:` `;` `IF` `THEN` `ELSE` `BEGIN` `UNTIL` `AGAIN` `."` `(`
-- ✅ `VARIABLE` `CONSTANT` `ALLOT` `,` `C,` `HERE` `LATEST`
-- ✅ `>R` `R>` `R@` control-flow words
-- ❌ `DO` `LOOP` `+LOOP` (not implemented)
-- ❌ `BASE` switching (decimal only)
-- ❌ `WORD` `FIND` are replaced by `PARSE-NAME` + `SFIND`
-- ❌ `FORGET` / `MARKER` / `VOCABULARY` (single namespace)
+**Covered (~95% of the FORTH-83 Required Word Set):**
+- ✅ Control flow: `:` `;` `IF` `THEN` `ELSE` `BEGIN` `UNTIL` `AGAIN`
+      `WHILE` `REPEAT` `DO` `LOOP` `+LOOP` `I` `J` `LEAVE` `UNLOOP`
+      `."` `S"` `ABORT"` `(` `\`
+- ✅ Defining: `VARIABLE` `CONSTANT` `CREATE` `DOES>` `ALLOT` `,` `C,`
+      `HERE` `LATEST` `IMMEDIATE` `LITERAL` `RECURSE` `POSTPONE`
+      `FORGET` `MARKER` `'` `[']` `CHAR` `[CHAR]`
+- ✅ Stack: `DUP` `?DUP` `DROP` `SWAP` `OVER` `NIP` `TUCK` `ROT`
+      `-ROT` `PICK` `ROLL` `DEPTH`
+      `2DUP` `2DROP` `2SWAP` `2OVER` `>R` `R>` `R@`
+- ✅ Memory: `@` `!` `+!` `C@` `C!` `2@` `2!` `CELL+` `CELLS`
+      `ALIGN` `ALIGNED` `CMOVE` `CMOVE>` `MOVE` `FILL` `ERASE` `BLANK`
+- ✅ Strings: `COUNT` `COMPARE` `/STRING` `-TRAILING`
+- ✅ Arithmetic: `+` `-` `*` `/` `MOD` `/MOD` `1+` `1-` `2+` `2-`
+      `2*` `2/` `LSHIFT` `RSHIFT` `NEGATE` `ABS` `MIN` `MAX`
+- ✅ Logic: `AND` `OR` `XOR` `INVERT` `NOT`
+      `0=` `0<` `0>` `=` `<>` `<` `>` `U<` `U>`
+- ✅ Constants / vars: `TRUE` `FALSE` `BL` `BASE` `HEX` `DECIMAL`
+- ✅ Number I/O: `.` `U.` `.R` `U.R` `D.` `D.R` `SPACES`
+      `<#` `#` `#S` `#>` `HOLD` `SIGN`
+- ✅ Mixed / double: `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD`
+      `*/` `*/MOD` `D+` `D-` `DNEGATE` `DABS`
+- ✅ Error handling: `ABORT` `ABORT"`
+- ✅ Debug: `.S` `WORDS` `DUMP`
+
+**Intentionally excluded (low value or security concern):**
+- ❌ `SP@` / `SP!` / `RP@` / `RP!` — stack-pointer introspection
+- ❌ `EXPECT` / `QUERY` — redundant with `ACCEPT`
+- ❌ `VOCABULARY` / `DEFINITIONS` / `ONLY` — vocabulary system (single
+      namespace here)
+- ❌ `WORD` + `FIND` — `WORD` is provided; `FIND` replaced by
+      `PARSE-NAME` + `SFIND`
+- ❌ Mass-storage words (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`) —
+      not applicable on this hardware target
 
 ---
 
 ## 3. Memory map
 
 ```
-$0100..$1FFF  kernel code + built-in dictionary  (~8 KB)
-$2000..$9FFF  user dictionary (HERE grows upward, ~32 KB)
+$0100..$27FF  kernel code + built-in dictionary  (~10 KB)
+$2800..$9FFF  user dictionary (HERE grows upward, ~30 KB)
 $A000..$A07F  TIB (terminal input buffer, 128 bytes)
 $A080..$AFFF  unused
 $B000..$BFFE  data stack (U starts at $BFFE, grows down)
@@ -155,22 +190,38 @@ Per word:
 
 ## 6. Primitive categories
 
-- **Stack ops**: `DUP` `DROP` `SWAP` `OVER` `ROT` `>R` `R>` `R@`
-- **Arithmetic / logic**: `+` `-` `*` `/` `MOD` `/MOD`
-  `1+` `1-` `2+` `2-` `2*` `2/`
+- **Stack ops**: `DUP` `?DUP` `DROP` `SWAP` `OVER` `NIP` `TUCK` `ROT`
+  `-ROT` `PICK` `ROLL` `DEPTH` `2DUP` `2DROP` `2SWAP` `2OVER`
+  `>R` `R>` `R@`
+- **Arithmetic / logic (16-bit)**: `+` `-` `*` `/` `MOD` `/MOD`
+  `1+` `1-` `2+` `2-` `2*` `2/` `LSHIFT` `RSHIFT`
   `NEGATE` `ABS` `MIN` `MAX`
   `AND` `OR` `XOR` `INVERT` `NOT`
-  `0=` `0<` `=` `<>` `<` `>`
-- **Memory**: `@` `!` `C@` `C!`
-- **I/O**: `EMIT` `KEY` `CR` `SPACE` `TYPE` `COUNT` `.`
+  `0=` `0<` `0>` `=` `<>` `<` `>` `U<` `U>`
+- **Mixed / double**: `2@` `2!` `D+` `D-` `DNEGATE` `DABS` `D.` `D.R`
+  `M+` `UM*` `M*` `UM/MOD` `SM/REM` `FM/MOD` `*/` `*/MOD`
+- **Constants**: `TRUE` `FALSE` `BL`
+- **Memory**: `@` `!` `+!` `C@` `C!` `CELL+` `CELLS`
+  `ALIGN` `ALIGNED` `CMOVE` `CMOVE>` `MOVE` `FILL` `ERASE` `BLANK`
+- **Strings**: `COMPARE` `/STRING` `-TRAILING`
+- **I/O and formatting**: `EMIT` `KEY` `CR` `SPACE` `SPACES` `TYPE`
+  `COUNT` `.` `U.` `.R` `U.R` `DUMP`
+  `<#` `#` `#S` `#>` `HOLD` `SIGN`
+- **Radix**: `BASE` `HEX` `DECIMAL`
 - **Dict / variables**: `HERE` `,` `C,` `ALLOT` `STATE` `LATEST`
   `>IN` `#TIB`
-- **Outer interp**: `ACCEPT` `PARSE-NAME` `SFIND` `NUMBER?`
-  `INTERPRET` `EXECUTE`
+- **Outer interp**: `ACCEPT` `PARSE-NAME` `WORD` `SFIND` `NUMBER?`
+  `INTERPRET` `EXECUTE` `'` `CHAR` `[CHAR]`
 - **Compile-time helpers**: `(LIT)` `(BRANCH)` `(0BRANCH)` `(LITSTR)`
-  `EXIT`
-- **Defining / control**: `:` `;` `VARIABLE` `CONSTANT` `IF` `ELSE`
-  `THEN` `BEGIN` `UNTIL` `AGAIN` `."` `(`
+  `(SLITERAL)` `(DO)` `(LOOP)` `(+LOOP)` `(;DOES)` `(ABORT")` `EXIT`
+- **Defining / control**: `:` `;` `VARIABLE` `CONSTANT` `CREATE` `DOES>`
+  `IMMEDIATE` `LITERAL` `RECURSE` `POSTPONE` `[']`
+  `IF` `ELSE` `THEN` `BEGIN` `UNTIL` `AGAIN` `WHILE` `REPEAT`
+  `DO` `LOOP` `+LOOP` `I` `J` `LEAVE` `UNLOOP`
+  `FORGET` `MARKER`
+  `."` `S"` `ABORT"` `(` `\`
+- **Error handling**: `ABORT` `ABORT"`
+- **Debug**: `.S` `WORDS`
 - **REPL**: `QUIT`
 
 ---
@@ -191,9 +242,11 @@ set (the smudge bit used to hide a word during its own compilation).
 
 ### 7.2 `NUMBER?` — number parser
 
-- Decimal only, signed 16-bit
+- Signed 16-bit; base taken from the `BASE` variable at call time
+- Accepts digits 0–9 and A–Z (upper or lower case), each with digit
+  value `< BASE`
 - Leading `-` negates
-- Any non-digit fails (`flag = 0`)
+- Any out-of-range digit fails (`flag = 0`)
 - On success, `flag = -1` and the value is on TOS
 
 ### 7.3 `:` implementation
@@ -222,19 +275,43 @@ placeholders.
 - `BEGIN`: push HERE
 - `UNTIL`: compile `(0BRANCH)` + a negative offset back to BEGIN
 - `AGAIN`: compile `(BRANCH)` + a negative offset
+- `WHILE`: compile `(0BRANCH) + placeholder`, remember that address
+- `REPEAT`: compile `(BRANCH)` + offset back to BEGIN, then patch the
+  `WHILE` placeholder so a false branch jumps past `REPEAT`
 
-### 7.5 `."` string literal
+### 7.5 `DO` / `LOOP` / `+LOOP`
 
-- Compile time: emit `(LITSTR)` + length byte + bytes
-- Runtime: `(LITSTR)` reads the length, TYPEs the string, advances IP
-  past the string
+- `DO`: compile `(DO)`, push HERE for later `LOOP` back-patching
+- `(DO)` (runtime): pop limit and start off the data stack and push
+  them onto the **return stack** as (limit, index) pairs — index
+  ends up at the top so `I` can read it with `ldd 0,s`
+- `LOOP`: compile `(LOOP)` + negative offset back to the HERE saved
+  by `DO`
+- `(LOOP)`: increment index; if it equals limit, discard both and
+  fall through; otherwise take the branch
+- `+LOOP`: like `LOOP` but adds the TOS increment (signed) — exits
+  when the loop crosses the limit in the appropriate direction
+- `I` / `J`: read the innermost / next-outer index from the return
+  stack (indices are at `0,s` and `4,s` respectively)
+- `LEAVE`: sets `index := limit` so the next `LOOP` / `+LOOP` exits
+  immediately. This is **not** an unconditional exit — code between
+  `LEAVE` and `LOOP` still runs.
 
-### 7.6 Comment `(`
+### 7.6 `."` / `S"` string literals
 
-- IMMEDIATE; uses PARSE to skip through to `)`.
-- Works at both the REPL and inside colon definitions.
+- Compile time: emit the runtime (`(LITSTR)` for `."`,
+  `(SLITERAL)` for `S"`) + length byte + bytes
+- `(LITSTR)`: read the length, `TYPE` the string, advance IP past it
+- `(SLITERAL)`: read the length, push `( addr u )`, advance IP past
+  the string (caller can then `TYPE`, store, etc.)
 
-### 7.7 `ACCEPT` details
+### 7.7 Comments
+
+- `(` is IMMEDIATE; walks TIB until it sees `)`.  Works at the REPL
+  and inside colon definitions.
+- `\` is IMMEDIATE; advances `>IN` to the end of the current line.
+
+### 7.8 `ACCEPT` details
 
 - Characters are echoed as typed
 - `BS` (0x08) / `DEL` (0x7F): delete one character, send `BS SPACE BS`
@@ -281,27 +358,35 @@ upstream):
 ## 10. File layout
 
 ```
-forth.asm  1,535 lines
-  ├ equates / constants        1–45
-  ├ cold / banner / puts      45–90
-  ├ NEXT / DOCOL / EXIT       90–120
-  ├ DOVAR / DOCON             100–120
-  ├ stack primitives         120–260
-  ├ arithmetic               260–400
-  ├ memory access            400–470
-  ├ I/O (EMIT / KEY / ...)   470–580
-  ├ dict primitives          580–720
-  ├ ACCEPT / PARSE-NAME      720–870
-  ├ SFIND                    870–1000
-  ├ NUMBER?                 1000–1100
-  ├ INTERPRET               1100–1220
-  ├ compile primitives      1220–1340
-  ├ control structures      1340–1450
-  └ built-in dictionary     1450–1535 (LATEST chain)
+forth.asm  3,331 lines  (section boundaries are approximate)
+  ├ equates / constants
+  ├ cold / banner / puts
+  ├ NEXT / DOCOL / EXIT / DOVAR / DOCON
+  ├ stack primitives (inc. ?DUP / NIP / TUCK / PICK / 2DUP / …)
+  ├ arithmetic (16-bit + divmod / shift)
+  ├ mixed-precision / double   (UM* / M* / UM/MOD / */ / */MOD /
+  │                              D+ / D- / DNEGATE / DABS / D.)
+  ├ memory access (@ / ! / +! / CMOVE / FILL / 2@ / 2!)
+  ├ I/O and formatting (EMIT / ...  / . / U. / .R / U.R / DUMP / SPACES)
+  ├ BASE / HEX / DECIMAL (and BASE-aware NUMBER? + fmt_sd / fmt_ud)
+  ├ dict primitives and state variables
+  ├ ACCEPT / PARSE-NAME
+  ├ SFIND / sfind_kernel (shared with ')
+  ├ NUMBER?
+  ├ INTERPRET
+  ├ compile primitives ((LIT) / (BRANCH) / (0BRANCH) / (LITSTR) /
+  │                      (SLITERAL) / (DO) / (LOOP) / (+LOOP))
+  ├ control structures (: / ; / IMMEDIATE / LITERAL / RECURSE /
+  │                      IF / ELSE / THEN /
+  │                      BEGIN / UNTIL / AGAIN / WHILE / REPEAT /
+  │                      DO / LOOP / +LOOP / I / J / LEAVE /
+  │                      ." / S" / ( / \)
+  ├ debug (.S / WORDS)
+  └ built-in dictionary (LATEST chain, 137 CFAs)
 ```
 
-At cold-boot completion: HERE = `$2000` (empty user dictionary), built-in
-dictionary fits in ~1.5 KB of the 2.6 KB binary.
+At cold-boot completion: HERE = `$2800` (empty user dictionary), built-in
+code + dictionary fits inside the ~8 KB binary.
 
 ---
 
@@ -309,11 +394,11 @@ dictionary fits in ~1.5 KB of the 2.6 KB binary.
 
 | Item | Cost estimate | Notes |
 |---|---|---|
-| `DO` / `LOOP` / `+LOOP` | 4-6 h | counted loops |
-| `BASE` switching (hex / binary) | 2-3 h | extend NUMBER? and `.` |
-| Case-insensitive search | 1-2 h | tweak SFIND comparison |
-| `WORDS` (dictionary dump) | 1 h | walk LATEST |
+| Pictured numeric output (`<# # #S #> HOLD SIGN`) | 2-3 h | complements `D.` / `.R` |
+| Case-insensitive dictionary search | 1-2 h | tweak SFIND comparison |
 | `FORGET` / `MARKER` | 3-4 h | snapshot LATEST + HERE |
+| String helpers: `COMPARE` / `/STRING` / `-TRAILING` | 2-3 h | extend memory ops |
+| Block storage | medium | for file-less persistence |
 | Floating point (Q8.8 or IEEE) | large | depends on use case |
 | Metacompiler / target compiler | large | for self-hosting |
 

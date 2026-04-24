@@ -4,14 +4,24 @@ MC6809 上で動作する小規模 Forth 処理系です。
 `em6809` + `emfe_plugin_mc6809` 環境 (MC6850 ACIA at `$FF00/$FF01`、64 KB RAM)
 で動きます。
 
-- **単一アセンブリソース**: `forth.asm` (約 1,700 行)
-- **ROM イメージ**: 約 3 KB
-- **CFA 数**: 79 (primitive + colon 定義合計)
-- **テスト**: 6 smoke test すべて passing
+- **単一アセンブリソース**: `forth.asm` (約 4,500 行)
+- **ROM イメージ**: 約 8 KB
+- **CFA 数**: 175 (primitive + colon 定義合計)
+- **FORTH-83 Required Word Set カバー率**: 約 95%
+- **テスト**: 7 smoke test すべて passing
 
-ITC (indirect-threaded code) 方式の小さな Forth で、`:` によるユーザ定義、
-`IF`/`THEN`/`BEGIN`/`UNTIL` 等の制御構造、`VARIABLE`/`CONSTANT`、
-文字列リテラル `."` とコメント `(` まで備えた「最小で実用」な処理系です。
+ITC (indirect-threaded code) 方式のコンパクトな Forth で、
+`:` によるコロン定義、`IF`/`ELSE`/`THEN`、
+`BEGIN`/`UNTIL`/`AGAIN`/`WHILE`/`REPEAT`、`DO`/`LOOP`/`+LOOP`、
+`VARIABLE` / `CONSTANT` / `CREATE` / `DOES>`、`FORGET` / `MARKER`、
+実行時基数切替 (`HEX` / `DECIMAL`)、
+混合精度・倍精度演算 (`UM*`, `M*`, `UM/MOD`, `SM/REM`, `FM/MOD`,
+`*/`, `*/MOD`, `M+`, `D+`, `D-`, `D.` 等)、
+絵的数値出力 (`<# # #S #> HOLD SIGN`)、
+文字列操作 (`COMPARE`, `/STRING`, `-TRAILING`, `CMOVE`, `MOVE`,
+`FILL`, `ERASE`, `BLANK`)、文字列リテラル `."` / `S"` / `ABORT"`、
+ブロックコメント `(` と行コメント `\` まで備えた FORTH-83 準拠の
+figForth / jonesforth 系処理系です。
 
 ```
 Hha Forth for MC6809 ready.
