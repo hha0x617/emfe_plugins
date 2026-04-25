@@ -350,46 +350,63 @@ The kernel relies on these MC6809 features:
 - `LEAX` `LEAY` `LEAS` `LEAU`
 
 **Bugs found in the em6809 crate during development** (all fixed
-upstream):
+upstream — the kernel uses the full instruction set without
+workarounds):
 
-- LEAS and LEAU had swapped effects
-- `ABX` was not implemented → Forth avoids ABX
-- Certain `TST <mem>` / `INC <mem>` forms were missing → same
+- `LEAS` and `LEAU` had their effects swapped
+- `ABX` was missing
+- Several `TST <mem>` / `INC <mem>` indexed forms were missing
+- `SBC` had inverted borrow-in semantics (broke multi-byte subtraction)
+- The PC-relative postbyte misparsed `,S` as PC-relative
 
 ---
 
 ## 10. File layout
 
 ```
-forth.asm  3,331 lines  (section boundaries are approximate)
+forth.asm  4,867 lines  (section boundaries are approximate)
   ├ equates / constants
   ├ cold / banner / puts
   ├ NEXT / DOCOL / EXIT / DOVAR / DOCON
-  ├ stack primitives (inc. ?DUP / NIP / TUCK / PICK / 2DUP / …)
-  ├ arithmetic (16-bit + divmod / shift)
-  ├ mixed-precision / double   (UM* / M* / UM/MOD / */ / */MOD /
-  │                              D+ / D- / DNEGATE / DABS / D.)
-  ├ memory access (@ / ! / +! / CMOVE / FILL / 2@ / 2!)
-  ├ I/O and formatting (EMIT / ...  / . / U. / .R / U.R / DUMP / SPACES)
+  ├ stack primitives (DUP / ?DUP / DROP / SWAP / OVER / NIP / TUCK /
+  │                    ROT / -ROT / PICK / ROLL / DEPTH /
+  │                    2DUP / 2DROP / 2SWAP / 2OVER / >R / R> / R@ /
+  │                    SP@ / SP! / RP@ / RP!)
+  ├ arithmetic / logic (16-bit + divmod + LSHIFT / RSHIFT)
+  ├ mixed-precision / double   (UM* / M* / M+ / UM/MOD / SM/REM /
+  │                              FM/MOD / M/ / */ / */MOD /
+  │                              D+ / D- / DNEGATE / DABS / D. / D.R)
+  ├ memory access (@ / ! / +! / C@ / C! / 2@ / 2! /
+  │                 CMOVE / CMOVE> / MOVE / FILL / ERASE / BLANK /
+  │                 ALIGN / ALIGNED)
+  ├ string ops (COUNT / COMPARE / /STRING / -TRAILING)
+  ├ pictured numeric output (<# / # / #S / #> / HOLD / SIGN)
+  ├ I/O and formatting (EMIT / KEY / CR / SPACE / SPACES / TYPE /
+  │                      . / U. / .R / U.R / DUMP)
   ├ BASE / HEX / DECIMAL (and BASE-aware NUMBER? + fmt_sd / fmt_ud)
   ├ dict primitives and state variables
-  ├ ACCEPT / PARSE-NAME
-  ├ SFIND / sfind_kernel (shared with ')
+  ├ ACCEPT / EXPECT / SPAN / QUERY / PARSE-NAME / WORD / CHAR / [CHAR]
+  ├ SFIND / FIND / sfind_kernel (shared with ' / [')
   ├ NUMBER?
   ├ INTERPRET
   ├ compile primitives ((LIT) / (BRANCH) / (0BRANCH) / (LITSTR) /
-  │                      (SLITERAL) / (DO) / (LOOP) / (+LOOP))
-  ├ control structures (: / ; / IMMEDIATE / LITERAL / RECURSE /
+  │                      (SLITERAL) / (DO) / (LOOP) / (+LOOP) /
+  │                      (;DOES) / (ABORT"))
+  ├ control structures (: / ; / VARIABLE / CONSTANT / CREATE / DOES> /
+  │                      IMMEDIATE / LITERAL / RECURSE / POSTPONE /
+  │                      FORGET / MARKER /
   │                      IF / ELSE / THEN /
   │                      BEGIN / UNTIL / AGAIN / WHILE / REPEAT /
-  │                      DO / LOOP / +LOOP / I / J / LEAVE /
-  │                      ." / S" / ( / \)
+  │                      DO / LOOP / +LOOP / I / J / LEAVE / UNLOOP /
+  │                      ." / S" / ABORT / ABORT" / ( / \ /
+  │                      VOCABULARY / FORTH / CONTEXT / CURRENT /
+  │                      DEFINITIONS / ONLY)
   ├ debug (.S / WORDS)
-  └ built-in dictionary (LATEST chain, 137 CFAs)
+  └ built-in dictionary (LATEST chain, 190 CFAs)
 ```
 
 At cold-boot completion: HERE = `$2800` (empty user dictionary), built-in
-code + dictionary fits inside the ~8 KB binary.
+code + dictionary fits inside the ~8.4 KB binary.
 
 ---
 
@@ -397,13 +414,12 @@ code + dictionary fits inside the ~8 KB binary.
 
 | Item | Cost estimate | Notes |
 |---|---|---|
-| Pictured numeric output (`<# # #S #> HOLD SIGN`) | 2-3 h | complements `D.` / `.R` |
 | Case-insensitive dictionary search | 1-2 h | tweak SFIND comparison |
-| `FORGET` / `MARKER` | 3-4 h | snapshot LATEST + HERE |
-| String helpers: `COMPARE` / `/STRING` / `-TRAILING` | 2-3 h | extend memory ops |
+| Per-vocabulary search lists | medium | currently a single FORTH list |
 | Block storage | medium | for file-less persistence |
 | Floating point (Q8.8 or IEEE) | large | depends on use case |
 | Metacompiler / target compiler | large | for self-hosting |
+| ELF loader integration with the host plugin | medium | currently SREC only |
 
 ---
 

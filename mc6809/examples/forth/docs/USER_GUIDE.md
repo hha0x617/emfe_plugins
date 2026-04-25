@@ -60,8 +60,8 @@ Hha Forth for MC6809 ready.
 
 | Range | Purpose |
 |------|------|
-| `$0100..$1FFF` | Kernel code + built-in dictionary |
-| `$2000..$9FFF` | User dictionary (`HERE` grows upward into this region) |
+| `$0100..$27FF` | Kernel code + built-in dictionary |
+| `$2800..$9FFF` | User dictionary (`HERE` grows upward into this region) |
 | `$A000..$A07F` | TIB (terminal input buffer, 128 bytes) |
 | `$B000..$BFFE` | Data stack (U, grows downward; TOS at the lower address) |
 | `$C000..$FEFE` | Return stack (S) |
@@ -107,7 +107,10 @@ and numeric literals compile as `(LIT) value`.
 | `NIP` | `( a b -- b )` | Drop NOS |
 | `TUCK` | `( a b -- b a b )` | Copy TOS below NOS |
 | `ROT` | `( a b c -- b c a )` | Rotate third cell to the top |
+| `-ROT` | `( a b c -- c a b )` | Inverse of `ROT` |
 | `PICK` | `( xn … x0 n -- xn … x0 xn )` | `0 PICK` ≡ `DUP`, `1 PICK` ≡ `OVER`, … |
+| `ROLL` | `( xn … x0 n -- xn-1 … x0 xn )` | Rotate the n-th item to the top |
+| `DEPTH` | `( -- n )` | Number of cells currently on the data stack |
 | `2DUP` | `( a b -- a b a b )` | Duplicate top two cells |
 | `2DROP` | `( a b -- )` | Drop top two cells |
 | `2SWAP` | `( a b c d -- c d a b )` | Swap two cell pairs |
@@ -115,6 +118,8 @@ and numeric literals compile as `(LIT) value`.
 | `>R` | `( n -- ) (R: -- n)` | Move TOS to return stack |
 | `R>` | `( -- n ) (R: n -- )` | Move return-stack top to data stack |
 | `R@` | `( -- n ) (R: n -- n)` | Copy return-stack top to data stack |
+| `SP@` `SP!` | `( -- addr )` / `( addr -- )` | Read / set the data-stack pointer |
+| `RP@` `RP!` | `( -- addr )` / `( addr -- )` | Read / set the return-stack pointer |
 
 ### 4.2 Arithmetic / logic (16-bit signed)
 | Word | Effect |
@@ -128,6 +133,7 @@ and numeric literals compile as `(LIT) value`.
 | `2+` `2-` | `( n -- n±2 )` Increment / decrement by two |
 | `2*` | `( n -- n*2 )` Arithmetic shift left 1 |
 | `2/` | `( n -- n/2 )` FORTH-83 arithmetic (signed) shift right 1 |
+| `LSHIFT` `RSHIFT` | `( x u -- x' )` Logical shift left / right by `u` bits |
 | `NEGATE` | Two's complement |
 | `ABS` | `( n -- \|n\| )` Absolute value |
 | `MIN` `MAX` | `( a b -- m )` Signed minimum / maximum |
@@ -136,8 +142,10 @@ and numeric literals compile as `(LIT) value`.
 | `NOT` | `( flag -- !flag )` FORTH-83 logical inversion (alias of `0=`) |
 | `0=` | `( n -- flag )` `-1` if zero, `0` otherwise |
 | `0<` | `( n -- flag )` `-1` if negative |
+| `0>` | `( n -- flag )` `-1` if positive |
 | `=` `<>` | Equality / inequality, returning `-1` / `0` |
 | `<` `>` | Signed ordering, returning `-1` / `0` |
+| `U<` `U>` | Unsigned ordering, returning `-1` / `0` |
 
 Divide by zero is non-trapping: `/`, `MOD`, `/MOD`, `UM/MOD`, and the
 mixed-precision operators with `b=0` leave the remainder equal to the
@@ -167,9 +175,14 @@ low at `addr`, high at `addr+2`.
 | `DNEGATE` | `( d -- -d )` | Two's complement negation of a double |
 | `DABS` | `( d -- \|d\| )` | Absolute value |
 | `D.` | `( d -- )` | Print a signed double in the current `BASE` |
+| `D.R` | `( d w -- )` | Print signed double right-justified in `w` chars |
 | `UM*` | `( u1 u2 -- ud )` | Unsigned 16×16 → 32, low-then-high on stack |
 | `M*` | `( n1 n2 -- d )` | Signed 16×16 → 32 |
+| `M+` | `( d n -- d' )` | Add a single to a double |
 | `UM/MOD` | `( ud u -- urem uquot )` | Unsigned 32/16 division |
+| `SM/REM` | `( d n -- rem quot )` | Symmetric (truncated) signed division |
+| `FM/MOD` | `( d n -- rem quot )` | Floor-rounded signed division |
+| `M/` | `( d n -- quot )` | Symmetric signed double-by-single quotient |
 | `*/` | `( n1 n2 n3 -- n )` | `n1*n2/n3` with 32-bit intermediate; signed |
 | `*/MOD` | `( n1 n2 n3 -- rem quot )` | Same as `*/` but also leaves the remainder |
 
@@ -183,8 +196,18 @@ low at `addr`, high at `addr+2`.
 | `C!` | `( b addr -- )` | 8-bit store |
 | `CELL+` | `( addr -- addr+2 )` | Advance by one cell |
 | `CELLS` | `( n -- n*2 )` | Convert a cell count to a byte count |
+| `ALIGN` | `( -- )` | Align HERE to the next cell boundary (no-op when already aligned) |
+| `ALIGNED` | `( addr -- addr' )` | Round `addr` up to the next cell boundary |
 | `CMOVE` | `( src dst u -- )` | Copy `u` bytes low-to-high |
+| `CMOVE>` | `( src dst u -- )` | Copy `u` bytes high-to-low (overlap-safe when `dst>src`) |
+| `MOVE` | `( src dst u -- )` | Copy bytes choosing direction based on overlap |
 | `FILL` | `( addr u byte -- )` | Write `u` copies of `byte` starting at `addr` |
+| `ERASE` | `( addr u -- )` | `0 FILL` |
+| `BLANK` | `( addr u -- )` | `BL FILL` |
+| `COUNT` | `( c-addr -- addr u )` | Unpack a counted string |
+| `COMPARE` | `( a1 u1 a2 u2 -- n )` | Lexicographic compare; returns -1 / 0 / 1 |
+| `/STRING` | `( addr u n -- addr' u' )` | Skip `n` bytes from the front of a string |
+| `-TRAILING` | `( addr u -- addr u' )` | Trim trailing whitespace |
 
 ### 4.6 I/O and number formatting
 | Word | Effect |
@@ -201,6 +224,19 @@ low at `addr`, high at `addr+2`.
 | `.R` | `( n w -- )` Print signed `n` right-justified in `w` chars (no trailing space) |
 | `U.R` | `( u w -- )` Unsigned right-justified |
 | `DUMP` | `( addr u -- )` Hex dump of `u` bytes starting at `addr`, 16 per line |
+
+**Pictured Numeric Output** (manual number formatting via the
+HOLD-area buffer; everything appears reversed during construction
+and is unwound by `#>`):
+
+| Word | Stack effect | Notes |
+|----|------|------|
+| `<#` | `( -- )` | Begin a pictured-output session |
+| `#` | `( ud -- ud' )` | Convert one digit using current `BASE` |
+| `#S` | `( ud -- 0 0 )` | Convert digits until `ud` is zero |
+| `HOLD` | `( c -- )` | Insert one literal character |
+| `SIGN` | `( n -- )` | Insert `-` if `n` is negative |
+| `#>` | `( ud -- addr u )` | End the session and yield `( addr u )` |
 
 ### 4.7 Base (radix) control
 | Word | Effect |
@@ -228,12 +264,20 @@ All output words (`.`, `U.`, `.R`, `U.R`, `D.`, `DUMP`) respect `BASE`.
 | Word | Effect |
 |----|------|
 | `ACCEPT` | `( c-addr +n1 -- +n2 )` Read one line with echo |
+| `EXPECT` | `( c-addr +n -- )` Read into `c-addr`; result length goes into `SPAN` |
+| `SPAN` | `( -- addr )` Cell holding the byte count from the most recent `EXPECT` |
+| `QUERY` | `( -- )` `0 TIB ACCEPT` — refill TIB, set `>IN` to 0 |
 | `PARSE-NAME` | `( -- c-addr u )` Fetch the next whitespace-delimited token |
+| `WORD` | `( char "<chars>name<char>" -- c-addr )` Older parsing word; uses HERE as scratch |
 | `SFIND` | `( c-addr u -- xt flag )` Dictionary search; flag: 0=not found, 1=normal, 2=IMMEDIATE |
+| `FIND` | `( c-addr -- xt 1 \| xt -1 \| c-addr 0 )` ANS-style counted-string variant |
 | `NUMBER?` | `( c-addr u -- value flag )` `BASE`-aware parser; flag=-1 on success |
 | `INTERPRET` | Walk through TIB executing or compiling each token |
 | `EXECUTE` | `( xt -- )` Run the word whose CFA is xt |
 | `'` | `( "name" -- xt )` Look up a word's execution token (0 on fail) |
+| `[']` IMMEDIATE | `( "name" -- )` Compile-time `'` — bakes the xt into the current definition |
+| `CHAR` | `( "name" -- c )` Push the first character of the next token |
+| `[CHAR]` IMMEDIATE | `( "name" -- )` Compile-time `CHAR` |
 
 ### 4.10 Internal compilation primitives
 | Word | Effect |
@@ -253,27 +297,51 @@ All output words (`.`, `U.`, `.R`, `U.R`, `D.`, `DUMP`) respect `BASE`.
 | `;` IMMEDIATE | Compile EXIT, STATE=0 |
 | `VARIABLE` | `( "name" -- )` Create a 16-bit variable (DOVAR) |
 | `CONSTANT` | `( x "name" -- )` Create a constant (DOCON) |
+| `CREATE` | `( "name" -- )` Create a header whose runtime pushes its PFA |
+| `DOES>` | `( -- )` Replace the runtime of the most recent `CREATE`d word |
 | `IMMEDIATE` | Mark the most-recently-defined word IMMEDIATE |
 | `LITERAL` IMMEDIATE | `( x -- )` at compile time → compiles `(LIT) x` |
 | `RECURSE` IMMEDIATE | Compile a call to the colon definition currently being defined |
+| `POSTPONE` IMMEDIATE | `( "name" -- )` Compile a deferred call to the named word |
+| `FORGET` | `( "name" -- )` Roll HERE / LATEST back to before `name` |
+| `MARKER` | `( "name" -- )` Define a word that, when called, performs `FORGET` of itself |
 | `IF` `ELSE` `THEN` IMMEDIATE | Forward branches via `(0BRANCH)` / `(BRANCH)` + HERE patching |
 | `BEGIN` `UNTIL` `AGAIN` IMMEDIATE | Backward loops |
 | `BEGIN` `WHILE` `REPEAT` IMMEDIATE | Conditional-exit loop |
 | `DO` `LOOP` `+LOOP` IMMEDIATE | Counted loops |
 | `I` `J` | Access the inner / next-outer loop index |
 | `LEAVE` | Force-exit the current loop (sets index := limit; exit occurs at next `LOOP`/`+LOOP`) |
+| `UNLOOP` | Discard the innermost loop's three return-stack cells (use before `EXIT` from inside `DO ... LOOP`) |
 | `."` IMMEDIATE | Parse up to the closing `"` and compile as a string literal (prints at runtime) |
 | `S"` IMMEDIATE | Parse up to the closing `"` and compile as a string literal (leaves `( addr u )` at runtime) |
+| `ABORT` | Empty data and return stacks, jump back to `QUIT` |
+| `ABORT"` IMMEDIATE | Compile a runtime conditional abort with an inline message |
 | `(` IMMEDIATE | Skip TIB characters until the closing `)` |
 | `\` IMMEDIATE | Rest-of-line comment |
 
-### 4.12 Debugging
+### 4.12 Vocabularies
+
+This kernel ships a single `FORTH` vocabulary so all definitions share one
+namespace; the words below are wired up for compatibility with FORTH-83
+source that mentions vocabularies, but `CONTEXT` and `CURRENT` always
+point to the same wordlist.
+
+| Word | Effect |
+|----|------|
+| `VOCABULARY` | `( "name" -- )` Define a new vocabulary (currently aliased to `FORTH`) |
+| `FORTH` | Make `FORTH` the current `CONTEXT` vocabulary |
+| `CONTEXT` | `( -- addr )` Cell holding the current search wordlist |
+| `CURRENT` | `( -- addr )` Cell holding the current definitions wordlist (== `CONTEXT` here) |
+| `DEFINITIONS` | Make `CURRENT` follow `CONTEXT` (documented no-op in this build) |
+| `ONLY` | Reset the search list to just `FORTH` |
+
+### 4.13 Debugging
 | Word | Effect |
 |----|------|
 | `.S` | `( -- )` Non-destructive stack dump: `<depth> a b c …` |
 | `WORDS` | `( -- )` Print every dictionary entry, newest first |
 
-### 4.13 REPL
+### 4.14 REPL
 | Word | Effect |
 |----|------|
 | `QUIT` | The REPL itself (running from boot) |
@@ -532,20 +600,21 @@ SHOUT                → HELLO!  ok
   is **not** rewound — if it looks corrupted, push `0`s to balance or reset.
 - **Bounds are not checked** on TIB and dictionary growth — use sensible
   input sizes.
-- No pictured-numeric-output words (`<# # #> HOLD SIGN`) — formatting is
-  done by `.`, `U.`, `.R`, `U.R`, and `D.`.
-- `FORGET` / `MARKER` / `VOCABULARY` and other vocabulary management are
-  not implemented.
+- **Single-vocabulary**: `VOCABULARY` and friends are present for
+  source-level compatibility, but the kernel ships one `FORTH` wordlist;
+  `CONTEXT` and `CURRENT` always point to the same list.
+- **No mass-storage words** (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`)
+  — there is no block device on this hardware target.
 
 ---
 
 ## 7. Notes on em6809
 
-A few MC6809 opcodes are not implemented by the `em6809` crate (e.g.
-`ABX`, `TST <mem>`, `INC <mem>`).  This kernel avoids those directly,
-so users do not need to care.  If you extend the kernel, keep that
-short list in mind — equivalents using other instructions are
-straightforward.
+The `em6809` crate that powers the plugin originally had a few gaps
+this kernel exposed during development (LEAS/LEAU swap, missing `ABX`,
+missing `TST <mem>` / `INC <mem>` forms, SBC borrow-in inversion,
+PC-relative misparse of `,S`).  All have been fixed upstream and the
+kernel uses the full set without restrictions.
 
 ---
 
@@ -555,12 +624,17 @@ The smoke tests live in `tests/smoke.rs` of the mc6809 plugin crate:
 
 - `forth_kernel_banner` — boot banner sanity check
 - `forth_repl_dot` — `42 .` echo + execution
+- `forth_arithmetic` — core arithmetic and stack words
 - `forth_colon_define_and_call` — `: DOUBLE DUP + ;`
-- `forth_if_then_and_begin_until` — `ABS` and `ONCE` (minimal BEGIN/UNTIL)
-- `forth_variable_constant_string` — VARIABLE / CONSTANT / `."` / `(`
+- `forth_if_then_and_begin_until` — `ABS` and a minimal `BEGIN`/`UNTIL`
+- `forth_variable_constant_string` — `VARIABLE` / `CONSTANT` / `."` / `(`
+- `forth_new_features` — pictured numeric, `CREATE`/`DOES>`,
+  `FORGET`/`MARKER`, `DO`/`LOOP`/`+LOOP`, mixed-precision math
 
 From the crate root (where `Cargo.toml` lives):
 
 ```sh
 cargo test --release forth_
 ```
+
+7 smoke tests, all passing.

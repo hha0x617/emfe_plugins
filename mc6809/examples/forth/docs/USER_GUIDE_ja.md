@@ -59,8 +59,8 @@ Hha Forth for MC6809 ready.
 
 | 範囲 | 用途 |
 |------|------|
-| `$0100..$1FFF` | カーネルコード + 組込辞書 |
-| `$2000..$9FFF` | ユーザ辞書 (`HERE` が伸びる先) |
+| `$0100..$27FF` | カーネルコード + 組込辞書 |
+| `$2800..$9FFF` | ユーザ辞書 (`HERE` が伸びる先) |
 | `$A000..$A07F` | TIB (端末入力バッファ、128 バイト) |
 | `$B000..$BFFE` | データスタック (U、下方向伸長、TOS が低番地) |
 | `$C000..$FEFE` | リターンスタック (S) |
@@ -104,7 +104,10 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `NIP` | `( a b -- b )` | NOS を捨てる |
 | `TUCK` | `( a b -- b a b )` | TOS を NOS の下にコピー |
 | `ROT` | `( a b c -- b c a )` | 3 番目を TOS へ回す |
+| `-ROT` | `( a b c -- c a b )` | `ROT` の逆方向 |
 | `PICK` | `( xn … x0 n -- xn … x0 xn )` | `0 PICK` ≡ `DUP`、`1 PICK` ≡ `OVER`… |
+| `ROLL` | `( xn … x0 n -- xn-1 … x0 xn )` | n 番目をスタック先頭へ |
+| `DEPTH` | `( -- n )` | 現在のデータスタック深さ |
 | `2DUP` | `( a b -- a b a b )` | 上位 2 セルを複製 |
 | `2DROP` | `( a b -- )` | 上位 2 セルを捨てる |
 | `2SWAP` | `( a b c d -- c d a b )` | 2 セル組を入れ替え |
@@ -112,6 +115,8 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `>R` | `( n -- ) (R: -- n)` | データ→リターン |
 | `R>` | `( -- n ) (R: n -- )` | リターン→データ |
 | `R@` | `( -- n ) (R: n -- n)` | リターン TOS を参照 |
+| `SP@` `SP!` | `( -- addr )` / `( addr -- )` | データスタックポインタの取得 / 設定 |
+| `RP@` `RP!` | `( -- addr )` / `( addr -- )` | リターンスタックポインタの取得 / 設定 |
 
 ### 4.2 算術・論理 (16-bit signed)
 | 語 | 効果 |
@@ -125,6 +130,7 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `2+` `2-` | `( n -- n±2 )` 2 加算 / 減算 |
 | `2*` | `( n -- n*2 )` 算術左シフト 1 bit |
 | `2/` | `( n -- n/2 )` FORTH-83 算術 (符号拡張) 右シフト 1 bit |
+| `LSHIFT` `RSHIFT` | `( x u -- x' )` 論理左 / 右シフト `u` ビット |
 | `NEGATE` | 2's complement |
 | `ABS` | `( n -- \|n\| )` 絶対値 |
 | `MIN` `MAX` | `( a b -- m )` 符号付き最小値 / 最大値 |
@@ -133,6 +139,7 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `NOT` | `( flag -- !flag )` FORTH-83 の論理反転 (`0=` のエイリアス) |
 | `0=` | `( n -- flag )` ゼロなら `-1`、他は `0` |
 | `0<` | `( n -- flag )` 負なら `-1` |
+| `0>` | `( n -- flag )` 正なら `-1` |
 | `=` `<>` | 等値 / 非等値、`-1` / `0` を返す |
 | `<` `>` | 符号付き大小比較、`-1` / `0` を返す |
 | `U<` `U>` | 符号なし大小比較、`-1` / `0` を返す |
@@ -164,9 +171,14 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `DNEGATE` | `( d -- -d )` | 倍精度 2 の補数 |
 | `DABS` | `( d -- \|d\| )` | 倍精度絶対値 |
 | `D.` | `( d -- )` | 現在の `BASE` で符号付き倍精度印字 |
+| `D.R` | `( d w -- )` | 符号付き倍精度を幅 `w` で右詰め印字 |
 | `UM*` | `( u1 u2 -- ud )` | 符号なし 16×16→32 乗算 |
 | `M*` | `( n1 n2 -- d )` | 符号付き 16×16→32 乗算 |
+| `M+` | `( d n -- d' )` | 倍精度に単精度を加算 |
 | `UM/MOD` | `( ud u -- urem uquot )` | 符号なし 32÷16 除算 |
+| `SM/REM` | `( d n -- rem quot )` | 対称 (truncate) 符号付き除算 |
+| `FM/MOD` | `( d n -- rem quot )` | floor 符号付き除算 |
+| `M/` | `( d n -- quot )` | 倍÷単 の対称符号付き商 |
 | `*/` | `( n1 n2 n3 -- n )` | `n1*n2/n3`、中間値 32bit、符号付き |
 | `*/MOD` | `( n1 n2 n3 -- rem quot )` | `*/` と同じで剰余も残す |
 
@@ -180,8 +192,18 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `C!` | `( b addr -- )` | 8-bit ストア |
 | `CELL+` | `( addr -- addr+2 )` | 1 セル分進める |
 | `CELLS` | `( n -- n*2 )` | セル数をバイト数に変換 |
+| `ALIGN` | `( -- )` | HERE をセル境界にアラインする |
+| `ALIGNED` | `( addr -- addr' )` | `addr` を次のセル境界へ切り上げ |
 | `CMOVE` | `( src dst u -- )` | `u` バイトを低位→高位にコピー |
+| `CMOVE>` | `( src dst u -- )` | `u` バイトを高位→低位にコピー (`dst>src` でも安全) |
+| `MOVE` | `( src dst u -- )` | 重なりに応じて方向を選んでコピー |
 | `FILL` | `( addr u byte -- )` | `addr` から `u` バイトを `byte` で埋める |
+| `ERASE` | `( addr u -- )` | `0 FILL` |
+| `BLANK` | `( addr u -- )` | `BL FILL` |
+| `COUNT` | `( c-addr -- addr u )` | カウント済み文字列を addr/len に展開 |
+| `COMPARE` | `( a1 u1 a2 u2 -- n )` | 辞書順比較、-1 / 0 / 1 を返す |
+| `/STRING` | `( addr u n -- addr' u' )` | 文字列の先頭から `n` バイト切り捨て |
+| `-TRAILING` | `( addr u -- addr u' )` | 末尾の空白を削除 |
 
 ### 4.6 入出力と数値フォーマット
 | 語 | 効果 |
@@ -198,6 +220,18 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `.R` | `( n w -- )` 符号付き `n` を幅 `w` で右詰め印字 (末尾スペースなし) |
 | `U.R` | `( u w -- )` 符号なし版の右詰め |
 | `DUMP` | `( addr u -- )` `addr` から `u` バイトを 16 バイト/行で 16 進ダンプ |
+
+**Pictured Numeric Output** (HOLD バッファに 1 文字ずつ書き戻して
+組み立てる手動数値整形。組立中は逆順に並んでおり `#>` で取り出す):
+
+| 語 | スタック効果 | 説明 |
+|----|------|------|
+| `<#` | `( -- )` | 整形セッション開始 |
+| `#` | `( ud -- ud' )` | 現在の `BASE` で 1 桁変換 |
+| `#S` | `( ud -- 0 0 )` | `ud` がゼロになるまで桁変換 |
+| `HOLD` | `( c -- )` | リテラル文字を 1 つ挿入 |
+| `SIGN` | `( n -- )` | `n` が負なら `-` を挿入 |
+| `#>` | `( ud -- addr u )` | セッション終了、`( addr u )` を返す |
 
 ### 4.7 基数制御
 
@@ -226,12 +260,20 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | 語 | 効果 |
 |----|------|
 | `ACCEPT` | `( c-addr +n1 -- +n2 )` 1 行読む、エコー付き |
+| `EXPECT` | `( c-addr +n -- )` `c-addr` に読み込み、長さは `SPAN` に格納 |
+| `SPAN` | `( -- addr )` 直前の `EXPECT` の長さを保持するセル |
+| `QUERY` | `( -- )` `0 TIB ACCEPT` — TIB を再充填し `>IN` をクリア |
 | `PARSE-NAME` | `( -- c-addr u )` 次トークン (空白区切り) |
+| `WORD` | `( char "<chars>name<char>" -- c-addr )` 旧式パース語、HERE をスクラッチに |
 | `SFIND` | `( c-addr u -- xt flag )` 辞書検索。flag: 0=不在、1=通常、2=IMMEDIATE |
+| `FIND` | `( c-addr -- xt 1 \| xt -1 \| c-addr 0 )` ANS 風カウント済み文字列版 |
 | `NUMBER?` | `( c-addr u -- value flag )` `BASE` 対応数値パーサ、成功で flag=-1 |
 | `INTERPRET` | トークンを順に実行／コンパイル |
 | `EXECUTE` | `( xt -- )` xt を実行 |
 | `'` | `( "name" -- xt )` ワードの xt を検索 (失敗時 0) |
+| `[']` IMMEDIATE | `( "name" -- )` コンパイル時 `'` — xt を定義に埋め込む |
+| `CHAR` | `( "name" -- c )` 次トークンの先頭文字を push |
+| `[CHAR]` IMMEDIATE | `( "name" -- )` コンパイル時 `CHAR` |
 
 ### 4.10 コンパイル用内部プリミティブ
 | 語 | 説明 |
@@ -251,27 +293,51 @@ IMMEDIATE ワード以外は `xt` が辞書に積まれ、数値は `(LIT) value
 | `;` IMMEDIATE | EXIT をコンパイル、STATE=0 |
 | `VARIABLE` | `( "name" -- )` DOVAR 基づく 16-bit 変数を作る |
 | `CONSTANT` | `( x "name" -- )` DOCON 基づく定数を作る |
+| `CREATE` | `( "name" -- )` ランタイムで PFA を push するヘッダを作る |
+| `DOES>` | `( -- )` 直前 `CREATE` した語のランタイム部を差し替える |
 | `IMMEDIATE` | 直前に定義したワードを IMMEDIATE に |
 | `LITERAL` IMMEDIATE | コンパイル時 `( x -- )` → `(LIT) x` をコンパイル |
 | `RECURSE` IMMEDIATE | 定義中のコロン定義自身への呼び出しをコンパイル |
+| `POSTPONE` IMMEDIATE | `( "name" -- )` 指定語の遅延呼び出しをコンパイル |
+| `FORGET` | `( "name" -- )` `name` の手前まで HERE / LATEST を巻き戻す |
+| `MARKER` | `( "name" -- )` 呼ぶと自分自身を `FORGET` する語を作る |
 | `IF` `ELSE` `THEN` IMMEDIATE | `(0BRANCH)` / `(BRANCH)` + HERE パッチ |
 | `BEGIN` `UNTIL` `AGAIN` IMMEDIATE | 後方ジャンプループ |
 | `BEGIN` `WHILE` `REPEAT` IMMEDIATE | 条件抜け出し付きループ |
 | `DO` `LOOP` `+LOOP` IMMEDIATE | カウント付きループ |
 | `I` `J` | 内側 / 外側ループのインデックスを参照 |
 | `LEAVE` | 現在のループを脱出 (index := limit、実際の退出は次の `LOOP`/`+LOOP`) |
+| `UNLOOP` | 内側ループのリターンスタック 3 セルを破棄 (`DO ... LOOP` 中の `EXIT` 前に必須) |
 | `."` IMMEDIATE | 閉じ `"` までを文字列リテラルとしてコンパイル (実行時に印字) |
 | `S"` IMMEDIATE | 閉じ `"` までを文字列リテラルとしてコンパイル (実行時 `( addr u )`) |
+| `ABORT` | データ／リターンスタックを空にして `QUIT` へジャンプ |
+| `ABORT"` IMMEDIATE | 条件付き abort + インラインメッセージをコンパイル |
 | `(` IMMEDIATE | 閉じ `)` までコメントとして読み飛ばす |
 | `\` IMMEDIATE | 行末までコメントとして読み飛ばす |
 
-### 4.12 デバッグ
+### 4.12 ボキャブラリ
+
+このカーネルは単一の `FORTH` ワードリストで動作するため、すべての定義は
+1 つの名前空間を共有します。FORTH-83 でボキャブラリを使うソースとの
+互換性のためにダミーが揃っており、`CONTEXT` と `CURRENT` は常に同じ
+リストを指します。
+
+| 語 | 効果 |
+|----|------|
+| `VOCABULARY` | `( "name" -- )` 新ボキャブラリ定義 (現状 `FORTH` のエイリアス) |
+| `FORTH` | `CONTEXT` を `FORTH` に設定 |
+| `CONTEXT` | `( -- addr )` 現在の検索ワードリストを保持するセル |
+| `CURRENT` | `( -- addr )` 現在の定義先ワードリスト (== `CONTEXT`) |
+| `DEFINITIONS` | `CURRENT` を `CONTEXT` に追従 (このビルドでは no-op) |
+| `ONLY` | 検索リストを `FORTH` のみにリセット |
+
+### 4.13 デバッグ
 | 語 | 効果 |
 |----|------|
 | `.S` | `( -- )` スタック破壊しないダンプ: `<depth> a b c …` |
 | `WORDS` | `( -- )` 辞書エントリを新しい順に全て印字 |
 
-### 4.13 REPL
+### 4.14 REPL
 | 語 | 効果 |
 |----|------|
 | `QUIT` | REPL ループ本体 (起動時から走っている) |
@@ -529,19 +595,21 @@ SHOUT                → HELLO!  ok
   スタックは巻き戻されません（スタックが崩れていたら `0 0 0 ...` などで
   適宜リセット、もしくはハードリセット）。
 - **警告**: `TIB` を越えるトークン/辞書は 未検査。常識的な範囲で使用。
-- 絵的数値出力 (`<# # #> HOLD SIGN`) は未実装。整形は `.` / `U.` / `.R` /
-  `U.R` / `D.` で行います。
-- `FORGET` / `MARKER` / `VOCABULARY` 等のワードセット管理は未実装。
+- **シングルボキャブラリ**: `VOCABULARY` 等はソース互換のため用意して
+  ありますが、本カーネルは単一の `FORTH` ワードリストで運用されており、
+  `CONTEXT` と `CURRENT` は同じリストを指します。
+- **マスストレージワード** (`BLOCK` / `BUFFER` / `UPDATE` / `SAVE-BUFFERS`)
+  は未実装 — このハードウェアにはブロックデバイスがありません。
 
 ---
 
 ## 7. em6809 側の前提
 
-このカーネルは以下の MC6809 命令が動くことを期待しています。
-`em6809` クレートで未実装の命令 (例: `ABX`, `TST <mem>`, `INC <mem>`) は
-回避コードに置換済みなので、ユーザ側で気にする必要はありません。
-将来カーネルを拡張する際は、この短いリストに注意すれば他の命令で
-容易に置換可能です。
+プラグインを支える `em6809` クレートには、本カーネルの開発中に
+発見された複数の問題 (LEAS/LEAU 入替、`ABX` 未実装、`TST <mem>` /
+`INC <mem>` の一部欠如、SBC borrow-in 反転、PC-relative postbyte の
+`,S` 誤判定) がありましたが、いずれも upstream で修正済みで、
+カーネルは制約なしに完全な命令セットを使っています。
 
 ---
 
@@ -551,12 +619,17 @@ mc6809 プラグイン crate の `tests/smoke.rs` に以下があります:
 
 - `forth_kernel_banner` — 起動バナー確認
 - `forth_repl_dot` — `42 .` の echo と実行結果
+- `forth_arithmetic` — 主要な算術 / スタック語
 - `forth_colon_define_and_call` — `: DOUBLE DUP + ;`
-- `forth_if_then_and_begin_until` — `ABS` と `ONCE` (最小 BEGIN/UNTIL)
-- `forth_variable_constant_string` — VARIABLE / CONSTANT / `."` / `(`
+- `forth_if_then_and_begin_until` — `ABS` と最小限の `BEGIN`/`UNTIL`
+- `forth_variable_constant_string` — `VARIABLE` / `CONSTANT` / `."` / `(`
+- `forth_new_features` — 絵的数値出力、`CREATE`/`DOES>`、
+  `FORGET`/`MARKER`、`DO`/`LOOP`/`+LOOP`、混合精度演算
 
 crate のルート (`Cargo.toml` がある場所) で:
 
 ```sh
 cargo test --release forth_
 ```
+
+7 件 / 全パス。

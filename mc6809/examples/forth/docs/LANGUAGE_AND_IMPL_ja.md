@@ -373,11 +373,13 @@ IMMEDIATE word は即実行されて制御構造のパッチが入る。
 - `LEAX` `LEAY` `LEAS` `LEAU`
 
 **実装初期に発見した em6809 クレートのバグ** (いずれも upstream で
-修正済):
+修正済 — カーネルは回避策なしに完全な命令セットを使っています):
 
-- LEAS と LEAU の効果が入れ替わっていた
-- `ABX` が未実装 → Forth が ABX を使わないように調整
-- `TST <mem>` / `INC <mem>` の一部が未実装 → 同上
+- `LEAS` と `LEAU` の効果が入れ替わっていた
+- `ABX` が未実装だった
+- `TST <mem>` / `INC <mem>` の indexed 系の一部が未実装だった
+- `SBC` の borrow-in が反転 (多倍長減算が崩れる)
+- PC-relative postbyte が `,S` を誤判定していた
 
 ---
 
@@ -386,37 +388,51 @@ IMMEDIATE word は即実行されて制御構造のパッチが入る。
 ### 10.1 ファイル構成
 
 ```
-forth.asm  3,331 lines  (セクション境界は目安)
+forth.asm  4,867 lines  (セクション境界は目安)
   ├ equ / 定数
   ├ cold / banner / puts
   ├ NEXT / DOCOL / EXIT / DOVAR / DOCON
-  ├ stack primitives (?DUP / NIP / TUCK / PICK / 2DUP / ... を含む)
-  ├ arithmetic (16-bit、divmod、シフト)
-  ├ mixed-precision / double  (UM* / M* / UM/MOD / */ / */MOD /
-  │                             D+ / D- / DNEGATE / DABS / D.)
-  ├ memory access (@ / ! / +! / CMOVE / FILL / 2@ / 2!)
-  ├ I/O・フォーマット (EMIT / ... / . / U. / .R / U.R / DUMP / SPACES)
+  ├ stack primitives (DUP / ?DUP / DROP / SWAP / OVER / NIP / TUCK /
+  │                    ROT / -ROT / PICK / ROLL / DEPTH /
+  │                    2DUP / 2DROP / 2SWAP / 2OVER / >R / R> / R@ /
+  │                    SP@ / SP! / RP@ / RP!)
+  ├ arithmetic / logic (16-bit、divmod、LSHIFT / RSHIFT)
+  ├ mixed-precision / double  (UM* / M* / M+ / UM/MOD / SM/REM /
+  │                             FM/MOD / M/ / */ / */MOD /
+  │                             D+ / D- / DNEGATE / DABS / D. / D.R)
+  ├ memory access (@ / ! / +! / C@ / C! / 2@ / 2! /
+  │                 CMOVE / CMOVE> / MOVE / FILL / ERASE / BLANK /
+  │                 ALIGN / ALIGNED)
+  ├ string ops (COUNT / COMPARE / /STRING / -TRAILING)
+  ├ pictured numeric output (<# / # / #S / #> / HOLD / SIGN)
+  ├ I/O・フォーマット (EMIT / KEY / CR / SPACE / SPACES / TYPE /
+  │                     . / U. / .R / U.R / DUMP)
   ├ BASE / HEX / DECIMAL (と BASE 対応 NUMBER? + fmt_sd / fmt_ud)
   ├ dict primitives と state variables
-  ├ ACCEPT / PARSE-NAME
-  ├ SFIND / sfind_kernel (' と共用)
+  ├ ACCEPT / EXPECT / SPAN / QUERY / PARSE-NAME / WORD / CHAR / [CHAR]
+  ├ SFIND / FIND / sfind_kernel (' / ['] と共用)
   ├ NUMBER?
   ├ INTERPRET
   ├ compile primitives ((LIT) / (BRANCH) / (0BRANCH) / (LITSTR) /
-  │                      (SLITERAL) / (DO) / (LOOP) / (+LOOP))
-  ├ control structures (: / ; / IMMEDIATE / LITERAL / RECURSE /
+  │                      (SLITERAL) / (DO) / (LOOP) / (+LOOP) /
+  │                      (;DOES) / (ABORT"))
+  ├ control structures (: / ; / VARIABLE / CONSTANT / CREATE / DOES> /
+  │                      IMMEDIATE / LITERAL / RECURSE / POSTPONE /
+  │                      FORGET / MARKER /
   │                      IF / ELSE / THEN /
   │                      BEGIN / UNTIL / AGAIN / WHILE / REPEAT /
-  │                      DO / LOOP / +LOOP / I / J / LEAVE /
-  │                      ." / S" / ( / \)
+  │                      DO / LOOP / +LOOP / I / J / LEAVE / UNLOOP /
+  │                      ." / S" / ABORT / ABORT" / ( / \ /
+  │                      VOCABULARY / FORTH / CONTEXT / CURRENT /
+  │                      DEFINITIONS / ONLY)
   ├ debug (.S / WORDS)
-  └ built-in dictionary (LATEST chain、137 CFAs)
+  └ built-in dictionary (LATEST chain、190 CFAs)
 ```
 
 ### 10.2 スタートアップ消費
 
-- Cold boot 直後の HERE: `$2000` (ユーザ辞書は空)
-- 5.7 KB のバイナリに、コードとビルトイン辞書が収まる
+- Cold boot 直後の HERE: `$2800` (ユーザ辞書は空)
+- ~8.4 KB のバイナリに、コードとビルトイン辞書が収まる
 
 ---
 
@@ -424,13 +440,12 @@ forth.asm  3,331 lines  (セクション境界は目安)
 
 | 項目 | 予想コスト | 備考 |
 |---|---|---|
-| 絵的数値出力 (`<# # #S #> HOLD SIGN`) | 2-3 h | `D.` / `.R` の補完 |
 | 大文字小文字非依存検索 | 1-2 h | SFIND 内の比較を改造 |
-| `FORGET` / `MARKER` | 3-4 h | LATEST と HERE をセーブ |
-| 文字列系 `COMPARE` / `/STRING` / `-TRAILING` | 2-3 h | メモリ系の拡張 |
+| ボキャブラリ毎の独立検索リスト | 中 | 現状は単一 FORTH リスト |
 | ブロックストレージ | 中 | ファイルレス永続化 |
 | Floating point (Q8.8 or IEEE) | 大 | 用途次第 |
 | Metacompiler / Target compiler | 大 | セルフホスト向け |
+| ホストプラグインの ELF ローダ統合 | 中 | 現状 SREC のみ |
 
 ---
 
