@@ -73,17 +73,15 @@ target_compile_options(emfe_plugin_mc68030 PRIVATE
     /fp:precise
     /W3
     /EHsc
-    # Ship a PDB with the Release build so VS can decode C++ frames when
-    # the plugin AVs under an emfe frontend. Optimization is preserved.
-    $<$<CONFIG:Release>:/Zi>
 )
 
+# CMake's Visual Studio generator unconditionally writes <ProgramDatabaseFile>
+# into the vcxproj for Release, which makes link.exe emit a 10+ MB .pdb next
+# to the DLL even though the compiler builds with no debug info. /DEBUG:NONE
+# tells the linker to skip PDB emission entirely so Release artifacts are
+# DLL-only.
 target_link_options(emfe_plugin_mc68030 PRIVATE
-    # /DEBUG emits a .pdb; /OPT:REF + /OPT:ICF preserve Release-level
-    # dead-code and COMDAT-folding (the default /DEBUG flips them off).
-    $<$<CONFIG:Release>:/DEBUG>
-    $<$<CONFIG:Release>:/OPT:REF>
-    $<$<CONFIG:Release>:/OPT:ICF>
+    $<$<CONFIG:Release>:/DEBUG:NONE>
 )
 
 target_link_libraries(emfe_plugin_mc68030 PRIVATE
