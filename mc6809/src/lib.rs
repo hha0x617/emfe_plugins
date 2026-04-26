@@ -744,7 +744,10 @@ impl PluginInstance {
         let entries: &[(u32, &str, &str, u32, u32)] = &[
             (RegId::A as u32, "A", "CPU", 8, EMFE_REG_FLAG_NONE),
             (RegId::B as u32, "B", "CPU", 8, EMFE_REG_FLAG_NONE),
-            (RegId::D as u32, "D", "CPU", 16, EMFE_REG_FLAG_HIDDEN), // A:B view
+            // A:B concatenation view. Read-only — users edit A and B
+            // individually, and D updates automatically because
+            // emfe_get_registers recomputes (A << 8) | B every read.
+            (RegId::D as u32, "D", "CPU", 16, EMFE_REG_FLAG_READONLY),
             (RegId::X as u32, "X", "CPU", 16, EMFE_REG_FLAG_NONE),
             (RegId::Y as u32, "Y", "CPU", 16, EMFE_REG_FLAG_NONE),
             (RegId::U as u32, "U", "CPU", 16, EMFE_REG_FLAG_NONE),
