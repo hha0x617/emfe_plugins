@@ -2144,10 +2144,11 @@ static void SetConfigValue(Em68030::Config::EmulatorConfig& cfg, const std::stri
     try {
         if (key == "MemorySize")             cfg.MemorySize = std::stoi(val) * 1024 * 1024;
         else if (key == "BoardType")         cfg.BoardType = val;
-        // TargetOS swaps which Mvme147ScsiDisks list is active. The
-        // helper updates cfg.TargetOS itself; LIST API operations after
-        // this point read/write the new OS's stored disk list.
-        else if (key == "TargetOS")          cfg.SyncScsiDisksForTargetOS(cfg.TargetOS, val);
+        // TargetOS swaps the entire MVME147 SCSI bus state (disk list +
+        // CD-ROM image + CD-ROM SCSI ID). The helper updates cfg.TargetOS
+        // itself; LIST API and emfe_get_setting calls after this point
+        // read the new OS's stored values.
+        else if (key == "TargetOS")          cfg.SyncMvme147ScsiForTargetOS(cfg.TargetOS, val);
         else if (key == "Theme")             cfg.Theme = val;
         else if (key == "Mvme147RomPath")    cfg.Mvme147RomPath = val;
         else if (key == "Mvme147ScsiCdromPath") cfg.Mvme147ScsiCdromPath = val;
