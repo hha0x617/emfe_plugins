@@ -81,4 +81,8 @@ swi_handler:
             org     $FFFE
             fdb     start           ; $FFFE-FFFF : reset vector
 
-            end
+            ;; `end <entry>` populates the S-record's S9 termination
+            ;; record with the program's start address. Without an
+            ;; explicit entry, lwasm writes S9 = $0000 and the host
+            ;; loads the image but starts execution at PC = 0.
+            end     start

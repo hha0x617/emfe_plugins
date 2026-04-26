@@ -81,4 +81,8 @@ FFFA 101D             (     swi_demo.asm):00080                     fdb     swi_
                       (     swi_demo.asm):00081                     org     $FFFE
 FFFE 1000             (     swi_demo.asm):00082                     fdb     start           ; $FFFE-FFFF : reset vector
                       (     swi_demo.asm):00083         
-                      (     swi_demo.asm):00084                     end
+                      (     swi_demo.asm):00084                     ;; `end <entry>` populates the S-record's S9 termination
+                      (     swi_demo.asm):00085                     ;; record with the program's start address. Without an
+                      (     swi_demo.asm):00086                     ;; explicit entry, lwasm writes S9 = $0000 and the host
+                      (     swi_demo.asm):00087                     ;; loads the image but starts execution at PC = 0.
+                      (     swi_demo.asm):00088                     end     start
