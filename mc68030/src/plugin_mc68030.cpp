@@ -1572,28 +1572,22 @@ EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
     return EMFE_OK;
 }
 
-EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
-    if (!instance) return EMFE_ERR_INVALID;
-    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
-    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
-
-    // Flush any deferred REQUIRES_RESET settings: if the committed config
-    // differs from the applied config on any device-affecting field, tear
-    // down and rebuild the device tree so the new values take effect.
-    auto& a = inst->appliedConfig;
-    auto& c = inst->config;
-    // SCSI disk list — compare element-wise (path + ID), not just size.
-    // Same-count edits (e.g. swapping a disk image path while keeping the
-    // count the same) need to trigger a rebuild too.
-    auto disksDiffer = [&]() {
-        if (a.Mvme147ScsiDisks.size() != c.Mvme147ScsiDisks.size()) return true;
-        for (size_t i = 0; i < a.Mvme147ScsiDisks.size(); i++) {
-            if (a.Mvme147ScsiDisks[i].Path   != c.Mvme147ScsiDisks[i].Path)   return true;
-            if (a.Mvme147ScsiDisks[i].ScsiId != c.Mvme147ScsiDisks[i].ScsiId) return true;
-        }
-        return false;
-    };
-    bool deviceChange =
+// Returns true if any device-affecting field differs between applied and
+// committed config — i.e. the running hardware is out of sync with the
+// settings the user has saved. Both emfe_reset and emfe_apply_settings
+// gate device-tree rebuild on this check.
+static bool HasDeferredDeviceChange(
+    const Em68030::Config::EmulatorConfig& a,
+    const Em68030::Config::EmulatorConfig& c)
+{
+    // SCSI disk list — element-wise (path + ID), not just size, so
+    // same-count path/ID swaps also trigger a rebuild.
+    if (a.Mvme147ScsiDisks.size() != c.Mvme147ScsiDisks.size()) return true;
+    for (size_t i = 0; i < a.Mvme147ScsiDisks.size(); i++) {
+        if (a.Mvme147ScsiDisks[i].Path   != c.Mvme147ScsiDisks[i].Path)   return true;
+        if (a.Mvme147ScsiDisks[i].ScsiId != c.Mvme147ScsiDisks[i].ScsiId) return true;
+    }
+    return
         a.BoardType != c.BoardType ||
         a.MemorySize != c.MemorySize ||
         a.TargetOS != c.TargetOS ||
@@ -1610,18 +1604,46 @@ EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
         a.Mvme147BootPartition != c.Mvme147BootPartition ||
         a.NetBsdKernelImagePath != c.NetBsdKernelImagePath ||
         a.LinuxKernelImagePath != c.LinuxKernelImagePath ||
-        a.LinuxCommandLine != c.LinuxCommandLine ||
-        disksDiffer();
+        a.LinuxCommandLine != c.LinuxCommandLine;
+}
+
+// Tear down + rebuild the MVME147/Generic device tree using the current
+// config, sync appliedConfig, and reset the CPU + bus. The post-rebuild
+// notification reason is passed in so callers can identify themselves
+// (emfe_reset → "Reset", emfe_apply_settings → "Settings applied").
+static void RebuildDeviceTreeAndResetCpu(
+    EmfeInstanceData* inst, const char* notifyReason)
+{
+    inst->TeardownDevices();
+    if (inst->config.BoardType == "MVME147")
+        inst->SetupMvme147Devices();
+    else
+        inst->SetupGenericDevices();
+    inst->SetupTrapHandler();
+    inst->BuildRegisterDefs();
+    inst->appliedConfig = inst->config;
+    if (inst->pccDevice) inst->pccDevice->HardwareReset();
+    if (inst->scsiDevice) inst->scsiDevice->ResetBusState();
+    inst->systemBooted = false;
+    inst->cpu->Reset();
+    inst->state.store(EMFE_STATE_STOPPED);
+    inst->NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_NONE,
+                            inst->cpu->PC, notifyReason);
+}
+
+EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    // Flush any deferred REQUIRES_RESET settings: if the committed config
+    // differs from the applied config on any device-affecting field, tear
+    // down and rebuild the device tree so the new values take effect.
+    bool deviceChange = HasDeferredDeviceChange(inst->appliedConfig, inst->config);
 
     if (deviceChange) {
-        inst->TeardownDevices();
-        if (inst->config.BoardType == "MVME147")
-            inst->SetupMvme147Devices();
-        else
-            inst->SetupGenericDevices();
-        inst->SetupTrapHandler();
-        inst->BuildRegisterDefs();
-        inst->appliedConfig = inst->config;  // everything now current
+        RebuildDeviceTreeAndResetCpu(inst, "Reset");
+        return EMFE_OK;
     }
 
     if (inst->pccDevice) inst->pccDevice->HardwareReset();
@@ -2243,13 +2265,20 @@ EmfeResult EMFE_CALL emfe_apply_settings(EmfeInstance instance) {
     inst->appliedConfig.JitCompileThreshold = inst->config.JitCompileThreshold;
     inst->appliedConfig.CallStackMode = inst->config.CallStackMode;
 
-    // Device-affecting fields are deferred: leave appliedConfig alone so
-    // the UI can show them as pending. The running hardware keeps its
-    // current state until emfe_reset flushes the deferred values.
+    // Device-affecting fields: rebuild the device tree + reset the CPU
+    // when anything device-affecting actually changed. We used to defer
+    // this until the user pressed Reset, but that left "OK" silently
+    // failing to take effect — the user would change a disk path or
+    // CD-ROM image, press OK, then press Run, and watch NetBSD enumerate
+    // the OLD disks. Now OK applies device settings immediately. When
+    // nothing device-affecting changed (e.g. user only toggled JIT),
+    // the CPU is left running where it was.
     //
-    // See the corresponding EMFE_SETTING_FLAG_REQUIRES_RESET entries in
-    // BuildSettingDefs() for the precise list; this code mirrors that set
-    // by simply omitting those fields above.
+    // emfe_apply_settings is gated to STOPPED above, so a CPU reset here
+    // is safe — the user hasn't started executing yet, or has stopped.
+    if (HasDeferredDeviceChange(inst->appliedConfig, inst->config)) {
+        RebuildDeviceTreeAndResetCpu(inst, "Settings applied");
+    }
     return EMFE_OK;
 }
 
