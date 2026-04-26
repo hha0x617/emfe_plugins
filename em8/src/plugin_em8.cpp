@@ -514,6 +514,40 @@ int32_t EMFE_CALL emfe_get_register_defs(EmfeInstance instance, const EmfeRegist
     return static_cast<int32_t>(inst->regDefs.size());
 }
 
+extern "C" int32_t EMFE_CALL emfe_get_register_flag_defs(
+    EmfeInstance /*instance*/, uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs)
+{
+    if (!out_defs) return 0;
+    *out_defs = nullptr;
+
+    // em8 FL (8-bit) bit decomposition. Layout per Em8Cpu.h's FLAG_*
+    // constants (matches a 6502-style status register):
+    //   bit 0 : C (Carry)
+    //   bit 1 : Z (Zero)
+    //   bit 2 : I (Interrupt mask)
+    //   bit 4 : B (Break)
+    //   bit 6 : V (Overflow)
+    //   bit 7 : N (Negative)
+    // Bits 3 and 5 are reserved and not exposed.
+    // Order is MSB-first (N V B I Z C) so the on-screen sequence
+    // matches the way 6502 family status registers are usually written.
+    static const EmfeRegFlagBitDef fl_bits[] = {
+        { 7, "N" },
+        { 6, "V" },
+        { 4, "B" },
+        { 2, "I" },
+        { 1, "Z" },
+        { 0, "C" },
+    };
+
+    if (reg_id == REG_FL) {
+        *out_defs = fl_bits;
+        return static_cast<int32_t>(sizeof(fl_bits) / sizeof(fl_bits[0]));
+    }
+    return 0;
+}
+
 EmfeResult EMFE_CALL emfe_get_registers(EmfeInstance instance, EmfeRegValue* values, int32_t count) {
     if (!instance || !values) return EMFE_ERR_INVALID;
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
