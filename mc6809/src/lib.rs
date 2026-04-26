@@ -161,6 +161,14 @@ unsafe impl Sync for EmfeRegFlagBitDef {}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct EmfeRegViewDep {
+    pub reg_id: u32,
+    pub shift: u8,
+    pub width: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub union EmfeRegValueUnion {
     pub u64_: u64,
     pub f64_: f64,
@@ -1177,6 +1185,35 @@ pub unsafe extern "C" fn emfe_get_register_flag_defs(
     if reg_id == RegId::CC as u32 {
         *out_defs = CC_FLAG_BITS.as_ptr();
         return CC_FLAG_BITS.len() as i32;
+    }
+    0
+    })
+}
+
+// MC6809 D register is the concatenation of A (high byte) and B (low byte).
+// emfe_get_registers already computes (A << 8) | B for us, but during Edit
+// mode the frontend recomputes the displayed D from the live A and B
+// textbox values via these deps so the user sees the new D the moment
+// they finish typing into A or B — before pressing Apply.
+static D_VIEW_DEPS: [EmfeRegViewDep; 2] = [
+    EmfeRegViewDep { reg_id: RegId::A as u32, shift: 8, width: 8 },
+    EmfeRegViewDep { reg_id: RegId::B as u32, shift: 0, width: 8 },
+];
+
+#[no_mangle]
+pub unsafe extern "C" fn emfe_get_register_view_deps(
+    _instance: EmfeInstance,
+    reg_id: u32,
+    out_deps: *mut *const EmfeRegViewDep,
+) -> i32 {
+    ffi_catch!(0, {
+    if out_deps.is_null() {
+        return 0;
+    }
+    *out_deps = std::ptr::null();
+    if reg_id == RegId::D as u32 {
+        *out_deps = D_VIEW_DEPS.as_ptr();
+        return D_VIEW_DEPS.len() as i32;
     }
     0
     })

@@ -112,6 +112,26 @@ typedef struct {
     const char* label;          /* "X", "N", "Z", "V", "C", "S", "T", ... */
 } EmfeRegFlagBitDef;
 
+/* Synthetic view-register dependency entry — describes how a register's
+ * value is composed from one or more source registers via simple
+ * concatenation. Used by frontends to live-recompute the synthetic
+ * register's display while the user is editing the source registers.
+ *
+ * Composition: for each entry, take the low `width` bits of the source
+ * register's value, then shift left by `shift` and OR into the result.
+ *
+ * Example: M6809 D = A:B is two entries:
+ *   { reg_id=A, shift=8, width=8 }   // A occupies bits 15..8
+ *   { reg_id=B, shift=0, width=8 }   // B occupies bits  7..0
+ *
+ * Plugins return these via emfe_get_register_view_deps (optional export).
+ * Registers that are scalars (the typical case) return 0. */
+typedef struct {
+    uint32_t reg_id;            /* Source register ID */
+    uint8_t  shift;              /* Bit position the source's LSB lands on */
+    uint8_t  width;              /* Number of bits to take from the source */
+} EmfeRegViewDep;
+
 /* Register value (for batch get/set) */
 typedef struct {
     uint32_t reg_id;
@@ -253,6 +273,23 @@ EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_flag_defs(
     EmfeInstance instance,
     uint32_t reg_id,
     const EmfeRegFlagBitDef** out_defs);
+
+/* Returns the list of source-register dependencies that compose this
+ * synthetic register's value, or 0 if the register is a regular scalar
+ * (the default for most registers). Frontends use this to live-recompute
+ * the synthetic register's textbox as the user edits the source
+ * registers in Edit mode, before any emfe_set_registers / Apply call.
+ *
+ * The returned array is plugin-owned and stays valid for the lifetime
+ * of the instance.
+ *
+ * Optional export — frontends should resolve via soft lookup
+ * (GetProcAddress / TryLoadFunc) and skip the live-recompute path when
+ * the plugin doesn't ship it. */
+EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_view_deps(
+    EmfeInstance instance,
+    uint32_t reg_id,
+    const EmfeRegViewDep** out_deps);
 
 /* Get register values (batch). values array must have count entries with reg_id set. */
 EMFE_EXPORT EmfeResult EMFE_CALL emfe_get_registers(
