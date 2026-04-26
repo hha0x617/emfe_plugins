@@ -1680,7 +1680,42 @@ static void RebuildDeviceTreeAndResetCpu(
     if (inst->scsiDevice) inst->scsiDevice->ResetBusState();
     inst->systemBooted = false;
     inst->emulationStarted = false;
-    inst->cpu->Reset();
+
+    // SetupMvme147Devices/SetupGenericDevices re-initialized memory, so any
+    // kernel ELF that was loaded into RAM before the rebuild is gone.
+    // Re-load it from the same path so the next Run still has a kernel to
+    // execute. Mirrors the warm-reboot recovery in PCC's OnWatchdogReset.
+    bool kernelReloaded = false;
+    if (!inst->lastLoadedFile.empty() &&
+        std::filesystem::exists(inst->lastLoadedFile))
+    {
+        try {
+            auto result = Em68030::IO::FileLoader::LoadElf(*inst->memory, inst->lastLoadedFile);
+            inst->cpu->PC = result.EntryPoint;
+            inst->programStartAddress = result.StartAddress;
+            inst->programEndAddress = result.EndAddress;
+            if (inst->config.BoardType == "MVME147") {
+                uint32_t topOfRam = inst->config.FramebufferEnabled
+                    ? inst->config.ComputeVramBase()
+                    : static_cast<uint32_t>(inst->config.MemorySize);
+                if (inst->config.TargetOS == "Linux")
+                    inst->SetupMvme147LinuxBootStub(topOfRam, result.EndAddress);
+                else
+                    inst->SetupMvme147BootStub(topOfRam);
+                inst->cpu->SR = 0x2700;
+            } else {
+                inst->cpu->SR = 0x2700;
+                inst->cpu->A[7] = inst->memory->GetFastRamSize();
+                inst->cpu->SSP = inst->cpu->A[7];
+            }
+            kernelReloaded = true;
+        } catch (...) {
+            // fall through to plain CPU reset below
+        }
+    }
+    if (!kernelReloaded)
+        inst->cpu->Reset();
+
     inst->state.store(EMFE_STATE_STOPPED);
     inst->NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_NONE,
                             inst->cpu->PC, notifyReason);
