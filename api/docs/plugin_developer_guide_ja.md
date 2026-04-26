@@ -211,6 +211,73 @@ state-change コールバックを**必ず**発火すること。
 set は RUNNING 中は拒否: `EMFE_STATE_RUNNING` なら `EMFE_ERR_STATE` を
 返す。既存プラグイン全てが準拠。
 
+### 4.3 ビット分解 (チェックボックス UI)
+
+フロントエンドは、以下の 2 条件が成立するときだけ、フラグレジスタを
+チェックボックスの行で描画します:
+
+1. レジスタの `flags` に `EMFE_REG_FLAG_FLAGS` が立っている
+2. プラグインがオプションエクスポート `emfe_get_register_flag_defs` を
+   提供し、その `reg_id` に対し非空の配列を返す
+
+エクスポートのシグネチャ:
+
+```c
+int32_t emfe_get_register_flag_defs(
+    EmfeInstance instance,
+    uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs);
+
+typedef struct {
+    uint8_t     bit_index;   /* 0 = LSB */
+    const char* label;       /* "X", "S", "BSUN", ... */
+} EmfeRegFlagBitDef;
+```
+
+bit エントリの数とプラグイン所有の配列ポインタを返す (典型的な実装は
+`static const EmfeRegFlagBitDef[]` を `reg_id` で `switch` する形)。
+分解を提供しないレジスタには `0` を返す — `*out_defs = nullptr` と
+すると、フロントエンドは通常の hex テキストボックス表示にフォール
+バックします。
+
+**フロントエンドの挙動** (プラグイン作者向けの参考):
+
+- 各エントリに対して 1 つの CheckBox が、該当レジスタの値テキスト
+  ボックスの下に配置される (テキストボックスと同じ列にインデント)。
+  CheckBox の `IsChecked` は `(レジスタ値 >> bit_index) & 1` を反映し、
+  `emfe_get_registers` で新値が来るたびに更新される。
+- Edit モードに入ると CheckBox が enabled になる。Click 時はテキスト
+  ボックスの hex 表示を即更新 (live preview)。Apply で各 CheckBox
+  状態を読んで `reg_id` ごとに read-modify-write を実行し、
+  `emfe_set_registers` で書き戻す。プラグインから見えるのは「完成した
+  新レジスタ値が 1 度届く」だけ — 個々の bit toggle のストリームでは
+  ない。
+- Cancel は CheckBox トグルとテキストボックス編集の両方を破棄し、次の
+  `UpdateRegisters` で applied 状態から両方を再同期する。
+
+**分解する/しないの判断**:
+
+- 1-bit フラグ (ユーザーが toggle する単一ビットフィールド): 分解
+- multi-bit フィールド (round mode、検索レベル数、quotient byte 等):
+  **分解しない** — チェックボックスでは表現できないので hex 値に残す
+- 同レジスタ内で同じラベルを持つ 2 領域 (例: M68030 FPSR の Exception
+  Status `OVFL` と Accrued Exception `OVFL`): どちらか片方だけを
+  分解し、もう片方は hex 値に残す — CheckBox 行の曖昧さを避けるため
+
+**実装上の注意**:
+
+- 静的配列のみ — スタックローカルな `EmfeRegFlagBitDef[]` のポインタを
+  返してはいけない。ポインタは関数呼び出しを超えて有効である必要
+- ラベルメモリも安定したものを使う — `b"X\0".as_ptr()` (Rust) や文字
+  リテラル (C/C++) は OK、計算した `std::string::c_str()` は NG
+- オプションエクスポート: フラグレジスタを持たないプラグインは
+  エクスポート自体を省略しても良い。フロントエンドは
+  `GetProcAddress` が null を返すと hex テキストボックスにフォール
+  バックする
+
+各プラグインが現在分解しているレジスタは FFI リファレンスの
+`emfe_get_register_flag_defs` の項目に一覧化してあります。
+
 ## 5. メモリ
 
 `emfe_peek_*` / `emfe_poke_*` は **副作用なし** で動作する — デバッガ

@@ -217,6 +217,75 @@ entry has `reg_id` set; the plugin fills `value.u64` (or `f64` / `f80`).
 Set should reject while running: return `EMFE_ERR_STATE` if the plugin
 is in `EMFE_STATE_RUNNING`. All existing plugins follow this rule.
 
+### 4.3 Flag-bit decomposition (checkbox UI)
+
+Frontends render flag registers as a row of checkboxes when two
+conditions hold:
+
+1. The register's `flags` carries `EMFE_REG_FLAG_FLAGS`.
+2. The plugin exports `emfe_get_register_flag_defs` (optional) and
+   returns a non-empty array for that `reg_id`.
+
+The export signature:
+
+```c
+int32_t emfe_get_register_flag_defs(
+    EmfeInstance instance,
+    uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs);
+
+typedef struct {
+    uint8_t     bit_index;   /* 0 = LSB */
+    const char* label;       /* "X", "S", "BSUN", ... */
+} EmfeRegFlagBitDef;
+```
+
+Returns the number of bit entries and a pointer to a plugin-owned
+array (typical pattern: a `static const EmfeRegFlagBitDef[]` indexed
+by `reg_id` in a `switch`). Returns `0` when the register has no
+decomposition — `*out_defs = nullptr` and the frontend falls back to
+the plain hex textbox display.
+
+**Frontend behaviour** (so plugin authors know what to expect):
+
+- A CheckBox per entry sits underneath the register's value textbox,
+  indented to align with it. The CheckBox's `IsChecked` mirrors
+  `(register_value >> bit_index) & 1` and is updated whenever
+  `emfe_get_registers` reports a new value.
+- In Edit mode the CheckBoxes become enabled. Click events update the
+  hex textbox immediately (live preview). On Apply, the frontend
+  reads each CheckBox state, ORs/ANDs the bits into a fresh register
+  value (one read-modify-write per `reg_id`), and pushes via
+  `emfe_set_registers`. The plugin sees a single new value per
+  register — never a stream of individual bit toggles.
+- Cancel discards both the CheckBox toggles and the textbox edits,
+  then the next `UpdateRegisters` re-syncs both from applied state.
+
+**What to decompose vs leave alone**:
+
+- One-bit flags (single-bit fields the user toggles): decompose.
+- Multi-bit fields (rounding mode, search-level count, quotient
+  byte): **don't** decompose — checkboxes can't represent them.
+  Leave them in the hex value.
+- Two byte ranges of the same register that share labels (e.g.
+  M68030 FPSR's Exception Status `OVFL` and Accrued Exception
+  `OVFL`): pick one to decompose; leave the other in the hex value
+  to avoid ambiguous CheckBox rows.
+
+**Implementation tips**:
+
+- Static arrays only — don't return a pointer to a stack-local
+  `EmfeRegFlagBitDef[]`. The pointer must outlive the call.
+- Label memory must be stable too — `b"X\0".as_ptr()` (Rust) or a
+  string literal (C/C++) both work; computed `std::string::c_str()`
+  does not.
+- Optional export: it's fine for plugins that don't have any flag
+  registers to skip the export entirely. Frontends fall back to hex
+  textboxes when `GetProcAddress` returns null.
+
+The shipping decompositions are catalogued in the FFI reference's
+`emfe_get_register_flag_defs` entry.
+
 ## 5. Memory
 
 `emfe_peek_*` / `emfe_poke_*` operate **without side effects** — they're

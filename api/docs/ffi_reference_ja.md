@@ -112,6 +112,42 @@ enable/disable を決める。フラグを **立てたら** 対応 API を実装
 スレッド: **UI** (emulation 停止中)。
 `RUNNING` 中なら `ERR_STATE`。`READONLY` フラグ付きは黙って無視。
 
+### `emfe_get_register_flag_defs(inst, uint32_t reg_id, const EmfeRegFlagBitDef** out) -> int32_t count`
+スレッド: **UI**。
+**オプション**エクスポート。フロントエンドはソフト解決
+(`GetProcAddress` / `TryLoadFunc`) を使い、見つからなければ通常の
+hex 表示にフォールバック。`reg_id` の bit 分解配列とその長さを返し、
+分解を提供しないレジスタには `0` (および `*out = nullptr`) を返す
+(通常のスカラーレジスタはこの動作)。
+
+`EmfeRegFlagBitDef` のフィールド:
+
+| フィールド | 型 | 意味 |
+|---|---|---|
+| `bit_index` | `uint8_t` | 0 = LSB。例: M68030 SR の X bit は 4、S bit は 13 |
+| `label` | `const char*` | 短い表示名。例: `"X"`, `"S"`, `"BSUN"` |
+
+フロントエンドはこれを使って `EMFE_REG_FLAG_FLAGS` 付きのレジスタに
+チェックボックス形式 UI を描画します。各エントリが CheckBox になり、
+その `IsChecked` は `(レジスタ値 >> bit_index) & 1` を反映。
+チェックボックス行は値テキストボックスと同じレジスタに属し、同じ
+Edit / Apply / Cancel サイクルに従います (書き込みは Apply 時に
+1 回の `emfe_set_registers` 呼び出しに集約され、プラグインから見ると
+完成した新レジスタ値が 1 度届くだけ)。
+
+各プラグインが分解しているレジスタ:
+- **mc68030**: `SR` (X N Z V C S T)、`FPCR` (Exception Enable byte)、
+  `FPSR` (FPCC + Exception Status)、`MMUSR` (B L S W I M T)、`CACR`
+  (EI FI CEI CI IBE ED FD CED CD WA DBE)
+- **mc6809**: `CC` (E F H I N Z V C)
+- **z8000**: `FCW` (SEG S/N EPA VIE NVIE C Z S P/V DA H)
+
+multi-bit フィールド (例: M68030 FPCR の RND mode/precision、MMUSR の
+level count、FPSR の Quotient byte) は意図的に分解しません — hex 値で
+編集します。同レジスタ内で他の bit と label が衝突するフィールド
+(例: FPSR の Accrued Exception byte vs Exception Status) も同様に
+分解対象外です。
+
 ## 4. メモリ (副作用なし)
 
 ### `emfe_peek_byte/word/long(inst, uint64_t addr) -> uint8_t/uint16_t/uint32_t`

@@ -117,6 +117,43 @@ Thread: **UI** (emulation stopped).
 Returns `ERR_STATE` if called while `RUNNING`. Read-only registers (flag
 `READONLY`) are silently ignored.
 
+### `emfe_get_register_flag_defs(inst, uint32_t reg_id, const EmfeRegFlagBitDef** out) -> int32_t count`
+Thread: **UI**.
+**Optional** export — frontends should resolve via soft lookup
+(`GetProcAddress` / `TryLoadFunc`) and fall back to plain hex display when
+the plugin doesn't ship it. Returns a plugin-owned array of bit definitions
+for `reg_id` and the array length, or `0` (with `*out = nullptr`) when the
+register has no flag-bit decomposition (the default — most registers are
+plain scalars).
+
+`EmfeRegFlagBitDef` carries:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `bit_index` | `uint8_t` | 0 = LSB, e.g. 4 for M68030 SR's X bit, 13 for SR's S bit |
+| `label` | `const char*` | Short display name, e.g. `"X"`, `"S"`, `"BSUN"` |
+
+Frontends use this to render checkbox-style UI for registers that carry
+`EMFE_REG_FLAG_FLAGS`: each entry becomes a CheckBox whose `IsChecked`
+mirrors `(register_value >> bit_index) & 1`. The checkbox row is the
+counterpart to the value textbox — both belong to the same register and
+follow the same Edit / Apply / Cancel cycle (writes are batched into a
+single `emfe_set_registers` call at Apply time, so the plugin only sees a
+fully-formed new register value).
+
+The shipping plugins decompose:
+- **mc68030**: `SR` (X N Z V C S T), `FPCR` (Exception Enable byte),
+  `FPSR` (FPCC + Exception Status), `MMUSR` (B L S W I M T), `CACR`
+  (EI FI CEI CI IBE ED FD CED CD WA DBE)
+- **mc6809**: `CC` (E F H I N Z V C)
+- **z8000**: `FCW` (SEG S/N EPA VIE NVIE C Z S P/V DA H)
+
+Multi-bit fields (e.g. M68030 FPCR's RND mode/precision, MMUSR's level
+count, FPSR's Quotient byte) are intentionally NOT decomposed — they're
+left in the hex value. Same goes for fields whose labels would collide
+with another bit row in the same register (e.g. FPSR's Accrued Exception
+byte vs Exception Status).
+
 ## 4. Memory (side-effect-free)
 
 ### `emfe_peek_byte(inst, uint64_t addr) -> uint8_t`
