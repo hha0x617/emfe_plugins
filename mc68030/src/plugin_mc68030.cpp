@@ -1247,6 +1247,43 @@ int32_t EMFE_CALL emfe_get_register_defs(EmfeInstance instance, const EmfeRegist
     return static_cast<int32_t>(inst->regDefs.size());
 }
 
+int32_t EMFE_CALL emfe_get_register_flag_defs(
+    EmfeInstance /*instance*/, uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs)
+{
+    if (!out_defs) return 0;
+    *out_defs = nullptr;
+
+    // MC68030 SR bit decomposition. Order mirrors the standalone
+    // em68030_WinUI3Cpp register pane (X N Z V C S T) so users see a
+    // consistent layout across the four frontends.
+    //   bit 0  : C (Carry)
+    //   bit 1  : V (Overflow)
+    //   bit 2  : Z (Zero)
+    //   bit 3  : N (Negative)
+    //   bit 4  : X (Extend)
+    //   bit 13 : S (Supervisor)
+    //   bit 15 : T (Trace)
+    // I0/I1/I2 (interrupt mask), M (master/interrupt), and reserved
+    // bits are intentionally NOT exposed as checkboxes — matching the
+    // standalone, which leaves them implicit in the SR hex display.
+    static const EmfeRegFlagBitDef sr_bits[] = {
+        { 4,  "X" },
+        { 3,  "N" },
+        { 2,  "Z" },
+        { 1,  "V" },
+        { 0,  "C" },
+        { 13, "S" },
+        { 15, "T" },
+    };
+
+    if (reg_id == REG_SR) {
+        *out_defs = sr_bits;
+        return static_cast<int32_t>(sizeof(sr_bits) / sizeof(sr_bits[0]));
+    }
+    return 0;
+}
+
 EmfeResult EMFE_CALL emfe_get_registers(EmfeInstance instance, EmfeRegValue* values, int32_t count) {
     if (!instance || !values) return EMFE_ERR_INVALID;
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);

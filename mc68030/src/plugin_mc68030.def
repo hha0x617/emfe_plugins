@@ -80,6 +80,7 @@ EXPORTS
     emfe_add_list_item
     emfe_remove_list_item
     emfe_is_list_pending
+    emfe_get_register_flag_defs
     emfe_save_settings
     emfe_load_settings
     emfe_set_data_dir

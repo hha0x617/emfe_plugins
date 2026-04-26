@@ -103,6 +103,15 @@ typedef struct {
     uint32_t    flags;          /* EmfeRegFlags bitmask */
 } EmfeRegisterDef;
 
+/* Bit-level decomposition of a flags register, e.g. M68K SR's
+ * X/N/Z/V/C/S/T. Used by frontends to render checkbox-style UI for
+ * registers that carry EMFE_REG_FLAG_FLAGS. The plugin returns these
+ * via emfe_get_register_flag_defs (optional export). */
+typedef struct {
+    uint8_t     bit_index;      /* 0 = LSB; 4 for SR.X, 13 for SR.S, etc. */
+    const char* label;          /* "X", "N", "Z", "V", "C", "S", "T", ... */
+} EmfeRegFlagBitDef;
+
 /* Register value (for batch get/set) */
 typedef struct {
     uint32_t reg_id;
@@ -230,6 +239,20 @@ EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_diagnostic_callback(
 EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_defs(
     EmfeInstance instance,
     const EmfeRegisterDef** out_defs);
+
+/* Returns bit-level decomposition for a flags register (e.g. SR), or 0
+ * if reg_id has no decomposition (which is the default — most registers
+ * are scalars). Frontends use this to render bit-level checkbox UI for
+ * registers that carry EMFE_REG_FLAG_FLAGS. The returned array stays
+ * valid for the lifetime of the instance.
+ *
+ * Optional export — frontends should resolve via soft lookup
+ * (GetProcAddress / TryLoadFunc) and fall back to hex display when the
+ * plugin doesn't ship it. */
+EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_flag_defs(
+    EmfeInstance instance,
+    uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs);
 
 /* Get register values (batch). values array must have count entries with reg_id set. */
 EMFE_EXPORT EmfeResult EMFE_CALL emfe_get_registers(
