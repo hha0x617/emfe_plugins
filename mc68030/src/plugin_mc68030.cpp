@@ -1582,6 +1582,17 @@ EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     // down and rebuild the device tree so the new values take effect.
     auto& a = inst->appliedConfig;
     auto& c = inst->config;
+    // SCSI disk list — compare element-wise (path + ID), not just size.
+    // Same-count edits (e.g. swapping a disk image path while keeping the
+    // count the same) need to trigger a rebuild too.
+    auto disksDiffer = [&]() {
+        if (a.Mvme147ScsiDisks.size() != c.Mvme147ScsiDisks.size()) return true;
+        for (size_t i = 0; i < a.Mvme147ScsiDisks.size(); i++) {
+            if (a.Mvme147ScsiDisks[i].Path   != c.Mvme147ScsiDisks[i].Path)   return true;
+            if (a.Mvme147ScsiDisks[i].ScsiId != c.Mvme147ScsiDisks[i].ScsiId) return true;
+        }
+        return false;
+    };
     bool deviceChange =
         a.BoardType != c.BoardType ||
         a.MemorySize != c.MemorySize ||
@@ -1600,7 +1611,7 @@ EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
         a.NetBsdKernelImagePath != c.NetBsdKernelImagePath ||
         a.LinuxKernelImagePath != c.LinuxKernelImagePath ||
         a.LinuxCommandLine != c.LinuxCommandLine ||
-        a.Mvme147ScsiDisks.size() != c.Mvme147ScsiDisks.size();
+        disksDiffer();
 
     if (deviceChange) {
         inst->TeardownDevices();
