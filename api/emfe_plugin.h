@@ -641,6 +641,18 @@ EMFE_EXPORT EmfeResult EMFE_CALL emfe_remove_list_item(
     const char* list_key,
     int32_t item_index);
 
+/* LIST type: returns 1 if the staged (committed) list differs from the
+ * applied list — i.e. the user has edits that won't take effect until
+ * the next emfe_reset. Returns 0 when in sync (or on unknown list_key,
+ * or when the plugin doesn't track applied state separately for lists).
+ *
+ * Frontends use this to render a "pending" marker on REQUIRES_RESET LIST
+ * settings, in the same spirit as comparing emfe_get_setting against
+ * emfe_get_applied_setting for plain string/combo/int settings. */
+EMFE_EXPORT int32_t EMFE_CALL emfe_is_list_pending(
+    EmfeInstance instance,
+    const char* list_key);
+
 /* Save current settings to persistent storage. */
 EMFE_EXPORT EmfeResult EMFE_CALL emfe_save_settings(EmfeInstance instance);
 

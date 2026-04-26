@@ -2454,6 +2454,25 @@ EmfeResult EMFE_CALL emfe_remove_list_item(EmfeInstance instance, const char* li
     return EMFE_ERR_NOTFOUND;
 }
 
+int32_t EMFE_CALL emfe_is_list_pending(EmfeInstance instance, const char* list_key) {
+    if (!instance || !list_key) return 0;
+    auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
+    if (std::string(list_key) == "Mvme147ScsiDisks") {
+        // Compare staged (what emfe_get_list_item_* return) against applied
+        // (what the running hardware was configured with). Element-wise
+        // path + ScsiId, since same-count edits are a real case.
+        auto& staged  = inst->stagedConfig.Mvme147ScsiDisks;
+        auto& applied = inst->appliedConfig.Mvme147ScsiDisks;
+        if (staged.size() != applied.size()) return 1;
+        for (size_t i = 0; i < staged.size(); i++) {
+            if (staged[i].Path   != applied[i].Path)   return 1;
+            if (staged[i].ScsiId != applied[i].ScsiId) return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
 // Plugin-managed data directory (overrides default path).
 // Stored as std::string to avoid any std::filesystem::path static initialization
 // issues when the plugin DLL is loaded into a managed (.NET) process.
