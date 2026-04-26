@@ -363,6 +363,112 @@ list). A separate set of accessors (`emfe_get_list_item_defs`,
 `emfe_add/remove_list_item`) handles the row-by-column grid. Skip these
 by returning 0/`EMFE_ERR_UNSUPPORTED` if the plugin has no list settings.
 
+### 9.1 Three setting classes
+
+In practice the simple "hot-swap vs REQUIRES_RESET" split above is too
+coarse. The mc68030 plugin distinguishes three classes when handling
+`emfe_apply_settings`:
+
+| Class | When applied | Examples |
+|---|---|---|
+| **Hot-swappable** | Always immediate | JIT toggle, theme, console scrollback |
+| **Hot-pluggable device** | Always immediate, with live HW reconfig | SCSI CD-ROM path/ID (UNIT ATTENTION + SCSI bus detach/attach) |
+| **Deferred device-affecting** | Immediate only if emulation has not yet started since last reset; otherwise deferred until next `emfe_reset` | SCSI Disks list, Memory Size, Network Mode, Framebuffer geometry, Board Type |
+
+Mechanism: track an `emulationStarted` flag (set by `emfe_run`, cleared
+by `emfe_reset`). In `emfe_apply_settings`, run hot-swappable updates
+unconditionally, run hot-pluggable updates unconditionally (with their
+own live-reconfig hooks), then run the device-affecting rebuild only
+when `!emulationStarted && config_differs`. While emulation is in
+progress, deferred edits stay in `committed`/`stagedConfig` so the
+frontend can render a pending marker.
+
+**Critical**: when the device tree is torn down and rebuilt (because
+e.g. memory size changed, board changed, or just `emfe_reset` after a
+device-affecting edit), memory is re-initialized — which silently
+wipes any kernel/program ELF that was loaded with `emfe_load_elf`.
+After the rebuild, **re-load** the kernel from a remembered path
+(e.g. `inst->lastLoadedFile`) and re-run any boot-stub setup so the
+next `emfe_run` still has executable code in RAM.
+
+### 9.2 LIST settings — pending markers via `emfe_is_list_pending`
+
+The pending marker for plain settings works by comparing
+`emfe_get_setting(key)` against `emfe_get_applied_setting(key)` —
+two scalars. LIST settings have no scalar to compare, so they need a
+plugin-provided indicator:
+
+```c
+EMFE_EXPORT int32_t EMFE_CALL emfe_is_list_pending(
+    EmfeInstance instance,
+    const char* list_key);
+```
+
+Returns 1 when the staged list differs from the applied list,
+otherwise 0. The plugin is free to choose its own equality definition
+(mc68030 compares element-wise: row count, then path + scsi-id per row).
+Returns 0 also for unknown list_key or when the plugin doesn't track
+applied list state separately.
+
+This export is **optional** — frontends should use a soft `GetProcAddress`
+(C++) / `TryLoadFunc` (C#) and skip the marker on older plugins that
+don't ship it.
+
+### 9.3 Per-target-OS settings pattern (mc68030 case study)
+
+When a single board can boot multiple OSes that each want a different
+device configuration (e.g. MVME147 + NetBSD vs Linux: different SCSI
+disks, different CD-ROM ISOs), don't make the user re-edit the values
+on every OS toggle. Instead, store **per-OS slots** alongside an active
+denormalized snapshot:
+
+```cpp
+struct EmulatorConfig {
+    // Active values — what SetupMvme147Devices reads.
+    std::vector<ScsiDiskConfig>   Mvme147ScsiDisks;
+    std::string                   Mvme147ScsiCdromPath;
+    int                           Mvme147ScsiCdromId;
+    // Per-OS storage — source of truth on disk.
+    std::map<std::string, std::vector<ScsiDiskConfig>> Mvme147ScsiDisksByTargetOS;
+    std::map<std::string, std::string>                 Mvme147ScsiCdromPathByTargetOS;
+    std::map<std::string, int>                         Mvme147ScsiCdromIdByTargetOS;
+    std::string TargetOS;
+
+    void SyncMvme147ScsiForTargetOS(
+        const std::string& oldOS, const std::string& newOS);
+};
+```
+
+`SyncMvme147ScsiForTargetOS` saves the active values under the old OS's
+slot, then reseats the active values from the new OS's slot (or
+defaults if absent), and sets `TargetOS = newOS`. Hook it in
+`emfe_set_setting`:
+
+```cpp
+else if (key == "TargetOS")
+    cfg.SyncMvme147ScsiForTargetOS(cfg.TargetOS, val);
+```
+
+JSON persistence writes BOTH the legacy single-value field AND the
+per-OS map, so older builds without the map can still read the legacy
+field. Load auto-migrates configs that only have the legacy field by
+copying it into both OS slots. The active value is reseated from the
+map's entry for the current TargetOS.
+
+**Frontend ordering constraint** — when a frontend's "save dialog
+edits to staging" loop walks every setting and calls `emfe_set_setting`
+for each, **TargetOS must be written last**. If TargetOS is written
+first, the plugin's Sync swaps the active per-OS values to the new
+OS's slot, and then the rest of the loop overwrites those just-restored
+values with whatever the dialog UI was still rendering from the old
+OS. Solution: split into two passes (everything-except-TargetOS, then
+TargetOS).
+
+Frontends that cache LIST edits dialog-side (e.g. `m_pendingLists`)
+must also clear the cache on TargetOS change so that the rebuild
+re-reads the new OS's list from the plugin instead of replaying the
+stale snapshot.
+
 ## 10. Console I/O
 
 A plugin typically exposes a virtual UART (or equivalent serial device)

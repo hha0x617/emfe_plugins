@@ -10,6 +10,13 @@ MC68030 エミュレータの emfe プラグイン DLL。[em68030](../em68030_Wi
 - 設定の永続化 (`EmulatorConfig` をラップ)
 - ELF / S-Record / Binary ファイルのロード
 
+## ドキュメント
+
+- **MVME147 設定の挙動**: [docs/mvme147_settings_ja.md](docs/mvme147_settings_ja.md)
+  ([English](docs/mvme147_settings.md))
+  — Target OS ごとの SCSI バス独立保存、即時/保留/ホットスワップの設定
+  反映タイミング、保留マーカーの意味など。
+
 ## ディレクトリ構造
 
 ```

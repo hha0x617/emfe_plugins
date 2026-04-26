@@ -337,6 +337,20 @@ Thread: **UI**.
 Used for dynamic row tables (e.g. SCSI disk list). Skip by returning 0 /
 `ERR_UNSUPPORTED` if the plugin has no list settings.
 
+### `emfe_is_list_pending(inst, const char* list_key) -> int32_t`
+Thread: **UI**.
+**Optional** export — frontends should resolve it via soft lookup
+(`GetProcAddress` / `TryLoadFunc`) and skip the marker if the plugin
+doesn't ship it. Returns `1` when the staged list (what `emfe_get_list_*`
+reports) differs from the applied list (what the running hardware was
+configured with), `0` when in sync. Used to render a pending marker on
+LIST settings — the LIST counterpart to comparing
+`emfe_get_setting` vs `emfe_get_applied_setting` for plain scalars.
+
+Equality semantics are plugin-defined. The mc68030 plugin compares
+element-wise: row count, then path + scsi-id per row. Returns `0` for
+unknown `list_key`.
+
 ## 14. Console I/O
 
 ### `emfe_send_char(inst, char ch) -> EmfeResult`

@@ -347,6 +347,107 @@ EmfeResult emfe_reset(EmfeInstance h) {
 `emfe_get/set_list_item_field`, `emfe_add/remove_list_item`) で行×列
 グリッドを操作。使わないなら 0 / `EMFE_ERR_UNSUPPORTED` を返せばよい。
 
+### 9.1 設定の 3 つのクラス
+
+実運用上、上記の「ホットスワップ可 vs REQUIRES_RESET」の 2 分類は
+粗すぎます。mc68030 プラグインは `emfe_apply_settings` で 3 つのクラス
+を区別しています:
+
+| クラス | 反映タイミング | 例 |
+|---|---|---|
+| **ホットスワップ可** | 常に即時 | JIT 切替、テーマ、コンソールスクロールバック |
+| **ホットプラグ可能デバイス** | 常に即時 (live HW reconfig 込み) | SCSI CD-ROM Path/ID (UNIT ATTENTION + SCSI バス detach/attach) |
+| **構造的なデバイス設定 (deferred)** | 直前の reset 以降にまだ run していなければ即時、それ以外は次の `emfe_reset` まで遅延 | SCSI Disks リスト、Memory Size、Network Mode、Framebuffer 形状、Board Type |
+
+実装方法: `emulationStarted` フラグを `emfe_run` で立て、`emfe_reset`
+で下ろします。`emfe_apply_settings` 内では:
+1. ホットスワップ可は無条件で適用
+2. ホットプラグ可能デバイスは無条件で live reconfig 実行
+3. 構造的設定は `!emulationStarted && config_differs` のときのみ
+   teardown + rebuild。実行中は `committed`/`stagedConfig` に残し、
+   フロントエンドが pending マーカーで表示。
+
+**重要**: メモリレイアウトが変わる rebuild (Memory Size 変更、ボード
+切替、Framebuffer 切替、または `emfe_reset` 後の deferred flush) を
+行うと、メモリが再初期化されるため `emfe_load_elf` で読み込んだ
+カーネル/プログラム ELF が無音で消えます。rebuild 後に
+`inst->lastLoadedFile` のような前回パスから ELF を **再ロード**し、
+boot stub setup も再実行して、次の `emfe_run` でも実行可能なコードが
+RAM に残るようにしてください。
+
+### 9.2 LIST 設定の保留マーカー — `emfe_is_list_pending`
+
+通常設定の保留マーカーは `emfe_get_setting(key)` と
+`emfe_get_applied_setting(key)` の比較で判定します — スカラー比較。
+LIST 設定は比較対象のスカラーがないため、プラグイン側で判定する API:
+
+```c
+EMFE_EXPORT int32_t EMFE_CALL emfe_is_list_pending(
+    EmfeInstance instance,
+    const char* list_key);
+```
+
+staged リストと applied リストが異なれば `1`、同じなら `0` を返します。
+等価判定はプラグイン側の自由 (mc68030 は要素比較: 行数 + 行ごとの
+path + scsi_id)。未知の `list_key` または applied 状態をリスト別に
+追跡しないプラグインの場合は `0` を返します。
+
+このエクスポートは **オプション**です。フロントエンドは
+`GetProcAddress` (C++) / `TryLoadFunc` (C#) でソフト解決して、
+古いプラグインでマーカー機能だけ無効化できるようにすべきです。
+
+### 9.3 Target OS 別設定パターン (mc68030 ケース)
+
+1 つのボードで複数 OS をブートでき、OS ごとに異なるデバイス構成を
+使いたい場合 (例: MVME147 + NetBSD vs Linux: 異なる SCSI ディスク、
+異なる CD-ROM ISO)、OS 切替のたびに値を再入力させるべきではありません。
+**OS 別スロット**と active な denormalized snapshot を併存させます:
+
+```cpp
+struct EmulatorConfig {
+    // Active 値 — SetupMvme147Devices が読む対象
+    std::vector<ScsiDiskConfig>   Mvme147ScsiDisks;
+    std::string                   Mvme147ScsiCdromPath;
+    int                           Mvme147ScsiCdromId;
+    // OS 別ストレージ — JSON 上の source of truth
+    std::map<std::string, std::vector<ScsiDiskConfig>> Mvme147ScsiDisksByTargetOS;
+    std::map<std::string, std::string>                 Mvme147ScsiCdromPathByTargetOS;
+    std::map<std::string, int>                         Mvme147ScsiCdromIdByTargetOS;
+    std::string TargetOS;
+
+    void SyncMvme147ScsiForTargetOS(
+        const std::string& oldOS, const std::string& newOS);
+};
+```
+
+`SyncMvme147ScsiForTargetOS` は active 値を旧 OS のスロットに保存→新
+OS のスロット (なければ default) から active 値を再ロード→
+`TargetOS = newOS` を設定します。`emfe_set_setting` でフックします:
+
+```cpp
+else if (key == "TargetOS")
+    cfg.SyncMvme147ScsiForTargetOS(cfg.TargetOS, val);
+```
+
+JSON 永続化は **legacy 単一値フィールド + OS 別マップの両方**を書き
+出すので、新マップを知らない古いビルドでも legacy 経由で読めます。
+読み込み時は OS 別マップが空かつ legacy フィールドが non-default なら、
+両 OS スロットに legacy 値をコピーして自動マイグレーションします。
+active 値は現在の TargetOS のスロットから再シードされます。
+
+**フロントエンドの順序制約** — 「ダイアログ編集を staging に書き戻す」
+ループで全 setting に対し `emfe_set_setting` を呼ぶ実装の場合、
+**TargetOS は最後に書く**必要があります。先に TargetOS を書くと、
+プラグインの Sync が active 値を新 OS のスロットから復元しますが、
+ループの残りが UI 上の (旧 OS 表示のままだった) 値で **新 OS の active
+値を上書きしてしまいます**。解決策: 2 パスに分ける (TargetOS 以外
+を先、TargetOS を後)。
+
+ダイアログ寿命で LIST 編集をキャッシュするフロントエンド (例:
+`m_pendingLists`) は、TargetOS 切替時に **キャッシュをクリア**する
+必要もあります。そうしないと、再構築時にプラグインの新 OS 用 LIST を
+読み直さず、古いキャッシュをそのまま再表示してしまいます。
+
 ## 10. コンソール I/O
 
 プラグインは通常、仮想 UART (または同等のシリアルデバイス) を用意し、
