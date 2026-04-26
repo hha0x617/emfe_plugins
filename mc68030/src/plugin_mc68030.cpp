@@ -100,6 +100,13 @@ struct EmfeInstanceData {
     // Boot stub state
     uint32_t brdIdAddress = 0;
     bool systemBooted = false;
+    // True once the user has issued at least one emfe_run since the last
+    // emfe_reset. While set, device-affecting settings written via
+    // emfe_apply_settings are deferred (left in stagedConfig vs.
+    // appliedConfig) so the frontend can render them as pending and the
+    // running CPU/devices keep their current state. Cleared by emfe_reset
+    // (so a Reset commits any pending edits along with the CPU reset).
+    bool emulationStarted = false;
     uint32_t programStartAddress = 0;
     uint32_t programEndAddress = 0;
     std::string lastLoadedFile;
@@ -1552,6 +1559,10 @@ EmfeResult EMFE_CALL emfe_run(EmfeInstance instance) {
 
     inst->stopRequested.store(false);
     inst->state.store(EMFE_STATE_RUNNING);
+    // Mark that the user has started emulation at least once since the
+    // last reset. While this is set, device-affecting settings stay
+    // deferred until emfe_reset.
+    inst->emulationStarted = true;
 
     inst->emulationThread = std::thread([inst]() {
         inst->EmulationLoop();
@@ -1625,6 +1636,7 @@ static void RebuildDeviceTreeAndResetCpu(
     if (inst->pccDevice) inst->pccDevice->HardwareReset();
     if (inst->scsiDevice) inst->scsiDevice->ResetBusState();
     inst->systemBooted = false;
+    inst->emulationStarted = false;
     inst->cpu->Reset();
     inst->state.store(EMFE_STATE_STOPPED);
     inst->NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_NONE,
@@ -1649,6 +1661,7 @@ EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     if (inst->pccDevice) inst->pccDevice->HardwareReset();
     if (inst->scsiDevice) inst->scsiDevice->ResetBusState();
     inst->systemBooted = false;
+    inst->emulationStarted = false;
     inst->cpu->Reset();
     inst->state.store(EMFE_STATE_STOPPED);
     inst->NotifyStateChange(EMFE_STATE_STOPPED, EMFE_STOP_REASON_NONE, inst->cpu->PC, "Reset");
@@ -2265,18 +2278,21 @@ EmfeResult EMFE_CALL emfe_apply_settings(EmfeInstance instance) {
     inst->appliedConfig.JitCompileThreshold = inst->config.JitCompileThreshold;
     inst->appliedConfig.CallStackMode = inst->config.CallStackMode;
 
-    // Device-affecting fields: rebuild the device tree + reset the CPU
-    // when anything device-affecting actually changed. We used to defer
-    // this until the user pressed Reset, but that left "OK" silently
-    // failing to take effect — the user would change a disk path or
-    // CD-ROM image, press OK, then press Run, and watch NetBSD enumerate
-    // the OLD disks. Now OK applies device settings immediately. When
-    // nothing device-affecting changed (e.g. user only toggled JIT),
-    // the CPU is left running where it was.
+    // Device-affecting fields: only flush them immediately when the user
+    // hasn't started emulation yet. Once Run has been pressed (even if
+    // the user has since pressed Stop and is paused), in-flight CPU/
+    // device state would be silently destroyed by a tear-down + rebuild,
+    // so we leave appliedConfig untouched and let the frontend mark the
+    // changes as pending. The user must press Reset (which always
+    // ends in RebuildDeviceTreeAndResetCpu when something differs) to
+    // commit them.
     //
-    // emfe_apply_settings is gated to STOPPED above, so a CPU reset here
-    // is safe — the user hasn't started executing yet, or has stopped.
-    if (HasDeferredDeviceChange(inst->appliedConfig, inst->config)) {
+    // The "first-time apply" path covers the natural case of opening
+    // Settings before pressing Run: change disk/CD-ROM/etc., press OK,
+    // press Run — and have the new device tree boot.
+    if (!inst->emulationStarted &&
+        HasDeferredDeviceChange(inst->appliedConfig, inst->config))
+    {
         RebuildDeviceTreeAndResetCpu(inst, "Settings applied");
     }
     return EMFE_OK;
