@@ -11,6 +11,7 @@ EXPORTS
     emfe_set_diagnostic_callback
     ; Registers
     emfe_get_register_defs
+    emfe_get_register_flag_defs
     emfe_get_registers
     emfe_set_registers
     ; Memory

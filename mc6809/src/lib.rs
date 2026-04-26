@@ -148,6 +148,19 @@ pub struct EmfeRegisterDef {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct EmfeRegFlagBitDef {
+    pub bit_index: u8,
+    pub label: *const c_char,
+}
+
+// EmfeRegFlagBitDef carries a *const c_char which makes the type !Sync by
+// default. Each label points to an immutable static byte array (b"E\0"
+// etc.), so concurrent reads are safe. Marking Sync explicitly so the
+// type can be used in static [EmfeRegFlagBitDef; N] arrays.
+unsafe impl Sync for EmfeRegFlagBitDef {}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub union EmfeRegValueUnion {
     pub u64_: u64,
     pub f64_: f64,
@@ -1122,6 +1135,47 @@ pub unsafe extern "C" fn emfe_get_register_defs(
     }
     *out_defs = inst.reg_defs.as_ptr();
     inst.reg_defs.len() as i32
+    })
+}
+
+// MC6809 CC (Condition Code) register bit decomposition. Order is
+// MSB-first (E F H I N Z V C) to match how Motorola data sheets and
+// every assembly listing have rendered the register since 1978.
+//   bit 0 : C — Carry
+//   bit 1 : V — Overflow
+//   bit 2 : Z — Zero
+//   bit 3 : N — Negative
+//   bit 4 : I — IRQ mask
+//   bit 5 : H — Half-carry
+//   bit 6 : F — FIRQ mask
+//   bit 7 : E — Entire flag (full register stack on interrupt)
+static CC_FLAG_BITS: [EmfeRegFlagBitDef; 8] = [
+    EmfeRegFlagBitDef { bit_index: 7, label: b"E\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 6, label: b"F\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 5, label: b"H\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 4, label: b"I\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 3, label: b"N\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 2, label: b"Z\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 1, label: b"V\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef { bit_index: 0, label: b"C\0".as_ptr() as *const c_char },
+];
+
+#[no_mangle]
+pub unsafe extern "C" fn emfe_get_register_flag_defs(
+    _instance: EmfeInstance,
+    reg_id: u32,
+    out_defs: *mut *const EmfeRegFlagBitDef,
+) -> i32 {
+    ffi_catch!(0, {
+    if out_defs.is_null() {
+        return 0;
+    }
+    *out_defs = std::ptr::null();
+    if reg_id == RegId::CC as u32 {
+        *out_defs = CC_FLAG_BITS.as_ptr();
+        return CC_FLAG_BITS.len() as i32;
+    }
+    0
     })
 }
 

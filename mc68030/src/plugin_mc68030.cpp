@@ -218,7 +218,7 @@ void EmfeInstanceData::BuildRegisterDefs() {
     addReg(REG_SSP, "SSP", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
     addReg(REG_USP, "USP", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
     addReg(REG_VBR, "VBR", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
-    addReg(REG_CACR, "CACR", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
+    addReg(REG_CACR, "CACR", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_FLAGS);
     addReg(REG_CAAR, "CAAR", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
     addReg(REG_SFC, "SFC", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
     addReg(REG_DFC, "DFC", "System", EMFE_REG_INT, 32, EMFE_REG_FLAG_NONE);
@@ -228,15 +228,15 @@ void EmfeInstanceData::BuildRegisterDefs() {
         static const char* names[] = { "FP0","FP1","FP2","FP3","FP4","FP5","FP6","FP7" };
         addReg(REG_FP0 + i, names[i], "FPU", EMFE_REG_FLOAT, 64, EMFE_REG_FLAG_FPU);
     }
-    addReg(REG_FPCR, "FPCR", "FPU", EMFE_REG_INT, 32, EMFE_REG_FLAG_FPU);
-    addReg(REG_FPSR, "FPSR", "FPU", EMFE_REG_INT, 32, EMFE_REG_FLAG_FPU);
+    addReg(REG_FPCR, "FPCR", "FPU", EMFE_REG_INT, 32, EMFE_REG_FLAG_FPU | EMFE_REG_FLAG_FLAGS);
+    addReg(REG_FPSR, "FPSR", "FPU", EMFE_REG_INT, 32, EMFE_REG_FLAG_FPU | EMFE_REG_FLAG_FLAGS);
     addReg(REG_FPIAR, "FPIAR", "FPU", EMFE_REG_INT, 32, EMFE_REG_FLAG_FPU);
 
     // MMU registers
     addReg(REG_TC, "TC", "MMU", EMFE_REG_INT, 32, EMFE_REG_FLAG_MMU);
     addReg(REG_TT0, "TT0", "MMU", EMFE_REG_INT, 32, EMFE_REG_FLAG_MMU);
     addReg(REG_TT1, "TT1", "MMU", EMFE_REG_INT, 32, EMFE_REG_FLAG_MMU);
-    addReg(REG_MMUSR, "MMUSR", "MMU", EMFE_REG_INT, 16, EMFE_REG_FLAG_MMU);
+    addReg(REG_MMUSR, "MMUSR", "MMU", EMFE_REG_INT, 16, EMFE_REG_FLAG_MMU | EMFE_REG_FLAG_FLAGS);
     addReg(REG_CRP, "CRP", "MMU", EMFE_REG_INT, 64, EMFE_REG_FLAG_MMU);
     addReg(REG_SRP, "SRP", "MMU", EMFE_REG_INT, 64, EMFE_REG_FLAG_MMU);
 
@@ -1277,9 +1277,78 @@ int32_t EMFE_CALL emfe_get_register_flag_defs(
         { 15, "T" },
     };
 
-    if (reg_id == REG_SR) {
-        *out_defs = sr_bits;
-        return static_cast<int32_t>(sizeof(sr_bits) / sizeof(sr_bits[0]));
+    // FPCR — Exception Enable byte (bits 8-15). Mode Control byte
+    // (RND mode bits 4-5, RND precision bits 6-7) is multi-bit and
+    // not decomposed; users edit those via the hex display.
+    static const EmfeRegFlagBitDef fpcr_bits[] = {
+        { 15, "BSUN"  },
+        { 14, "SNAN"  },
+        { 13, "OPERR" },
+        { 12, "OVFL"  },
+        { 11, "UNFL"  },
+        { 10, "DZ"    },
+        {  9, "INEX2" },
+        {  8, "INEX1" },
+    };
+
+    // FPSR — FPCC (bits 27-24) + Exception Status byte (bits 15-8).
+    // Quotient byte (bits 23-16) is multi-bit; Accrued Exception byte
+    // (bits 7-3) carries identical labels to the Exception Status
+    // byte and is left out of the checkbox row to avoid ambiguity —
+    // it stays visible in the hex value.
+    static const EmfeRegFlagBitDef fpsr_bits[] = {
+        { 27, "N"     },
+        { 26, "Z"     },
+        { 25, "I"     },
+        { 24, "NAN"   },
+        { 15, "BSUN"  },
+        { 14, "SNAN"  },
+        { 13, "OPERR" },
+        { 12, "OVFL"  },
+        { 11, "UNFL"  },
+        { 10, "DZ"    },
+        {  9, "INEX2" },
+        {  8, "INEX1" },
+    };
+
+    // MMUSR (16-bit). Mirrors the bit assignments the em68030 Core
+    // actually writes from PTEST (Mmu.cpp): I=10, M=9, W=11, T=6.
+    // Standard Motorola assignments for B (Bus error)=15, L (Limit)=14,
+    // S (Supervisor only)=13 are exposed as well.
+    static const EmfeRegFlagBitDef mmusr_bits[] = {
+        { 15, "B" },
+        { 14, "L" },
+        { 13, "S" },
+        { 11, "W" },
+        { 10, "I" },
+        {  9, "M" },
+        {  6, "T" },
+    };
+
+    // CACR (32-bit) — Motorola M68030 cache control bits. Layout per
+    // the User's Manual: instruction-cache controls in the lower
+    // byte, data-cache controls in the upper. Reserved bits (4, 6-7,
+    // 14-31) are not decomposed.
+    static const EmfeRegFlagBitDef cacr_bits[] = {
+        {  0, "EI"  },  // Enable instruction cache
+        {  1, "FI"  },  // Freeze instruction cache
+        {  2, "CEI" },  // Clear entry in I-cache
+        {  3, "CI"  },  // Clear I-cache
+        {  5, "IBE" },  // Instruction burst enable
+        {  8, "ED"  },  // Enable data cache
+        {  9, "FD"  },  // Freeze data cache
+        { 10, "CED" },  // Clear entry in D-cache
+        { 11, "CD"  },  // Clear D-cache
+        { 12, "WA"  },  // Write allocate
+        { 13, "DBE" },  // Data burst enable
+    };
+
+    switch (reg_id) {
+        case REG_SR:    *out_defs = sr_bits;    return static_cast<int32_t>(sizeof(sr_bits)    / sizeof(sr_bits[0]));
+        case REG_FPCR:  *out_defs = fpcr_bits;  return static_cast<int32_t>(sizeof(fpcr_bits)  / sizeof(fpcr_bits[0]));
+        case REG_FPSR:  *out_defs = fpsr_bits;  return static_cast<int32_t>(sizeof(fpsr_bits)  / sizeof(fpsr_bits[0]));
+        case REG_MMUSR: *out_defs = mmusr_bits; return static_cast<int32_t>(sizeof(mmusr_bits) / sizeof(mmusr_bits[0]));
+        case REG_CACR:  *out_defs = cacr_bits;  return static_cast<int32_t>(sizeof(cacr_bits)  / sizeof(cacr_bits[0]));
     }
     return 0;
 }

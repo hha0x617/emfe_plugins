@@ -591,6 +591,48 @@ extern "C" int32_t EMFE_CALL emfe_get_register_defs(
     return static_cast<int32_t>(inst->regDefs.size());
 }
 
+extern "C" int32_t EMFE_CALL emfe_get_register_flag_defs(
+    EmfeInstance /*instance*/, uint32_t reg_id,
+    const EmfeRegFlagBitDef** out_defs)
+{
+    if (!out_defs) return 0;
+    *out_defs = nullptr;
+
+    // Z8000 FCW (Flag and Control Word, 16-bit) bit decomposition.
+    // Layout per Z8000Cpu.h FCW_* constants and the Z8000 CPU manual:
+    //   bit 14 : SEG  (Segmented mode — Z8001/Z8003)
+    //   bit 13 : S/N  (System / Normal mode)
+    //   bit 12 : EPA  (Extended Processor Available)
+    //   bit 11 : VIE  (Vectored Interrupt Enable)
+    //   bit 10 : NVIE (Non-Vectored Interrupt Enable)
+    //   bit  7 : C    (Carry)
+    //   bit  6 : Z    (Zero)
+    //   bit  5 : S    (Sign)
+    //   bit  4 : P/V  (Parity / Overflow, mode-dependent)
+    //   bit  3 : DA   (Decimal Adjust)
+    //   bit  2 : H    (Half-Carry)
+    // Bits 0, 1, 8, 9, 15 are reserved and not exposed.
+    static const EmfeRegFlagBitDef fcw_bits[] = {
+        { 14, "SEG"  },
+        { 13, "S/N"  },
+        { 12, "EPA"  },
+        { 11, "VIE"  },
+        { 10, "NVIE" },
+        {  7, "C"    },
+        {  6, "Z"    },
+        {  5, "S"    },
+        {  4, "P/V"  },
+        {  3, "DA"   },
+        {  2, "H"    },
+    };
+
+    if (reg_id == REG_FCW) {
+        *out_defs = fcw_bits;
+        return static_cast<int32_t>(sizeof(fcw_bits) / sizeof(fcw_bits[0]));
+    }
+    return 0;
+}
+
 extern "C" EmfeResult EMFE_CALL emfe_get_registers(
     EmfeInstance instance, EmfeRegValue* values, int32_t count) {
     if (!instance || !values) return EMFE_ERR_INVALID;
