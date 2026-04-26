@@ -1587,6 +1587,11 @@ EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
 // committed config — i.e. the running hardware is out of sync with the
 // settings the user has saved. Both emfe_reset and emfe_apply_settings
 // gate device-tree rebuild on this check.
+//
+// CD-ROM image path / SCSI ID are intentionally NOT compared here: the
+// SCSI CD-ROM is a hot-swappable device. HotSwapCdrom() applies those
+// changes live (eject + remount + DetachTarget/AttachTarget), so they
+// don't need a device-tree teardown.
 static bool HasDeferredDeviceChange(
     const Em68030::Config::EmulatorConfig& a,
     const Em68030::Config::EmulatorConfig& c)
@@ -1610,12 +1615,50 @@ static bool HasDeferredDeviceChange(
         a.FramebufferHeight != c.FramebufferHeight ||
         a.FramebufferBpp != c.FramebufferBpp ||
         a.Mvme147RomPath != c.Mvme147RomPath ||
-        a.Mvme147ScsiCdromPath != c.Mvme147ScsiCdromPath ||
-        a.Mvme147ScsiCdromId != c.Mvme147ScsiCdromId ||
         a.Mvme147BootPartition != c.Mvme147BootPartition ||
         a.NetBsdKernelImagePath != c.NetBsdKernelImagePath ||
         a.LinuxKernelImagePath != c.LinuxKernelImagePath ||
         a.LinuxCommandLine != c.LinuxCommandLine;
+}
+
+// Apply CD-ROM image / SCSI ID changes live, without tearing down the
+// device tree. Real SCSI CD-ROMs are hot-swappable; we mirror that here
+// so the user can change ISO image (or ID) and have the guest see the
+// new disc immediately. The ScsiCdrom's UNIT ATTENTION mechanism
+// (m_mediaChanged) tells the OS that media has changed on the next
+// command. ID changes are handled by detach/attach on the WD33C93 bus.
+static void HotSwapCdrom(EmfeInstanceData* inst)
+{
+    auto& a = inst->appliedConfig;
+    auto& c = inst->config;
+    bool pathChanged = (a.Mvme147ScsiCdromPath != c.Mvme147ScsiCdromPath);
+    bool idChanged   = (a.Mvme147ScsiCdromId   != c.Mvme147ScsiCdromId);
+    if (!pathChanged && !idChanged) return;
+    if (!inst->scsiCdrom || !inst->scsiDevice) {
+        // Live device tree not present (e.g. board still booting or
+        // BoardType != MVME147). Just sync applied so the next rebuild
+        // picks up the new values.
+        a.Mvme147ScsiCdromPath = c.Mvme147ScsiCdromPath;
+        a.Mvme147ScsiCdromId   = c.Mvme147ScsiCdromId;
+        return;
+    }
+
+    if (idChanged) {
+        inst->scsiDevice->DetachTarget(inst->scsiCdromId);
+        inst->scsiDevice->AttachTarget(c.Mvme147ScsiCdromId, inst->scsiCdrom.get());
+        inst->scsiCdromId = c.Mvme147ScsiCdromId;
+    }
+    if (pathChanged) {
+        inst->scsiCdrom->UnmountImage();
+        if (!c.Mvme147ScsiCdromPath.empty() &&
+            std::filesystem::exists(c.Mvme147ScsiCdromPath))
+        {
+            inst->scsiCdrom->MountImage(c.Mvme147ScsiCdromPath);
+        }
+    }
+
+    a.Mvme147ScsiCdromPath = c.Mvme147ScsiCdromPath;
+    a.Mvme147ScsiCdromId   = c.Mvme147ScsiCdromId;
 }
 
 // Tear down + rebuild the MVME147/Generic device tree using the current
@@ -2278,18 +2321,23 @@ EmfeResult EMFE_CALL emfe_apply_settings(EmfeInstance instance) {
     inst->appliedConfig.JitCompileThreshold = inst->config.JitCompileThreshold;
     inst->appliedConfig.CallStackMode = inst->config.CallStackMode;
 
-    // Device-affecting fields: only flush them immediately when the user
-    // hasn't started emulation yet. Once Run has been pressed (even if
-    // the user has since pressed Stop and is paused), in-flight CPU/
-    // device state would be silently destroyed by a tear-down + rebuild,
-    // so we leave appliedConfig untouched and let the frontend mark the
-    // changes as pending. The user must press Reset (which always
-    // ends in RebuildDeviceTreeAndResetCpu when something differs) to
-    // commit them.
+    // SCSI CD-ROM is hot-swappable — apply its changes live regardless of
+    // whether emulation has started. The ScsiCdrom's UNIT ATTENTION
+    // surface tells the guest OS that media changed on the next command.
+    HotSwapCdrom(inst);
+
+    // Other device-affecting fields: only flush them immediately when the
+    // user hasn't started emulation yet. Once Run has been pressed (even
+    // if the user has since pressed Stop and is paused), in-flight
+    // CPU/device state would be silently destroyed by a tear-down +
+    // rebuild, so we leave appliedConfig untouched and let the frontend
+    // mark the changes as pending. The user must press Reset (which
+    // always ends in RebuildDeviceTreeAndResetCpu when something differs)
+    // to commit them.
     //
     // The "first-time apply" path covers the natural case of opening
-    // Settings before pressing Run: change disk/CD-ROM/etc., press OK,
-    // press Run — and have the new device tree boot.
+    // Settings before pressing Run: change disk/network/framebuffer/etc.,
+    // press OK, press Run — and have the new device tree boot.
     if (!inst->emulationStarted &&
         HasDeferredDeviceChange(inst->appliedConfig, inst->config))
     {
