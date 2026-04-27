@@ -1590,29 +1590,37 @@ pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
     })
 }
 
-// MC6809 "call" opcodes:
-//   $8D        BSR rel8          (2 bytes)
-//   $17        LBSR rel16        (3 bytes)
-//   $9D        JSR direct        (2 bytes)
-//   $AD pp     JSR indexed       (variable length via postbyte)
-//   $BD        JSR extended      (3 bytes)
-//   $3F        SWI               (1 byte)
-//   $10 $3F    SWI2              (2 bytes)
-//   $11 $3F    SWI3              (2 bytes)
-// For step_over we treat all of these as calls; instruction length is looked
-// up via em6809's disassembler so indexed-JSR is handled correctly.
-fn is_call_instruction(bus: &mut PluginBus, pc: u16) -> bool {
-    let op = bus.read8(pc);
-    match op {
-        0x8D | 0x17 | 0x9D | 0xAD | 0xBD | 0x3F => true,
-        0x10 | 0x11 => bus.read8(pc.wrapping_add(1)) == 0x3F,
-        _ => false,
-    }
-}
-
 // Bound the step loop so a runaway never hangs the worker thread (e.g. a
-// call target that never returns within the expected window).
+// call target that never returns within the expected window). Same value
+// as `em6809::main::STEP_OVER_LIMIT` so the plugin and the standalone GUI
+// give up at the same instruction budget.
 const STEP_LIMIT: u32 = 2_000_000;
+
+/// Run `body` (which mutates `inst.cpu` and may execute many em6809
+/// instructions in one shot) and fold the resulting cycle delta into
+/// the plugin's `cycles_counter` / `tick_word`. Used by
+/// `emfe_step_over` / `emfe_step_out` so a multi-instruction step
+/// updates the cycle / MHz stat just like a sequence of `emfe_step`
+/// calls would.
+///
+/// Note: the plugin's `instr_count` / `instructions` counters are not
+/// updated here — em6809::Cpu doesn't expose a per-step instruction
+/// counter, so we'd have to wrap each `cpu.step` call manually
+/// (defeating the point of delegating to `cpu.step_over` /
+/// `cpu.step_out`). The MIPS display will undercount by the number
+/// of instructions retired during a step-over/out, which only matters
+/// for interactive debugger sessions and is consistent with how
+/// emfe's other plugins handle the same trade-off.
+fn step_with_cycle_accounting<F>(inst: &mut PluginInstance, body: F)
+where
+    F: FnOnce(&mut PluginInstance),
+{
+    let cycles_before = inst.cpu.cycles;
+    body(inst);
+    let consumed = inst.cpu.cycles.saturating_sub(cycles_before) as i64;
+    inst.cycles_counter.fetch_add(consumed, Ordering::Relaxed);
+    inst.bus.tick_word = inst.bus.tick_word.wrapping_add(consumed as u16);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
@@ -1627,33 +1635,16 @@ pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
 
-        let pc0 = inst.cpu.r.pc;
-        let is_call = is_call_instruction(&mut inst.bus, pc0);
-        if !is_call {
-            // Not a call — behave like plain step.
-            let _ = step_one(inst);
-        } else {
-            // Determine the PC at which control returns after the call.
-            let (len, _) = em6809::disasm::disasm_one(&mut inst.bus, pc0);
-            let return_target = pc0.wrapping_add(len);
-
-            // Run until we land on the return target or we blow through the limit.
-            // The first step always executes (the call itself).
-            let mut count = 0u32;
-            while count < STEP_LIMIT {
-                let _ = step_one(inst);
-                count += 1;
-                if inst.cpu.r.pc == return_target {
-                    break;
-                }
-                // Breakpoint inside the callee halts stepping too. Uses
-                // the condition-aware checker so a guarded BP only stops
-                // when its expression evaluates true.
-                if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
-                    break;
-                }
-            }
-        }
+        // Delegate to em6809::Cpu::step_over — it handles the
+        // is-CALL check (BSR / LBSR / JSR / SWI / SWI2 / SWI3),
+        // computes the return target via the disassembler, runs the
+        // call, and stops on either the return target or a
+        // condition-aware BP hit. Bringing the logic into the core
+        // means a single source of truth for both this plugin and
+        // the standalone em6809 GUI.
+        step_with_cycle_accounting(inst, |inst| {
+            let _ = inst.cpu.step_over(&mut inst.bus, STEP_LIMIT);
+        });
 
         inst.state
             .store(EmfeState::Stopped as u8, Ordering::Release);
@@ -1680,24 +1671,16 @@ pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
 
-        // Peek the return address at the top of the S stack (hi, lo). This is
-        // where the next RTS would transfer control. We stop once PC reaches it.
-        let s = inst.cpu.r.s;
-        let hi = inst.bus.read8(s) as u16;
-        let lo = inst.bus.read8(s.wrapping_add(1)) as u16;
-        let return_target = (hi << 8) | lo;
-
-        let mut count = 0u32;
-        while count < STEP_LIMIT {
-            let _ = step_one(inst);
-            count += 1;
-            if inst.cpu.r.pc == return_target {
-                break;
-            }
-            if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
-                break;
-            }
-        }
+        // Delegate to em6809::Cpu::step_out, which uses the topmost
+        // shadow-frame's `return_addr` instead of reading 2 bytes
+        // off the S stack. This is correct for both RTS-style
+        // returns *and* SWI/IRQ/FIRQ/NMI handler returns — the
+        // previous "read S stack top" approach landed on garbage
+        // (CC byte, A byte) for SWI handlers because the saved
+        // frame's PC sits at the bottom, not the top.
+        step_with_cycle_accounting(inst, |inst| {
+            let _ = inst.cpu.step_out(&mut inst.bus, STEP_LIMIT);
+        });
 
         inst.state
             .store(EmfeState::Stopped as u8, Ordering::Release);
