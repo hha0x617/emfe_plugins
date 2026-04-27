@@ -512,19 +512,31 @@ fn step_over_skips_bsr_subroutine() {
 
 #[test]
 fn step_out_returns_to_caller() {
-    // Set PC inside a subroutine, with a fake return address on S pointing
-    // past the caller. step_out should run through RTS and land at that
-    // return address.
+    // The plugin's step_out delegates to em6809::Cpu::step_out, which
+    // uses the topmost shadow-frame's recorded return_addr as the
+    // target. So the test has to actually *make* a call (BSR) to
+    // populate the shadow stack — a synthetic "fake return address
+    // pre-loaded on S" scenario would correctly hit `EmptyStack` and
+    // not run anywhere, which matches gdb's `finish` semantics ("no
+    // frame to return out of").
+    //
+    //   $0200  8D 02     BSR  +2 -> $0204    (caller)
+    //   $0202  12        NOP                 (return target)
+    //   $0203  39        RTS                 (caller's RTS, never run)
+    //   $0204  12        NOP                 (callee body)
+    //   $0205  12        NOP
+    //   $0206  39        RTS
     let mut h: EmfeInstance = ptr::null_mut();
     assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
     unsafe {
         let code: &[(u64, u8)] = &[
-            (0x0200, 0x12), // NOP
-            (0x0201, 0x12), // NOP
-            (0x0202, 0x39), // RTS
-            // Return address bytes on the stack: $0300
-            (0xFE00, 0x03),
-            (0xFE01, 0x00),
+            (0x0200, 0x8D),
+            (0x0201, 0x02), // BSR +2 -> $0204
+            (0x0202, 0x12), // NOP (return target)
+            (0x0203, 0x39), // RTS (caller's, never reached)
+            (0x0204, 0x12), // NOP (callee body)
+            (0x0205, 0x12), // NOP
+            (0x0206, 0x39), // RTS
         ];
         for (a, v) in code {
             assert_eq!(emfe_poke_byte(h, *a, *v), EmfeResult::Ok);
@@ -541,16 +553,23 @@ fn step_out_returns_to_caller() {
         };
         assert_eq!(emfe_set_registers(h, &s, 1), EmfeResult::Ok);
 
-        assert_eq!(emfe_step_out(h), EmfeResult::Ok);
+        // Take one step into the callee so the shadow stack has a
+        // recorded frame for step_out to consume.
+        assert_eq!(emfe_step(h), EmfeResult::Ok);
 
-        let mut got = EmfeRegValue {
+        let mut pc_now = EmfeRegValue {
             reg_id: 7,
             value: EmfeRegValueUnion { u64_: 0 },
         };
-        assert_eq!(emfe_get_registers(h, &mut got, 1), EmfeResult::Ok);
+        assert_eq!(emfe_get_registers(h, &mut pc_now, 1), EmfeResult::Ok);
+        assert_eq!(pc_now.value.u64_, 0x0204, "BSR landed inside callee");
+
+        assert_eq!(emfe_step_out(h), EmfeResult::Ok);
+
+        assert_eq!(emfe_get_registers(h, &mut pc_now, 1), EmfeResult::Ok);
         assert_eq!(
-            got.value.u64_, 0x0300,
-            "step_out must land on the return address"
+            pc_now.value.u64_, 0x0202,
+            "step_out must land on the return address recorded by BSR"
         );
 
         assert_eq!(emfe_destroy(h), EmfeResult::Ok);
