@@ -637,6 +637,75 @@ fn call_stack_tracks_bsr_and_pops_on_rts() {
 }
 
 #[test]
+fn breakpoint_condition_skips_when_false_via_run() {
+    // Reproduces the user-reported pattern: two BPs in the same
+    // straight-line code path. The earlier BP carries a condition
+    // that's false at the moment we reach it, so we expect the
+    // run loop to silently skip it and stop only at the later
+    // unguarded BP.
+    //
+    //   $0100  86 03    LDA #$03      A <- $03
+    //   $0102  86 15    LDA #$15      A <- $15
+    //   $0104  12       NOP           (BP target #2)
+    //   $0105  20 FE    BRA -2 (loop) (safety: trap if we run past)
+    //
+    // BP1 @ $0102  with cond "b == $01"   -> FALSE (B starts at 0)
+    // BP2 @ $0104  no condition           -> always halts
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        for (a, v) in [
+            (0x0100u64, 0x86u8),
+            (0x0101, 0x03),
+            (0x0102, 0x86),
+            (0x0103, 0x15),
+            (0x0104, 0x12),
+            (0x0105, 0x20),
+            (0x0106, 0xFE),
+        ] {
+            assert_eq!(emfe_poke_byte(h, a, v), EmfeResult::Ok);
+        }
+        let pc = EmfeRegValue {
+            reg_id: 7,
+            value: EmfeRegValueUnion { u64_: 0x0100 },
+        };
+        assert_eq!(emfe_set_registers(h, &pc, 1), EmfeResult::Ok);
+
+        // BP1: false condition. Add then attach condition.
+        assert_eq!(emfe_add_breakpoint(h, 0x0102), EmfeResult::Ok);
+        let cond = std::ffi::CString::new("b == $01").unwrap();
+        assert_eq!(
+            emfe_set_breakpoint_condition(h, 0x0102, cond.as_ptr()),
+            EmfeResult::Ok
+        );
+        // BP2: unguarded.
+        assert_eq!(emfe_add_breakpoint(h, 0x0104), EmfeResult::Ok);
+
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        // Wait up to 2s for the worker to halt.
+        let mut tries = 0;
+        while emfe_get_state(h) == EmfeState::Running && tries < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            tries += 1;
+        }
+        assert!(emfe_get_state(h) != EmfeState::Running, "run never halted");
+
+        // Should be stopped at BP2 ($0104), not BP1 ($0102).
+        let mut pc_now = EmfeRegValue {
+            reg_id: 7,
+            value: EmfeRegValueUnion { u64_: 0 },
+        };
+        assert_eq!(emfe_get_registers(h, &mut pc_now, 1), EmfeResult::Ok);
+        assert_eq!(
+            pc_now.value.u64_, 0x0104,
+            "false-condition BP should be skipped; expected halt at $0104"
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn forth_colon_define_and_call() {
     // Define `: double dup + ;`, then evaluate `3 double .` — should print "6 ".
     let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
