@@ -39,7 +39,7 @@ Load `swi_demo.s19` in emfe_WinUI3Cpp / emfe_CsWPF and:
 
 1. Open **View → Call Stack** (or the equivalent pane in emfe).
 2. Set a breakpoint at the `sta ACIA_DATA` line inside `putc`
-   (address `$1018` per the listing).
+   (address `$1022` per the listing).
 3. Press **Run**.
 
 When the breakpoint fires *during the SWI sub-call* (every other
@@ -47,8 +47,8 @@ iteration), the Call Stack pane should show two frames:
 
 | #  | Kind        | Call PC         | Target PC    | Return PC    |
 |----|-------------|-----------------|--------------|--------------|
-| 2  | **CALL**    | `$101F` (BSR)   | `$100F`      | `$1021`      |
-| 1  | **EXCEPTION** | `$1008` (SWI) | `$101D`      | `$1009`      |
+| 2  | **CALL**    | `$1029` (BSR)   | `$1019`      | `$102B`      |
+| 1  | **EXCEPTION** | `$1012` (SWI) | `$1027`      | `$1013`      |
 
 The **EXCEPTION** entry is the new behaviour from Phase C — before the
 plugin migrated to the em6809 core's shadow stack, only the BSR/JSR

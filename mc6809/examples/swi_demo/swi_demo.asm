@@ -40,10 +40,18 @@ STACK_TOP   equ     $2000
             org     ROM_BASE
 
 ;; ---------------------------------------------------------------
-;; Entry point. Set up S, then loop forever printing "AS\n".
+;; Entry point. Set up S, init the ACIA, then loop forever
+;; printing "AS\n". Without the ACIA reset+CR sequence, TDRE
+;; stays 0 and putc spins forever in its busy-wait, so the BP
+;; at `sta ACIA_DATA` never fires.
 ;; ---------------------------------------------------------------
 start:
             lds     #STACK_TOP
+            ;; ACIA init: master reset, then 8N1 / div-16 / no IRQ.
+            lda     #$03
+            sta     ACIA_SR
+            lda     #$15
+            sta     ACIA_SR
 loop:
             lda     #'A'
             bsr     putc            ; explicit subroutine call
