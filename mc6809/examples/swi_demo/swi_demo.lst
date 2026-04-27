@@ -1,0 +1,96 @@
+                      (     swi_demo.asm):00001         ; SPDX-License-Identifier: MIT OR Apache-2.0
+                      (     swi_demo.asm):00002         ; Copyright (c) 2026 hha0x617
+                      (     swi_demo.asm):00003         ;
+                      (     swi_demo.asm):00004         ; ---------------------------------------------------------------------------
+                      (     swi_demo.asm):00005         ; SWI demo for emfe_plugin_mc6809
+                      (     swi_demo.asm):00006         ;
+                      (     swi_demo.asm):00007         ; Tiny program that exercises BSR (CALL frame) and SWI (EXCEPTION frame)
+                      (     swi_demo.asm):00008         ; on the same execution thread, so the emfe Call Stack pane has a
+                      (     swi_demo.asm):00009         ; clean target for the Phase C consolidation work to be visible.
+                      (     swi_demo.asm):00010         ;
+                      (     swi_demo.asm):00011         ; Talks to the same MC6850 ACIA layout the rest of the examples use
+                      (     swi_demo.asm):00012         ; (status @ $FF00, data @ $FF01).
+                      (     swi_demo.asm):00013         ;
+                      (     swi_demo.asm):00014         ; Main loop:
+                      (     swi_demo.asm):00015         ;   - emit 'A' via a BSR-called subroutine    -> CALL frame
+                      (     swi_demo.asm):00016         ;   - issue SWI                              -> EXCEPTION frame
+                      (     swi_demo.asm):00017         ;     swi_handler: emit 'S' via BSR          -> CALL frame nested
+                      (     swi_demo.asm):00018         ;                                              under the EXCEPTION
+                      (     swi_demo.asm):00019         ;     RTI                                     -> EXCEPTION frame popped
+                      (     swi_demo.asm):00020         ;   - emit '\n' via the same subroutine      -> CALL frame
+                      (     swi_demo.asm):00021         ;   - back to top of loop
+                      (     swi_demo.asm):00022         ;
+                      (     swi_demo.asm):00023         ; To exercise the Call Stack pane, set a breakpoint inside `putc` (e.g.,
+                      (     swi_demo.asm):00024         ; at the `sta ACIA_DATA` line). When execution halts there during the
+                      (     swi_demo.asm):00025         ; SWI sub-call, the Call Stack pane should show three frames:
+                      (     swi_demo.asm):00026         ;
+                      (     swi_demo.asm):00027         ;   #3   CALL       inside putc (sta ACIA_DATA)     <- top
+                      (     swi_demo.asm):00028         ;   #2   EXCEPTION  swi_handler -> putc
+                      (     swi_demo.asm):00029         ;   #1   CALL       main loop -> swi (return after SWI)
+                      (     swi_demo.asm):00030         ;
+                      (     swi_demo.asm):00031         ; Without Phase C the EXCEPTION frame would be missing entirely.
+                      (     swi_demo.asm):00032         ; ---------------------------------------------------------------------------
+                      (     swi_demo.asm):00033         
+     FF00             (     swi_demo.asm):00034         ACIA_SR     equ     $FF00
+     FF01             (     swi_demo.asm):00035         ACIA_DATA   equ     $FF01
+                      (     swi_demo.asm):00036         
+     1000             (     swi_demo.asm):00037         ROM_BASE    equ     $1000
+     2000             (     swi_demo.asm):00038         STACK_TOP   equ     $2000
+                      (     swi_demo.asm):00039         
+                      (     swi_demo.asm):00040                     org     ROM_BASE
+                      (     swi_demo.asm):00041         
+                      (     swi_demo.asm):00042         ;; ---------------------------------------------------------------
+                      (     swi_demo.asm):00043         ;; Entry point. Set up S, init the ACIA, then loop forever
+                      (     swi_demo.asm):00044         ;; printing "AS\n". Without the ACIA reset+CR sequence, TDRE
+                      (     swi_demo.asm):00045         ;; stays 0 and putc spins forever in its busy-wait, so the BP
+                      (     swi_demo.asm):00046         ;; at `sta ACIA_DATA` never fires.
+                      (     swi_demo.asm):00047         ;; ---------------------------------------------------------------
+1000                  (     swi_demo.asm):00048         start:
+1000 10CE2000         (     swi_demo.asm):00049                     lds     #STACK_TOP
+                      (     swi_demo.asm):00050                     ;; ACIA init: master reset, then 8N1 / div-16 / no IRQ.
+1004 8603             (     swi_demo.asm):00051                     lda     #$03
+1006 B7FF00           (     swi_demo.asm):00052                     sta     ACIA_SR
+1009 8615             (     swi_demo.asm):00053                     lda     #$15
+100B B7FF00           (     swi_demo.asm):00054                     sta     ACIA_SR
+100E                  (     swi_demo.asm):00055         loop:
+100E 8641             (     swi_demo.asm):00056                     lda     #'A'
+1010 8D07             (     swi_demo.asm):00057                     bsr     putc            ; explicit subroutine call
+1012 3F               (     swi_demo.asm):00058                     swi                     ; transfer through swi_handler
+1013 860A             (     swi_demo.asm):00059                     lda     #$0A            ; '\n'
+1015 8D02             (     swi_demo.asm):00060                     bsr     putc
+1017 20F5             (     swi_demo.asm):00061                     bra     loop
+                      (     swi_demo.asm):00062         
+                      (     swi_demo.asm):00063         ;; ---------------------------------------------------------------
+                      (     swi_demo.asm):00064         ;; putc — busy-wait write the byte in A to the ACIA. Preserves B.
+                      (     swi_demo.asm):00065         ;; Loops until TDRE (bit 1 of status) goes high, then writes.
+                      (     swi_demo.asm):00066         ;; ---------------------------------------------------------------
+1019                  (     swi_demo.asm):00067         putc:
+1019 3404             (     swi_demo.asm):00068                     pshs    b
+101B                  (     swi_demo.asm):00069         putc_wait:
+101B F6FF00           (     swi_demo.asm):00070                     ldb     ACIA_SR
+101E C502             (     swi_demo.asm):00071                     bitb    #$02            ; TDRE = bit 1
+1020 27F9             (     swi_demo.asm):00072                     beq     putc_wait
+1022 B7FF01           (     swi_demo.asm):00073                     sta     ACIA_DATA
+1025 3584             (     swi_demo.asm):00074                     puls    b,pc
+                      (     swi_demo.asm):00075         
+                      (     swi_demo.asm):00076         ;; ---------------------------------------------------------------
+                      (     swi_demo.asm):00077         ;; SWI handler. Emits 'S' through the same putc helper so we end up
+                      (     swi_demo.asm):00078         ;; with a CALL frame nested under the EXCEPTION frame the SWI
+                      (     swi_demo.asm):00079         ;; pushed. Returns via RTI, which restores the saved PC and CC.
+                      (     swi_demo.asm):00080         ;; ---------------------------------------------------------------
+1027                  (     swi_demo.asm):00081         swi_handler:
+1027 8653             (     swi_demo.asm):00082                     lda     #'S'
+1029 8DEE             (     swi_demo.asm):00083                     bsr     putc
+102B 3B               (     swi_demo.asm):00084                     rti
+                      (     swi_demo.asm):00085         
+                      (     swi_demo.asm):00086                     ;; ----- vectors -----
+                      (     swi_demo.asm):00087                     org     $FFFA
+FFFA 1027             (     swi_demo.asm):00088                     fdb     swi_handler     ; $FFFA-FFFB : SWI vector
+                      (     swi_demo.asm):00089                     org     $FFFE
+FFFE 1000             (     swi_demo.asm):00090                     fdb     start           ; $FFFE-FFFF : reset vector
+                      (     swi_demo.asm):00091         
+                      (     swi_demo.asm):00092                     ;; `end <entry>` populates the S-record's S9 termination
+                      (     swi_demo.asm):00093                     ;; record with the program's start address. Without an
+                      (     swi_demo.asm):00094                     ;; explicit entry, lwasm writes S9 = $0000 and the host
+                      (     swi_demo.asm):00095                     ;; loads the image but starts execution at PC = 0.
+                      (     swi_demo.asm):00096                     end     start

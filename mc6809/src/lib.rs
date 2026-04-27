@@ -335,7 +335,7 @@ pub type EmfeDiagnosticCallback = extern "C" fn(*mut c_void, *const c_char);
 enum RegId {
     A = 0,
     B = 1,
-    D = 2,          // concatenation view of A:B
+    D = 2, // concatenation view of A:B
     X = 3,
     Y = 4,
     U = 5,
@@ -353,8 +353,7 @@ enum RegId {
 
 static BOARD_NAME: &[u8] = b"MC6809\0";
 static CPU_NAME: &[u8] = b"MC6809\0";
-static DESCRIPTION: &[u8] =
-    b"Motorola MC6809 8-bit CPU (em6809 core) with memory-mapped UART\0";
+static DESCRIPTION: &[u8] = b"Motorola MC6809 8-bit CPU (em6809 core) with memory-mapped UART\0";
 static VERSION: &[u8] = b"0.1.0\0";
 
 // ===========================================================================
@@ -392,9 +391,9 @@ struct Mc6850 {
     base: u16,
 
     // Control register fields
-    cds: u8,           // bits 0-1
+    cds: u8,             // bits 0-1
     tx_irq_enable: bool, // decoded from TC (bit5-6 == 01)
-    rie: bool,         // bit 7
+    rie: bool,           // bit 7
 
     // Receive side
     rx_fifo: VecDeque<u8>,
@@ -451,11 +450,19 @@ impl Mc6850 {
 
     fn read_sr(&self) -> u8 {
         let mut s = 0u8;
-        if self.rdrf { s |= 0x01; }
-        if self.tdre { s |= 0x02; }
+        if self.rdrf {
+            s |= 0x01;
+        }
+        if self.tdre {
+            s |= 0x02;
+        }
         // DCD (bit2), CTS (bit3), FE (bit4), PE (bit6) held at 0.
-        if self.rx_overrun { s |= 0x20; }
-        if self.irq_active() { s |= 0x80; }
+        if self.rx_overrun {
+            s |= 0x20;
+        }
+        if self.irq_active() {
+            s |= 0x80;
+        }
         s
     }
 
@@ -469,8 +476,8 @@ impl Mc6850 {
 
     fn write_cr(&mut self, val: u8) {
         let cds = val & 0b11;
-        let ws = (val >> 2) & 0b111;      // word-select (ignored — guest chooses 8N1, 7E1, ...)
-        let tc = (val >> 5) & 0b11;       // bits 5-6
+        let ws = (val >> 2) & 0b111; // word-select (ignored — guest chooses 8N1, 7E1, ...)
+        let tc = (val >> 5) & 0b11; // bits 5-6
         let rie = (val & 0x80) != 0;
 
         self.cds = cds;
@@ -496,7 +503,9 @@ impl Mc6850 {
     }
 
     fn write_tdr(&mut self, val: u8) {
-        if self.in_master_reset { return; }
+        if self.in_master_reset {
+            return;
+        }
         // Instant transmit: fire the host TX callback and leave TDRE = 1.
         if let Some(cb) = self.tx_cb {
             cb(self.tx_user, val as c_char);
@@ -506,7 +515,9 @@ impl Mc6850 {
 
     /// Called when the host delivers an RX byte (`emfe_send_char`).
     fn receive(&mut self, ch: u8) {
-        if self.in_master_reset { return; }
+        if self.in_master_reset {
+            return;
+        }
         // Real chip has a 1-byte RX register; extra bytes overflow.
         // We keep a small FIFO for host convenience but flag overrun if it
         // grows too large.
@@ -532,7 +543,7 @@ struct PluginBus {
     memory: Box<[u8; 0x10000]>,
     acia: Mc6850,
     // Watchpoint support — fired whenever CPU-visible access hits the address.
-    read_watch: Vec<u16>,   // sorted, small count assumed
+    read_watch: Vec<u16>, // sorted, small count assumed
     write_watch: Vec<u16>,
     watch_hit: bool,
     watch_hit_addr: u16,
@@ -619,10 +630,10 @@ impl Bus for PluginBus {
 // Plugin instance
 // ===========================================================================
 
-struct Breakpoint {
-    enabled: bool,
-    condition: Option<CString>,
-}
+// Plugin-side Breakpoint type was removed; em6809::Cpu::breakpoints
+// is the single source of truth now (id / enabled / condition /
+// hit_count / ignore_count). The emfe ABI still indexes by address,
+// so the wrappers above translate addr ↔ BreakpointId on each call.
 
 struct Watchpoint {
     size: EmfeWatchpointSize,
@@ -631,12 +642,9 @@ struct Watchpoint {
     condition: String,
 }
 
-#[derive(Clone, Copy)]
-struct ShadowFrame {
-    call_pc: u16,     // PC of the JSR/BSR/LBSR instruction
-    target_pc: u16,   // address transferred to
-    return_pc: u16,   // PC that will be restored by RTS
-}
+// Plugin-side ShadowFrame was removed; em6809::Cpu::shadow_stack
+// holds CallFrame entries (with call_site / target / return_addr /
+// sp_at_call / CallKind) which emfe_get_call_stack maps onto the ABI.
 
 struct PluginInstance {
     cpu: Cpu,
@@ -654,16 +662,16 @@ struct PluginInstance {
     diag_cb: Option<EmfeDiagnosticCallback>,
     diag_user: *mut c_void,
 
-    // Breakpoints / watchpoints
-    breakpoints: std::collections::BTreeMap<u16, Breakpoint>,
+    // Watchpoints (plugin-managed for now). Breakpoints moved to
+    // `cpu.breakpoints` as part of the Phase C consolidation.
     watchpoints: std::collections::BTreeMap<u16, Watchpoint>,
 
     // Settings (key -> value)
     settings_defs: Vec<EmfeSettingDef>,
-    settings: std::collections::BTreeMap<String, String>,         // committed (after apply)
-    staged: std::collections::BTreeMap<String, String>,           // staged (before apply)
-    applied: std::collections::BTreeMap<String, String>,          // in effect on hardware
-    setting_flags: std::collections::BTreeMap<String, u32>,       // per-key flags
+    settings: std::collections::BTreeMap<String, String>, // committed (after apply)
+    staged: std::collections::BTreeMap<String, String>,   // staged (before apply)
+    applied: std::collections::BTreeMap<String, String>,  // in effect on hardware
+    setting_flags: std::collections::BTreeMap<String, u32>, // per-key flags
     setting_value_buf: CString,
     applied_setting_value_buf: CString,
 
@@ -683,15 +691,11 @@ struct PluginInstance {
     program_start: u16,
     program_end: u16,
 
-    // Shadow call stack — populated by step_one for each BSR/JSR/LBSR and
-    // drained for each RTS. Read by emfe_get_call_stack. This is independent
-    // of the guest's actual S-stack contents because mc6809 has no
-    // software-agnostic frame marker; intercepting call/return opcodes at the
-    // plugin level gives reliable frame boundaries for typical user code.
-    shadow_stack: Vec<ShadowFrame>,
-
+    // Shadow call stack moved to em6809::Cpu::shadow_stack — the
+    // core's hooks catch BSR/LBSR/JSR/SWI/IRQ/FIRQ/NMI consistently
+    // (the old plugin-side opcode-intercept missed interrupt frames).
     last_error: CString,
-    stop_reason: AtomicI32,   // EmfeStopReason as i32
+    stop_reason: AtomicI32, // EmfeStopReason as i32
     stop_address: AtomicU64,
     instructions: AtomicI64,
     cycles_counter: AtomicI64,
@@ -716,7 +720,6 @@ impl PluginInstance {
             state_user: ptr::null_mut(),
             diag_cb: None,
             diag_user: ptr::null_mut(),
-            breakpoints: Default::default(),
             watchpoints: Default::default(),
             settings_defs: Vec::new(),
             settings: Default::default(),
@@ -736,7 +739,6 @@ impl PluginInstance {
             disasm_storage: Vec::new(),
             program_start: 0,
             program_end: 0,
-            shadow_stack: Vec::new(),
             last_error: CString::new("").unwrap(),
             stop_reason: AtomicI32::new(EmfeStopReason::None as i32),
             stop_address: AtomicU64::new(0),
@@ -819,7 +821,6 @@ impl PluginInstance {
                 Some("Dark|Light|System"),
                 0,
             ),
-
             // MC6809 tab — module-specific settings.
             (
                 "ConsoleBase",
@@ -848,7 +849,6 @@ impl PluginInstance {
                 None,
                 R,
             ),
-
             // Console tab — terminal display preferences.
             (
                 "ConsoleScrollbackLines",
@@ -1018,55 +1018,58 @@ pub extern "C" fn emfe_negotiate(info: *const EmfeNegotiateInfo) -> EmfeResult {
 #[no_mangle]
 pub extern "C" fn emfe_get_board_info(out: *mut EmfeBoardInfo) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if out.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    unsafe {
-        (*out).board_name = BOARD_NAME.as_ptr() as *const c_char;
-        (*out).cpu_name = CPU_NAME.as_ptr() as *const c_char;
-        (*out).description = DESCRIPTION.as_ptr() as *const c_char;
-        (*out).version = VERSION.as_ptr() as *const c_char;
-        (*out).capabilities =
-            EMFE_CAP_LOAD_SREC | EMFE_CAP_LOAD_BINARY | EMFE_CAP_WATCHPOINTS
-            | EMFE_CAP_STEP_OVER | EMFE_CAP_STEP_OUT | EMFE_CAP_CALL_STACK;
-    }
-    EmfeResult::Ok
+        if out.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        unsafe {
+            (*out).board_name = BOARD_NAME.as_ptr() as *const c_char;
+            (*out).cpu_name = CPU_NAME.as_ptr() as *const c_char;
+            (*out).description = DESCRIPTION.as_ptr() as *const c_char;
+            (*out).version = VERSION.as_ptr() as *const c_char;
+            (*out).capabilities = EMFE_CAP_LOAD_SREC
+                | EMFE_CAP_LOAD_BINARY
+                | EMFE_CAP_WATCHPOINTS
+                | EMFE_CAP_STEP_OVER
+                | EMFE_CAP_STEP_OUT
+                | EMFE_CAP_CALL_STACK;
+        }
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub extern "C" fn emfe_create(out_instance: *mut EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if out_instance.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let boxed = Box::new(PluginInstance::new());
-    unsafe {
-        *out_instance = Box::into_raw(boxed) as EmfeInstance;
-    }
-    EmfeResult::Ok
+        if out_instance.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let boxed = Box::new(PluginInstance::new());
+        unsafe {
+            *out_instance = Box::into_raw(boxed) as EmfeInstance;
+        }
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub extern "C" fn emfe_destroy(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if instance.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    unsafe {
-        // Stop the worker thread if it's running.
-        let inst_ptr = instance as *mut PluginInstance;
-        (*inst_ptr).stop_requested.store(true, Ordering::Release);
-        if let Ok(mut g) = (*inst_ptr).worker.lock() {
-            if let Some(h) = g.take() {
-                drop(g);
-                let _ = h.join();
-            }
+        if instance.is_null() {
+            return EmfeResult::ErrInvalid;
         }
-        let _ = Box::from_raw(inst_ptr);
-    }
-    EmfeResult::Ok
+        unsafe {
+            // Stop the worker thread if it's running.
+            let inst_ptr = instance as *mut PluginInstance;
+            (*inst_ptr).stop_requested.store(true, Ordering::Release);
+            if let Ok(mut g) = (*inst_ptr).worker.lock() {
+                if let Some(h) = g.take() {
+                    drop(g);
+                    let _ = h.join();
+                }
+            }
+            let _ = Box::from_raw(inst_ptr);
+        }
+        EmfeResult::Ok
     })
 }
 
@@ -1081,15 +1084,15 @@ pub unsafe extern "C" fn emfe_set_console_char_callback(
     user: *mut c_void,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.console_cb = cb;
-    inst.console_user = user;
-    inst.bus.acia.tx_cb = cb;
-    inst.bus.acia.tx_user = user;
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.console_cb = cb;
+        inst.console_user = user;
+        inst.bus.acia.tx_cb = cb;
+        inst.bus.acia.tx_user = user;
+        EmfeResult::Ok
     })
 }
 
@@ -1100,13 +1103,13 @@ pub unsafe extern "C" fn emfe_set_state_change_callback(
     user: *mut c_void,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.state_cb = cb;
-    inst.state_user = user;
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.state_cb = cb;
+        inst.state_user = user;
+        EmfeResult::Ok
     })
 }
 
@@ -1117,13 +1120,13 @@ pub unsafe extern "C" fn emfe_set_diagnostic_callback(
     user: *mut c_void,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.diag_cb = cb;
-    inst.diag_user = user;
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.diag_cb = cb;
+        inst.diag_user = user;
+        EmfeResult::Ok
     })
 }
 
@@ -1137,15 +1140,15 @@ pub unsafe extern "C" fn emfe_get_register_defs(
     out_defs: *mut *const EmfeRegisterDef,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out_defs.is_null() {
-        return 0;
-    }
-    *out_defs = inst.reg_defs.as_ptr();
-    inst.reg_defs.len() as i32
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return 0,
+        };
+        if out_defs.is_null() {
+            return 0;
+        }
+        *out_defs = inst.reg_defs.as_ptr();
+        inst.reg_defs.len() as i32
     })
 }
 
@@ -1161,14 +1164,38 @@ pub unsafe extern "C" fn emfe_get_register_defs(
 //   bit 6 : F — FIRQ mask
 //   bit 7 : E — Entire flag (full register stack on interrupt)
 static CC_FLAG_BITS: [EmfeRegFlagBitDef; 8] = [
-    EmfeRegFlagBitDef { bit_index: 7, label: b"E\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 6, label: b"F\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 5, label: b"H\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 4, label: b"I\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 3, label: b"N\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 2, label: b"Z\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 1, label: b"V\0".as_ptr() as *const c_char },
-    EmfeRegFlagBitDef { bit_index: 0, label: b"C\0".as_ptr() as *const c_char },
+    EmfeRegFlagBitDef {
+        bit_index: 7,
+        label: b"E\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 6,
+        label: b"F\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 5,
+        label: b"H\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 4,
+        label: b"I\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 3,
+        label: b"N\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 2,
+        label: b"Z\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 1,
+        label: b"V\0".as_ptr() as *const c_char,
+    },
+    EmfeRegFlagBitDef {
+        bit_index: 0,
+        label: b"C\0".as_ptr() as *const c_char,
+    },
 ];
 
 #[no_mangle]
@@ -1178,15 +1205,15 @@ pub unsafe extern "C" fn emfe_get_register_flag_defs(
     out_defs: *mut *const EmfeRegFlagBitDef,
 ) -> i32 {
     ffi_catch!(0, {
-    if out_defs.is_null() {
-        return 0;
-    }
-    *out_defs = std::ptr::null();
-    if reg_id == RegId::CC as u32 {
-        *out_defs = CC_FLAG_BITS.as_ptr();
-        return CC_FLAG_BITS.len() as i32;
-    }
-    0
+        if out_defs.is_null() {
+            return 0;
+        }
+        *out_defs = std::ptr::null();
+        if reg_id == RegId::CC as u32 {
+            *out_defs = CC_FLAG_BITS.as_ptr();
+            return CC_FLAG_BITS.len() as i32;
+        }
+        0
     })
 }
 
@@ -1196,8 +1223,16 @@ pub unsafe extern "C" fn emfe_get_register_flag_defs(
 // textbox values via these deps so the user sees the new D the moment
 // they finish typing into A or B — before pressing Apply.
 static D_VIEW_DEPS: [EmfeRegViewDep; 2] = [
-    EmfeRegViewDep { reg_id: RegId::A as u32, shift: 8, width: 8 },
-    EmfeRegViewDep { reg_id: RegId::B as u32, shift: 0, width: 8 },
+    EmfeRegViewDep {
+        reg_id: RegId::A as u32,
+        shift: 8,
+        width: 8,
+    },
+    EmfeRegViewDep {
+        reg_id: RegId::B as u32,
+        shift: 0,
+        width: 8,
+    },
 ];
 
 #[no_mangle]
@@ -1207,15 +1242,15 @@ pub unsafe extern "C" fn emfe_get_register_view_deps(
     out_deps: *mut *const EmfeRegViewDep,
 ) -> i32 {
     ffi_catch!(0, {
-    if out_deps.is_null() {
-        return 0;
-    }
-    *out_deps = std::ptr::null();
-    if reg_id == RegId::D as u32 {
-        *out_deps = D_VIEW_DEPS.as_ptr();
-        return D_VIEW_DEPS.len() as i32;
-    }
-    0
+        if out_deps.is_null() {
+            return 0;
+        }
+        *out_deps = std::ptr::null();
+        if reg_id == RegId::D as u32 {
+            *out_deps = D_VIEW_DEPS.as_ptr();
+            return D_VIEW_DEPS.len() as i32;
+        }
+        0
     })
 }
 
@@ -1226,20 +1261,20 @@ pub unsafe extern "C" fn emfe_get_registers(
     count: i32,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if values.is_null() || count <= 0 {
-        return EmfeResult::ErrInvalid;
-    }
-    let slice = std::slice::from_raw_parts_mut(values, count as usize);
-    for v in slice.iter_mut() {
-        v.value = EmfeRegValueUnion {
-            u64_: inst.get_reg_u64(v.reg_id),
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
         };
-    }
-    EmfeResult::Ok
+        if values.is_null() || count <= 0 {
+            return EmfeResult::ErrInvalid;
+        }
+        let slice = std::slice::from_raw_parts_mut(values, count as usize);
+        for v in slice.iter_mut() {
+            v.value = EmfeRegValueUnion {
+                u64_: inst.get_reg_u64(v.reg_id),
+            };
+        }
+        EmfeResult::Ok
     })
 }
 
@@ -1250,21 +1285,21 @@ pub unsafe extern "C" fn emfe_set_registers(
     count: i32,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if values.is_null() || count <= 0 {
-        return EmfeResult::ErrInvalid;
-    }
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    let slice = std::slice::from_raw_parts(values, count as usize);
-    for v in slice {
-        inst.set_reg_u64(v.reg_id, v.value.u64_);
-    }
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if values.is_null() || count <= 0 {
+            return EmfeResult::ErrInvalid;
+        }
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        let slice = std::slice::from_raw_parts(values, count as usize);
+        for v in slice {
+            inst.set_reg_u64(v.reg_id, v.value.u64_);
+        }
+        EmfeResult::Ok
     })
 }
 
@@ -1275,80 +1310,80 @@ pub unsafe extern "C" fn emfe_set_registers(
 #[no_mangle]
 pub unsafe extern "C" fn emfe_peek_byte(instance: EmfeInstance, addr: u64) -> u8 {
     ffi_catch!(0, {
-    match inst_ref(instance) {
-        Some(i) => i.bus.peek(addr as u16),
-        None => 0,
-    }
+        match inst_ref(instance) {
+            Some(i) => i.bus.peek(addr as u16),
+            None => 0,
+        }
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_peek_word(instance: EmfeInstance, addr: u64) -> u16 {
     ffi_catch!(0, {
-    match inst_ref(instance) {
-        Some(i) => {
-            let a = addr as u16;
-            ((i.bus.peek(a) as u16) << 8) | (i.bus.peek(a.wrapping_add(1)) as u16)
+        match inst_ref(instance) {
+            Some(i) => {
+                let a = addr as u16;
+                ((i.bus.peek(a) as u16) << 8) | (i.bus.peek(a.wrapping_add(1)) as u16)
+            }
+            None => 0,
         }
-        None => 0,
-    }
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_peek_long(instance: EmfeInstance, addr: u64) -> u32 {
     ffi_catch!(0, {
-    match inst_ref(instance) {
-        Some(i) => {
-            let a = addr as u16;
-            (0..4)
-                .map(|o| i.bus.peek(a.wrapping_add(o)) as u32)
-                .enumerate()
-                .fold(0u32, |acc, (idx, b)| acc | (b << ((3 - idx) * 8)))
+        match inst_ref(instance) {
+            Some(i) => {
+                let a = addr as u16;
+                (0..4)
+                    .map(|o| i.bus.peek(a.wrapping_add(o)) as u32)
+                    .enumerate()
+                    .fold(0u32, |acc, (idx, b)| acc | (b << ((3 - idx) * 8)))
+            }
+            None => 0,
         }
-        None => 0,
-    }
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_poke_byte(instance: EmfeInstance, addr: u64, v: u8) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    match inst_mut(instance) {
-        Some(i) => {
-            i.bus.poke(addr as u16, v);
-            EmfeResult::Ok
+        match inst_mut(instance) {
+            Some(i) => {
+                i.bus.poke(addr as u16, v);
+                EmfeResult::Ok
+            }
+            None => EmfeResult::ErrInvalid,
         }
-        None => EmfeResult::ErrInvalid,
-    }
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_poke_word(instance: EmfeInstance, addr: u64, v: u16) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    match inst_mut(instance) {
-        Some(i) => {
-            let a = addr as u16;
-            i.bus.poke(a, (v >> 8) as u8);
-            i.bus.poke(a.wrapping_add(1), v as u8);
-            EmfeResult::Ok
+        match inst_mut(instance) {
+            Some(i) => {
+                let a = addr as u16;
+                i.bus.poke(a, (v >> 8) as u8);
+                i.bus.poke(a.wrapping_add(1), v as u8);
+                EmfeResult::Ok
+            }
+            None => EmfeResult::ErrInvalid,
         }
-        None => EmfeResult::ErrInvalid,
-    }
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_poke_long(instance: EmfeInstance, addr: u64, v: u32) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    match inst_mut(instance) {
-        Some(i) => {
-            let a = addr as u16;
-            for k in 0..4 {
-                let b = (v >> ((3 - k) * 8)) as u8;
-                i.bus.poke(a.wrapping_add(k as u16), b);
+        match inst_mut(instance) {
+            Some(i) => {
+                let a = addr as u16;
+                for k in 0..4 {
+                    let b = (v >> ((3 - k) * 8)) as u8;
+                    i.bus.poke(a.wrapping_add(k as u16), b);
+                }
+                EmfeResult::Ok
             }
-            EmfeResult::Ok
+            None => EmfeResult::ErrInvalid,
         }
-        None => EmfeResult::ErrInvalid,
-    }
     })
 }
 
@@ -1360,27 +1395,25 @@ pub unsafe extern "C" fn emfe_peek_range(
     length: u32,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if out.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let dst = std::slice::from_raw_parts_mut(out, length as usize);
-    let a = addr as u16;
-    for (i, slot) in dst.iter_mut().enumerate() {
-        *slot = inst.bus.peek(a.wrapping_add(i as u16));
-    }
-    EmfeResult::Ok
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if out.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let dst = std::slice::from_raw_parts_mut(out, length as usize);
+        let a = addr as u16;
+        for (i, slot) in dst.iter_mut().enumerate() {
+            *slot = inst.bus.peek(a.wrapping_add(i as u16));
+        }
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub extern "C" fn emfe_get_memory_size(_instance: EmfeInstance) -> u64 {
-    ffi_catch!(0, {
-    65536
-    })
+    ffi_catch!(0, { 65536 })
 }
 
 // ===========================================================================
@@ -1433,26 +1466,26 @@ pub unsafe extern "C" fn emfe_disassemble_one(
     out: *mut EmfeDisasmLine,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if out.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let (raw, mnem, operands, len) = disassemble_one_at(inst, addr as u16);
-    let cr = CString::new(raw).unwrap();
-    let cm = CString::new(mnem).unwrap();
-    let co = CString::new(operands).unwrap();
-    inst.disasm_storage.clear();
-    inst.disasm_storage.push((cr, cm, co));
-    let (r, m, o) = inst.disasm_storage.last().unwrap();
-    (*out).address = addr;
-    (*out).raw_bytes = r.as_ptr();
-    (*out).mnemonic = m.as_ptr();
-    (*out).operands = o.as_ptr();
-    (*out).length = len;
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if out.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let (raw, mnem, operands, len) = disassemble_one_at(inst, addr as u16);
+        let cr = CString::new(raw).unwrap();
+        let cm = CString::new(mnem).unwrap();
+        let co = CString::new(operands).unwrap();
+        inst.disasm_storage.clear();
+        inst.disasm_storage.push((cr, cm, co));
+        let (r, m, o) = inst.disasm_storage.last().unwrap();
+        (*out).address = addr;
+        (*out).raw_bytes = r.as_ptr();
+        (*out).mnemonic = m.as_ptr();
+        (*out).operands = o.as_ptr();
+        (*out).length = len;
+        EmfeResult::Ok
     })
 }
 
@@ -1465,35 +1498,35 @@ pub unsafe extern "C" fn emfe_disassemble_range(
     max: i32,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out.is_null() || max <= 0 {
-        return 0;
-    }
-    inst.disasm_storage.clear();
-    inst.disasm_storage.reserve(max as usize);
-    let mut addr = start as u16;
-    let end_u16 = end as u16;
-    let mut count = 0i32;
-    let slice = std::slice::from_raw_parts_mut(out, max as usize);
-    while addr < end_u16 && count < max {
-        let (raw, mnem, operands, len) = disassemble_one_at(inst, addr);
-        let cr = CString::new(raw).unwrap();
-        let cm = CString::new(mnem).unwrap();
-        let co = CString::new(operands).unwrap();
-        inst.disasm_storage.push((cr, cm, co));
-        let (r, m, o) = inst.disasm_storage.last().unwrap();
-        slice[count as usize].address = addr as u64;
-        slice[count as usize].raw_bytes = r.as_ptr();
-        slice[count as usize].mnemonic = m.as_ptr();
-        slice[count as usize].operands = o.as_ptr();
-        slice[count as usize].length = len;
-        addr = addr.wrapping_add(len as u16);
-        count += 1;
-    }
-    count
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return 0,
+        };
+        if out.is_null() || max <= 0 {
+            return 0;
+        }
+        inst.disasm_storage.clear();
+        inst.disasm_storage.reserve(max as usize);
+        let mut addr = start as u16;
+        let end_u16 = end as u16;
+        let mut count = 0i32;
+        let slice = std::slice::from_raw_parts_mut(out, max as usize);
+        while addr < end_u16 && count < max {
+            let (raw, mnem, operands, len) = disassemble_one_at(inst, addr);
+            let cr = CString::new(raw).unwrap();
+            let cm = CString::new(mnem).unwrap();
+            let co = CString::new(operands).unwrap();
+            inst.disasm_storage.push((cr, cm, co));
+            let (r, m, o) = inst.disasm_storage.last().unwrap();
+            slice[count as usize].address = addr as u64;
+            slice[count as usize].raw_bytes = r.as_ptr();
+            slice[count as usize].mnemonic = m.as_ptr();
+            slice[count as usize].operands = o.as_ptr();
+            slice[count as usize].length = len;
+            addr = addr.wrapping_add(len as u16);
+            count += 1;
+        }
+        count
     })
 }
 
@@ -1504,17 +1537,17 @@ pub unsafe extern "C" fn emfe_get_program_range(
     out_end: *mut u64,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if !out_start.is_null() {
-        *out_start = inst.program_start as u64;
-    }
-    if !out_end.is_null() {
-        *out_end = inst.program_end as u64;
-    }
-    EmfeResult::Ok
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if !out_start.is_null() {
+            *out_start = inst.program_start as u64;
+        }
+        if !out_end.is_null() {
+            *out_end = inst.program_end as u64;
+        }
+        EmfeResult::Ok
     })
 }
 
@@ -1523,59 +1556,37 @@ pub unsafe extern "C" fn emfe_get_program_range(
 // ===========================================================================
 
 fn step_one(inst: &mut PluginInstance) -> u32 {
-    // Capture pre-step state so we can classify the instruction just executed.
-    let pre_pc = inst.cpu.r.pc;
-    let op = inst.bus.read8(pre_pc);
-    // Distinguish RTS ($39) from calls before stepping because after the step
-    // PC/S have already changed.
-    let is_rts = op == 0x39;
-    let is_call = matches!(op, 0x8D | 0x17 | 0x9D | 0xAD | 0xBD);
-    let call_len = if is_call {
-        let (len, _) = em6809::disasm::disasm_one(&mut inst.bus, pre_pc);
-        len
-    } else {
-        0
-    };
-
+    // The em6809 core itself maintains the shadow call stack (push on
+    // BSR/LBSR/JSR/SWI/IRQ/FIRQ/NMI entry, pop on RTS/RTI) so the
+    // plugin no longer needs to inspect opcodes around `cpu.step`.
+    // This also picks up frames pushed via interrupt entry, which the
+    // old opcode-intercept path missed.
     let cycles = inst.cpu.step(&mut inst.bus, false);
     inst.instr_count.fetch_add(1, Ordering::Relaxed);
     inst.instructions.fetch_add(1, Ordering::Relaxed);
-    inst.cycles_counter.fetch_add(cycles as i64, Ordering::Relaxed);
+    inst.cycles_counter
+        .fetch_add(cycles as i64, Ordering::Relaxed);
     inst.bus.tick_word = inst.bus.tick_word.wrapping_add(cycles as u16);
-
-    // Shadow call-stack maintenance. Only BSR/LBSR/JSR variants are tracked;
-    // SWI/interrupt frames have different push layouts and typically return
-    // via RTI, which we do not intercept here.
-    if is_call {
-        let return_pc = pre_pc.wrapping_add(call_len);
-        inst.shadow_stack.push(ShadowFrame {
-            call_pc: pre_pc,
-            target_pc: inst.cpu.r.pc,
-            return_pc,
-        });
-    } else if is_rts {
-        inst.shadow_stack.pop();
-    }
-
     cycles
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    inst.state.store(EmfeState::Stepping as u8, Ordering::Release);
-    let _ = step_one(inst);
-    let st = EmfeState::Stopped;
-    inst.state.store(st as u8, Ordering::Release);
-    inst.notify_state(st, EmfeStopReason::Step, inst.cpu.r.pc as u64, None);
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        inst.state
+            .store(EmfeState::Stepping as u8, Ordering::Release);
+        let _ = step_one(inst);
+        let st = EmfeState::Stopped;
+        inst.state.store(st as u8, Ordering::Release);
+        inst.notify_state(st, EmfeStopReason::Step, inst.cpu.r.pc as u64, None);
+        EmfeResult::Ok
     })
 }
 
@@ -1606,27 +1617,76 @@ const STEP_LIMIT: u32 = 2_000_000;
 #[no_mangle]
 pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    inst.state.store(EmfeState::Stepping as u8, Ordering::Release);
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        inst.state
+            .store(EmfeState::Stepping as u8, Ordering::Release);
 
-    let pc0 = inst.cpu.r.pc;
-    let is_call = is_call_instruction(&mut inst.bus, pc0);
-    if !is_call {
-        // Not a call — behave like plain step.
-        let _ = step_one(inst);
-    } else {
-        // Determine the PC at which control returns after the call.
-        let (len, _) = em6809::disasm::disasm_one(&mut inst.bus, pc0);
-        let return_target = pc0.wrapping_add(len);
+        let pc0 = inst.cpu.r.pc;
+        let is_call = is_call_instruction(&mut inst.bus, pc0);
+        if !is_call {
+            // Not a call — behave like plain step.
+            let _ = step_one(inst);
+        } else {
+            // Determine the PC at which control returns after the call.
+            let (len, _) = em6809::disasm::disasm_one(&mut inst.bus, pc0);
+            let return_target = pc0.wrapping_add(len);
 
-        // Run until we land on the return target or we blow through the limit.
-        // The first step always executes (the call itself).
+            // Run until we land on the return target or we blow through the limit.
+            // The first step always executes (the call itself).
+            let mut count = 0u32;
+            while count < STEP_LIMIT {
+                let _ = step_one(inst);
+                count += 1;
+                if inst.cpu.r.pc == return_target {
+                    break;
+                }
+                // Breakpoint inside the callee halts stepping too. Uses
+                // the condition-aware checker so a guarded BP only stops
+                // when its expression evaluates true.
+                if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
+                    break;
+                }
+            }
+        }
+
+        inst.state
+            .store(EmfeState::Stopped as u8, Ordering::Release);
+        inst.notify_state(
+            EmfeState::Stopped,
+            EmfeStopReason::Step,
+            inst.cpu.r.pc as u64,
+            None,
+        );
+        EmfeResult::Ok
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
+    ffi_catch!(EmfeResult::ErrMemory, {
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        inst.state
+            .store(EmfeState::Stepping as u8, Ordering::Release);
+
+        // Peek the return address at the top of the S stack (hi, lo). This is
+        // where the next RTS would transfer control. We stop once PC reaches it.
+        let s = inst.cpu.r.s;
+        let hi = inst.bus.read8(s) as u16;
+        let lo = inst.bus.read8(s.wrapping_add(1)) as u16;
+        let return_target = (hi << 8) | lo;
+
         let mut count = 0u32;
         while count < STEP_LIMIT {
             let _ = step_one(inst);
@@ -1634,57 +1694,20 @@ pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
             if inst.cpu.r.pc == return_target {
                 break;
             }
-            // Breakpoint inside the callee halts stepping too.
-            if let Some(bp) = inst.breakpoints.get(&inst.cpu.r.pc) {
-                if bp.enabled {
-                    break;
-                }
-            }
-        }
-    }
-
-    inst.state.store(EmfeState::Stopped as u8, Ordering::Release);
-    inst.notify_state(EmfeState::Stopped, EmfeStopReason::Step, inst.cpu.r.pc as u64, None);
-    EmfeResult::Ok
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    inst.state.store(EmfeState::Stepping as u8, Ordering::Release);
-
-    // Peek the return address at the top of the S stack (hi, lo). This is
-    // where the next RTS would transfer control. We stop once PC reaches it.
-    let s = inst.cpu.r.s;
-    let hi = inst.bus.read8(s) as u16;
-    let lo = inst.bus.read8(s.wrapping_add(1)) as u16;
-    let return_target = (hi << 8) | lo;
-
-    let mut count = 0u32;
-    while count < STEP_LIMIT {
-        let _ = step_one(inst);
-        count += 1;
-        if inst.cpu.r.pc == return_target {
-            break;
-        }
-        if let Some(bp) = inst.breakpoints.get(&inst.cpu.r.pc) {
-            if bp.enabled {
+            if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
                 break;
             }
         }
-    }
 
-    inst.state.store(EmfeState::Stopped as u8, Ordering::Release);
-    inst.notify_state(EmfeState::Stopped, EmfeStopReason::Step, inst.cpu.r.pc as u64, None);
-    EmfeResult::Ok
+        inst.state
+            .store(EmfeState::Stopped as u8, Ordering::Release);
+        inst.notify_state(
+            EmfeState::Stopped,
+            EmfeStopReason::Step,
+            inst.cpu.r.pc as u64,
+            None,
+        );
+        EmfeResult::Ok
     })
 }
 
@@ -1692,43 +1715,45 @@ pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
 #[no_mangle]
 pub unsafe extern "C" fn emfe_run(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if instance.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let inst_ptr = instance as *mut PluginInstance;
-    if (*inst_ptr).state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    // Wait for any previous worker
-    {
-        let mut g = (*inst_ptr).worker.lock().unwrap();
-        if let Some(h) = g.take() {
-            drop(g);
-            let _ = h.join();
+        if instance.is_null() {
+            return EmfeResult::ErrInvalid;
         }
-    }
-    (*inst_ptr).stop_requested.store(false, Ordering::Release);
-    (*inst_ptr).state.store(EmfeState::Running as u8, Ordering::Release);
-
-    let raw = instance as usize;
-    let handle = std::thread::spawn(move || {
-        let inst_ptr = raw as *mut PluginInstance;
-        let inst = &mut *inst_ptr;
-        loop {
-            if inst.stop_requested.load(Ordering::Acquire) {
-                inst.state
-                    .store(EmfeState::Stopped as u8, Ordering::Release);
-                inst.notify_state(
-                    EmfeState::Stopped,
-                    EmfeStopReason::User,
-                    inst.cpu.r.pc as u64,
-                    Some("Stopped by user"),
-                );
-                break;
+        let inst_ptr = instance as *mut PluginInstance;
+        if (*inst_ptr).state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        // Wait for any previous worker
+        {
+            let mut g = (*inst_ptr).worker.lock().unwrap();
+            if let Some(h) = g.take() {
+                drop(g);
+                let _ = h.join();
             }
-            // Breakpoint check (before execute)
-            if let Some(bp) = inst.breakpoints.get(&inst.cpu.r.pc) {
-                if bp.enabled {
+        }
+        (*inst_ptr).stop_requested.store(false, Ordering::Release);
+        (*inst_ptr)
+            .state
+            .store(EmfeState::Running as u8, Ordering::Release);
+
+        let raw = instance as usize;
+        let handle = std::thread::spawn(move || {
+            let inst_ptr = raw as *mut PluginInstance;
+            let inst = &mut *inst_ptr;
+            loop {
+                if inst.stop_requested.load(Ordering::Acquire) {
+                    inst.state
+                        .store(EmfeState::Stopped as u8, Ordering::Release);
+                    inst.notify_state(
+                        EmfeState::Stopped,
+                        EmfeStopReason::User,
+                        inst.cpu.r.pc as u64,
+                        Some("Stopped by user"),
+                    );
+                    break;
+                }
+                // Breakpoint check (before execute). check_breakpoint
+                // applies condition / ignore_count / hit_count semantics.
+                if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
                     inst.state
                         .store(EmfeState::Stopped as u8, Ordering::Release);
                     inst.notify_state(
@@ -1739,131 +1764,130 @@ pub unsafe extern "C" fn emfe_run(instance: EmfeInstance) -> EmfeResult {
                     );
                     break;
                 }
+                let _ = step_one(inst);
+                // Watchpoint check (after execute)
+                if inst.bus.watch_hit {
+                    let a = inst.bus.watch_hit_addr;
+                    inst.bus.watch_hit = false;
+                    inst.state
+                        .store(EmfeState::Stopped as u8, Ordering::Release);
+                    inst.notify_state(
+                        EmfeState::Stopped,
+                        EmfeStopReason::Watchpoint,
+                        a as u64,
+                        Some("Watchpoint hit"),
+                    );
+                    break;
+                }
             }
-            let _ = step_one(inst);
-            // Watchpoint check (after execute)
-            if inst.bus.watch_hit {
-                let a = inst.bus.watch_hit_addr;
-                inst.bus.watch_hit = false;
-                inst.state
-                    .store(EmfeState::Stopped as u8, Ordering::Release);
-                inst.notify_state(
-                    EmfeState::Stopped,
-                    EmfeStopReason::Watchpoint,
-                    a as u64,
-                    Some("Watchpoint hit"),
-                );
-                break;
-            }
-        }
-    });
-    *(*inst_ptr).worker.lock().unwrap() = Some(handle);
-    EmfeResult::Ok
+        });
+        *(*inst_ptr).worker.lock().unwrap() = Some(handle);
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_stop(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.stop_requested.store(true, Ordering::Release);
-    let mut g = inst.worker.lock().unwrap();
-    if let Some(h) = g.take() {
-        drop(g);
-        let _ = h.join();
-    }
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.stop_requested.store(true, Ordering::Release);
+        let mut g = inst.worker.lock().unwrap();
+        if let Some(h) = g.take() {
+            drop(g);
+            let _ = h.join();
+        }
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_reset(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-
-    // Flush deferred REQUIRES_RESET settings now that it's safe to rebuild devices.
-    inst.applied = inst.settings.clone();
-
-    // Apply MC6809 tab settings that take effect only at reset.
-    let parse_u16 = |s: &str| -> Option<u16> {
-        let s = s.trim();
-        if let Some(hex) = s.strip_prefix("0x").or(s.strip_prefix("0X")) {
-            u16::from_str_radix(hex, 16).ok()
-        } else {
-            s.parse::<u16>().ok()
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
         }
-    };
-    if let Some(v) = inst.settings.get("ConsoleBase").cloned() {
-        if let Some(base) = parse_u16(&v) {
-            inst.bus.acia.base = base;
-        }
-    }
 
-    inst.cpu = Cpu::new();
-    inst.cpu.reset(&mut inst.bus);
-    // Preserve the ACIA's host-facing callbacks across a guest reset.
-    let saved_cb = inst.bus.acia.tx_cb;
-    let saved_user = inst.bus.acia.tx_user;
-    let saved_base = inst.bus.acia.base;
-    inst.bus.acia.hard_reset();
-    inst.bus.acia.tx_cb = saved_cb;
-    inst.bus.acia.tx_user = saved_user;
-    inst.bus.acia.base = saved_base;
-    inst.instr_count.store(0, Ordering::Relaxed);
-    inst.instructions.store(0, Ordering::Relaxed);
-    inst.cycles_counter.store(0, Ordering::Relaxed);
-    inst.shadow_stack.clear();
-    inst.state
-        .store(EmfeState::Stopped as u8, Ordering::Release);
-    inst.notify_state(
-        EmfeState::Stopped,
-        EmfeStopReason::None,
-        inst.cpu.r.pc as u64,
-        Some("Reset"),
-    );
-    EmfeResult::Ok
+        // Flush deferred REQUIRES_RESET settings now that it's safe to rebuild devices.
+        inst.applied = inst.settings.clone();
+
+        // Apply MC6809 tab settings that take effect only at reset.
+        let parse_u16 = |s: &str| -> Option<u16> {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x").or(s.strip_prefix("0X")) {
+                u16::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse::<u16>().ok()
+            }
+        };
+        if let Some(v) = inst.settings.get("ConsoleBase").cloned() {
+            if let Some(base) = parse_u16(&v) {
+                inst.bus.acia.base = base;
+            }
+        }
+
+        inst.cpu = Cpu::new();
+        inst.cpu.reset(&mut inst.bus);
+        // Preserve the ACIA's host-facing callbacks across a guest reset.
+        let saved_cb = inst.bus.acia.tx_cb;
+        let saved_user = inst.bus.acia.tx_user;
+        let saved_base = inst.bus.acia.base;
+        inst.bus.acia.hard_reset();
+        inst.bus.acia.tx_cb = saved_cb;
+        inst.bus.acia.tx_user = saved_user;
+        inst.bus.acia.base = saved_base;
+        inst.instr_count.store(0, Ordering::Relaxed);
+        inst.instructions.store(0, Ordering::Relaxed);
+        inst.cycles_counter.store(0, Ordering::Relaxed);
+        inst.cpu.shadow_stack.clear();
+        inst.state
+            .store(EmfeState::Stopped as u8, Ordering::Release);
+        inst.notify_state(
+            EmfeState::Stopped,
+            EmfeStopReason::None,
+            inst.cpu.r.pc as u64,
+            Some("Reset"),
+        );
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_get_state(instance: EmfeInstance) -> EmfeState {
     ffi_catch!(EmfeState::Stopped, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return EmfeState::Stopped,
-    };
-    match inst.state.load(Ordering::Acquire) {
-        1 => EmfeState::Running,
-        2 => EmfeState::Halted,
-        3 => EmfeState::Stepping,
-        _ => EmfeState::Stopped,
-    }
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return EmfeState::Stopped,
+        };
+        match inst.state.load(Ordering::Acquire) {
+            1 => EmfeState::Running,
+            2 => EmfeState::Halted,
+            3 => EmfeState::Stepping,
+            _ => EmfeState::Stopped,
+        }
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_get_instruction_count(instance: EmfeInstance) -> i64 {
     ffi_catch!(0, {
-    inst_ref(instance)
-        .map(|i| i.instructions.load(Ordering::Relaxed))
-        .unwrap_or(0)
+        inst_ref(instance)
+            .map(|i| i.instructions.load(Ordering::Relaxed))
+            .unwrap_or(0)
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_get_cycle_count(instance: EmfeInstance) -> i64 {
     ffi_catch!(0, {
-    inst_ref(instance)
-        .map(|i| i.cycles_counter.load(Ordering::Relaxed))
-        .unwrap_or(0)
+        inst_ref(instance)
+            .map(|i| i.cycles_counter.load(Ordering::Relaxed))
+            .unwrap_or(0)
     })
 }
 
@@ -1874,29 +1898,41 @@ pub unsafe extern "C" fn emfe_get_cycle_count(instance: EmfeInstance) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn emfe_add_breakpoint(instance: EmfeInstance, addr: u64) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.breakpoints.insert(
-        addr as u16,
-        Breakpoint {
-            enabled: true,
-            condition: None,
-        },
-    );
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let addr = addr as u16;
+        // emfe ABI semantics: at most one BP per address. The em6809
+        // core allows multiple BPs at the same address (each with its
+        // own id, condition, hit_count); preserving the ABI means we
+        // skip the add when one already exists. Idempotent on caller's
+        // side.
+        let exists = inst.cpu.breakpoints.iter().any(|b| b.addr == addr);
+        if !exists {
+            let _ = inst.cpu.breakpoints.add(addr);
+        }
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_remove_breakpoint(instance: EmfeInstance, addr: u64) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.breakpoints.remove(&(addr as u16));
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let addr = addr as u16;
+        let id = inst
+            .cpu
+            .breakpoints
+            .iter()
+            .find(|b| b.addr == addr)
+            .map(|b| b.id);
+        if let Some(id) = id {
+            inst.cpu.breakpoints.remove(id);
+        }
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
@@ -1906,17 +1942,23 @@ pub unsafe extern "C" fn emfe_enable_breakpoint(
     enabled: bool,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    match inst.breakpoints.get_mut(&(addr as u16)) {
-        Some(bp) => {
-            bp.enabled = enabled;
-            EmfeResult::Ok
-        }
-        None => EmfeResult::ErrNotFound,
-    }
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let addr = addr as u16;
+        let id = match inst
+            .cpu
+            .breakpoints
+            .iter()
+            .find(|b| b.addr == addr)
+            .map(|b| b.id)
+        {
+            Some(id) => id,
+            None => return EmfeResult::ErrNotFound,
+        };
+        inst.cpu.breakpoints.set_enabled(id, enabled);
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
@@ -1926,32 +1968,39 @@ pub unsafe extern "C" fn emfe_set_breakpoint_condition(
     cond: *const c_char,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    match inst.breakpoints.get_mut(&(addr as u16)) {
-        Some(bp) => {
-            bp.condition = if cond.is_null() {
-                None
-            } else {
-                Some(CStr::from_ptr(cond).to_owned())
-            };
-            EmfeResult::Ok
-        }
-        None => EmfeResult::ErrNotFound,
-    }
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let addr = addr as u16;
+        let id = match inst
+            .cpu
+            .breakpoints
+            .iter()
+            .find(|b| b.addr == addr)
+            .map(|b| b.id)
+        {
+            Some(id) => id,
+            None => return EmfeResult::ErrNotFound,
+        };
+        let cond_str = if cond.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(cond).to_string_lossy().into_owned())
+        };
+        inst.cpu.breakpoints.set_condition(id, cond_str);
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_clear_breakpoints(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.breakpoints.clear();
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.cpu.breakpoints.clear();
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
@@ -1961,30 +2010,45 @@ pub unsafe extern "C" fn emfe_get_breakpoints(
     max: i32,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out.is_null() || max <= 0 {
-        return 0;
-    }
-    let slice = std::slice::from_raw_parts_mut(out, max as usize);
-    let mut count = 0usize;
-    for (&addr, bp) in inst.breakpoints.iter() {
-        if count >= max as usize {
-            break;
-        }
-        slice[count] = EmfeBreakpointInfo {
-            address: addr as u64,
-            enabled: bp.enabled,
-            condition: bp
-                .condition
-                .as_ref()
-                .map_or(ptr::null(), |c| c.as_ptr()),
+        // Switched to inst_mut because we rebuild bp_condition_storage
+        // on each call; the returned `*const c_char` pointers borrow
+        // from that storage and stay valid until the next call.
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return 0,
         };
-        count += 1;
-    }
-    count as i32
+        if out.is_null() || max <= 0 {
+            return 0;
+        }
+        inst.bp_condition_storage.clear();
+        // Pre-pass: build CString cache so the address-keyed loop below
+        // can borrow stable c_char pointers. Same order as iter().
+        for b in inst.cpu.breakpoints.iter() {
+            let cs = match &b.condition {
+                Some(s) => CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap()),
+                None => CString::new("").unwrap(),
+            };
+            inst.bp_condition_storage.push(cs);
+        }
+        let slice = std::slice::from_raw_parts_mut(out, max as usize);
+        let mut count = 0usize;
+        for (i, b) in inst.cpu.breakpoints.iter().enumerate() {
+            if count >= max as usize {
+                break;
+            }
+            let cond_ptr = if b.condition.is_some() {
+                inst.bp_condition_storage[i].as_ptr()
+            } else {
+                ptr::null()
+            };
+            slice[count] = EmfeBreakpointInfo {
+                address: b.addr as u64,
+                enabled: b.enabled,
+                condition: cond_ptr,
+            };
+            count += 1;
+        }
+        count as i32
     })
 }
 
@@ -2000,53 +2064,53 @@ pub unsafe extern "C" fn emfe_add_watchpoint(
     ty: EmfeWatchpointType,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    let a = addr as u16;
-    inst.watchpoints.insert(
-        a,
-        Watchpoint {
-            size,
-            type_: ty,
-            enabled: true,
-            condition: String::new(),
-        },
-    );
-    match ty {
-        EmfeWatchpointType::Read | EmfeWatchpointType::ReadWrite => {
-            if inst.bus.read_watch.binary_search(&a).is_err() {
-                inst.bus.read_watch.push(a);
-                inst.bus.read_watch.sort_unstable();
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let a = addr as u16;
+        inst.watchpoints.insert(
+            a,
+            Watchpoint {
+                size,
+                type_: ty,
+                enabled: true,
+                condition: String::new(),
+            },
+        );
+        match ty {
+            EmfeWatchpointType::Read | EmfeWatchpointType::ReadWrite => {
+                if inst.bus.read_watch.binary_search(&a).is_err() {
+                    inst.bus.read_watch.push(a);
+                    inst.bus.read_watch.sort_unstable();
+                }
             }
+            _ => {}
         }
-        _ => {}
-    }
-    match ty {
-        EmfeWatchpointType::Write | EmfeWatchpointType::ReadWrite => {
-            if inst.bus.write_watch.binary_search(&a).is_err() {
-                inst.bus.write_watch.push(a);
-                inst.bus.write_watch.sort_unstable();
+        match ty {
+            EmfeWatchpointType::Write | EmfeWatchpointType::ReadWrite => {
+                if inst.bus.write_watch.binary_search(&a).is_err() {
+                    inst.bus.write_watch.push(a);
+                    inst.bus.write_watch.sort_unstable();
+                }
             }
+            _ => {}
         }
-        _ => {}
-    }
-    EmfeResult::Ok
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_remove_watchpoint(instance: EmfeInstance, addr: u64) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    let a = addr as u16;
-    inst.watchpoints.remove(&a);
-    inst.bus.read_watch.retain(|&x| x != a);
-    inst.bus.write_watch.retain(|&x| x != a);
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let a = addr as u16;
+        inst.watchpoints.remove(&a);
+        inst.bus.read_watch.retain(|&x| x != a);
+        inst.bus.write_watch.retain(|&x| x != a);
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
@@ -2056,17 +2120,17 @@ pub unsafe extern "C" fn emfe_enable_watchpoint(
     enabled: bool,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    match inst.watchpoints.get_mut(&(addr as u16)) {
-        Some(wp) => {
-            wp.enabled = enabled;
-            EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        match inst.watchpoints.get_mut(&(addr as u16)) {
+            Some(wp) => {
+                wp.enabled = enabled;
+                EmfeResult::Ok
+            }
+            None => EmfeResult::ErrNotFound,
         }
-        None => EmfeResult::ErrNotFound,
-    }
     })
 }
 #[no_mangle]
@@ -2076,34 +2140,34 @@ pub unsafe extern "C" fn emfe_set_watchpoint_condition(
     cond: *const c_char,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    match inst.watchpoints.get_mut(&(addr as u16)) {
-        Some(wp) => {
-            wp.condition = if cond.is_null() {
-                String::new()
-            } else {
-                CStr::from_ptr(cond).to_string_lossy().into_owned()
-            };
-            EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        match inst.watchpoints.get_mut(&(addr as u16)) {
+            Some(wp) => {
+                wp.condition = if cond.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr(cond).to_string_lossy().into_owned()
+                };
+                EmfeResult::Ok
+            }
+            None => EmfeResult::ErrNotFound,
         }
-        None => EmfeResult::ErrNotFound,
-    }
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_clear_watchpoints(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.watchpoints.clear();
-    inst.bus.read_watch.clear();
-    inst.bus.write_watch.clear();
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.watchpoints.clear();
+        inst.bus.read_watch.clear();
+        inst.bus.write_watch.clear();
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
@@ -2113,29 +2177,29 @@ pub unsafe extern "C" fn emfe_get_watchpoints(
     max: i32,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out.is_null() || max <= 0 {
-        return 0;
-    }
-    let slice = std::slice::from_raw_parts_mut(out, max as usize);
-    let mut count = 0usize;
-    for (&addr, wp) in inst.watchpoints.iter() {
-        if count >= max as usize {
-            break;
-        }
-        slice[count] = EmfeWatchpointInfo {
-            address: addr as u64,
-            size: wp.size,
-            type_: wp.type_,
-            enabled: wp.enabled,
-            condition: ptr::null(),
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return 0,
         };
-        count += 1;
-    }
-    count as i32
+        if out.is_null() || max <= 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts_mut(out, max as usize);
+        let mut count = 0usize;
+        for (&addr, wp) in inst.watchpoints.iter() {
+            if count >= max as usize {
+                break;
+            }
+            slice[count] = EmfeWatchpointInfo {
+                address: addr as u64,
+                size: wp.size,
+                type_: wp.type_,
+                enabled: wp.enabled,
+                condition: ptr::null(),
+            };
+            count += 1;
+        }
+        count as i32
     })
 }
 #[no_mangle]
@@ -2145,28 +2209,45 @@ pub unsafe extern "C" fn emfe_get_call_stack(
     max: i32,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out.is_null() || max <= 0 {
-        return 0;
-    }
-    // Emit innermost (most recently entered) frame first so the host can
-    // display the top of stack at index 0.
-    let n = inst.shadow_stack.len().min(max as usize);
-    let slice = std::slice::from_raw_parts_mut(out, n);
-    for (i, frame) in inst.shadow_stack.iter().rev().take(n).enumerate() {
-        slice[i] = EmfeCallStackEntry {
-            call_pc: frame.call_pc as u64,
-            target_pc: frame.target_pc as u64,
-            return_pc: frame.return_pc as u64,
-            frame_pointer: 0,
-            kind: EmfeCallStackKind::Call,
-            label: ptr::null(),
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return 0,
         };
-    }
-    n as i32
+        if out.is_null() || max <= 0 {
+            return 0;
+        }
+        // Pull from the em6809 core's shadow stack. Frames are stored in
+        // push order (oldest first); the emfe convention is innermost-
+        // first so we reverse on the way out. CallKind maps onto the ABI's
+        // {Call, Exception, Interrupt} taxonomy: BSR/JSR are explicit
+        // calls; SWI{,2,3} are exceptions; IRQ/FIRQ/NMI are interrupts.
+        let frames = inst.cpu.shadow_stack.frames();
+        let n = frames.len().min(max as usize);
+        let slice = std::slice::from_raw_parts_mut(out, n);
+        for (i, frame) in frames.iter().rev().take(n).enumerate() {
+            let kind = match frame.kind {
+                em6809::debug::CallKind::Bsr | em6809::debug::CallKind::Jsr => {
+                    EmfeCallStackKind::Call
+                }
+                em6809::debug::CallKind::Swi(_) => EmfeCallStackKind::Exception,
+                em6809::debug::CallKind::Irq
+                | em6809::debug::CallKind::Firq
+                | em6809::debug::CallKind::Nmi => EmfeCallStackKind::Interrupt,
+            };
+            slice[i] = EmfeCallStackEntry {
+                call_pc: frame.call_site as u64,
+                target_pc: frame.target as u64,
+                return_pc: frame.return_addr as u64,
+                // mc6809 has no architectural frame pointer; report the
+                // S register at the moment the frame was pushed instead.
+                // It's the closest thing the host can use to validate
+                // unwinds against the live S register.
+                frame_pointer: frame.sp_at_call as u64,
+                kind,
+                label: ptr::null(),
+            };
+        }
+        n as i32
     })
 }
 
@@ -2175,25 +2256,15 @@ pub extern "C" fn emfe_get_framebuffer_info(
     _instance: EmfeInstance,
     _out: *mut EmfeFramebufferInfo,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 #[no_mangle]
 pub extern "C" fn emfe_get_palette_entry(_instance: EmfeInstance, _index: u32) -> u32 {
-    ffi_catch!(0, {
-    0
-    })
+    ffi_catch!(0, { 0 })
 }
 #[no_mangle]
-pub extern "C" fn emfe_get_palette(
-    _instance: EmfeInstance,
-    _out: *mut u32,
-    _max: i32,
-) -> i32 {
-    ffi_catch!(0, {
-    0
-    })
+pub extern "C" fn emfe_get_palette(_instance: EmfeInstance, _out: *mut u32, _max: i32) -> i32 {
+    ffi_catch!(0, { 0 })
 }
 #[no_mangle]
 pub extern "C" fn emfe_push_key(
@@ -2201,19 +2272,11 @@ pub extern "C" fn emfe_push_key(
     _scancode: u32,
     _pressed: bool,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 #[no_mangle]
-pub extern "C" fn emfe_push_mouse_move(
-    _instance: EmfeInstance,
-    _dx: i32,
-    _dy: i32,
-) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+pub extern "C" fn emfe_push_mouse_move(_instance: EmfeInstance, _dx: i32, _dy: i32) -> EmfeResult {
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 #[no_mangle]
 pub extern "C" fn emfe_push_mouse_absolute(
@@ -2221,9 +2284,7 @@ pub extern "C" fn emfe_push_mouse_absolute(
     _x: i32,
     _y: i32,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 #[no_mangle]
 pub extern "C" fn emfe_push_mouse_button(
@@ -2231,9 +2292,7 @@ pub extern "C" fn emfe_push_mouse_button(
     _button: i32,
     _pressed: bool,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 
 // ===========================================================================
@@ -2241,13 +2300,8 @@ pub extern "C" fn emfe_push_mouse_button(
 // ===========================================================================
 
 #[no_mangle]
-pub extern "C" fn emfe_load_elf(
-    _instance: EmfeInstance,
-    _path: *const c_char,
-) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+pub extern "C" fn emfe_load_elf(_instance: EmfeInstance, _path: *const c_char) -> EmfeResult {
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 
 #[no_mangle]
@@ -2257,142 +2311,141 @@ pub unsafe extern "C" fn emfe_load_binary(
     load_address: u64,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if path.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    let cstr = CStr::from_ptr(path);
-    let path_str = cstr.to_string_lossy().into_owned();
-    let data = match std::fs::read(&path_str) {
-        Ok(d) => d,
-        Err(e) => {
-            inst.last_error = CString::new(format!("Cannot open file: {}", e)).unwrap();
-            return EmfeResult::ErrIo;
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if path.is_null() {
+            return EmfeResult::ErrInvalid;
         }
-    };
-    let addr0 = load_address as u16;
-    for (i, &b) in data.iter().enumerate() {
-        if (addr0 as usize + i) >= 0x10000 {
-            break;
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
         }
-        inst.bus.poke(addr0.wrapping_add(i as u16), b);
-    }
-    inst.program_start = addr0;
-    inst.program_end = addr0.wrapping_add(data.len() as u16);
+        let cstr = CStr::from_ptr(path);
+        let path_str = cstr.to_string_lossy().into_owned();
+        let data = match std::fs::read(&path_str) {
+            Ok(d) => d,
+            Err(e) => {
+                inst.last_error = CString::new(format!("Cannot open file: {}", e)).unwrap();
+                return EmfeResult::ErrIo;
+            }
+        };
+        let addr0 = load_address as u16;
+        for (i, &b) in data.iter().enumerate() {
+            if (addr0 as usize + i) >= 0x10000 {
+                break;
+            }
+            inst.bus.poke(addr0.wrapping_add(i as u16), b);
+        }
+        inst.program_start = addr0;
+        inst.program_end = addr0.wrapping_add(data.len() as u16);
 
-    // If a reset vector is present, load PC from it; otherwise PC = load addr.
-    let vh = inst.bus.peek(0xFFFE);
-    let vl = inst.bus.peek(0xFFFF);
-    let vec = ((vh as u16) << 8) | (vl as u16);
-    inst.cpu.r.pc = if vec != 0 { vec } else { addr0 };
-    inst.cpu.r.s = 0xFF00;
-    inst.last_error = CString::new("").unwrap();
-    EmfeResult::Ok
+        // If a reset vector is present, load PC from it; otherwise PC = load addr.
+        let vh = inst.bus.peek(0xFFFE);
+        let vl = inst.bus.peek(0xFFFF);
+        let vec = ((vh as u16) << 8) | (vl as u16);
+        inst.cpu.r.pc = if vec != 0 { vec } else { addr0 };
+        inst.cpu.r.s = 0xFF00;
+        inst.last_error = CString::new("").unwrap();
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn emfe_load_srec(
-    instance: EmfeInstance,
-    path: *const c_char,
-) -> EmfeResult {
+pub unsafe extern "C" fn emfe_load_srec(instance: EmfeInstance, path: *const c_char) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if path.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
-        return EmfeResult::ErrState;
-    }
-    let path_str = CStr::from_ptr(path).to_string_lossy().into_owned();
-    let content = match std::fs::read_to_string(&path_str) {
-        Ok(s) => s,
-        Err(e) => {
-            inst.last_error = CString::new(format!("Cannot open file: {}", e)).unwrap();
-            return EmfeResult::ErrIo;
-        }
-    };
-
-    let hex2 = |s: &str| -> Option<u8> {
-        u8::from_str_radix(s, 16).ok()
-    };
-    let mut min_addr: u32 = 0x10000;
-    let mut max_addr: u32 = 0;
-    let mut entry: Option<u16> = None;
-    for line in content.lines() {
-        if line.len() < 4 || !line.starts_with('S') {
-            continue;
-        }
-        let rec = &line[1..2];
-        let bytes = &line[2..];
-        if bytes.len() < 2 {
-            continue;
-        }
-        let _bc = match hex2(&bytes[0..2]) {
-            Some(b) => b as usize,
-            None => continue,
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
         };
-        match rec {
-            "1" if bytes.len() >= 8 => {
-                let addr = ((hex2(&bytes[2..4]).unwrap_or(0) as u16) << 8)
-                    | (hex2(&bytes[4..6]).unwrap_or(0) as u16);
-                let data_hex = &bytes[6..bytes.len() - 2];
-                let mut a = addr;
-                let mut p = data_hex;
-                while p.len() >= 2 {
-                    if let Some(b) = hex2(&p[0..2]) {
-                        inst.bus.poke(a, b);
-                        let au = a as u32;
-                        if au < min_addr {
-                            min_addr = au;
-                        }
-                        if au + 1 > max_addr {
-                            max_addr = au + 1;
-                        }
-                        a = a.wrapping_add(1);
-                    }
-                    p = &p[2..];
-                }
-            }
-            "9" if bytes.len() >= 6 => {
-                entry = Some(
-                    ((hex2(&bytes[2..4]).unwrap_or(0) as u16) << 8)
-                        | (hex2(&bytes[4..6]).unwrap_or(0) as u16),
-                );
-            }
-            _ => {}
+        if path.is_null() {
+            return EmfeResult::ErrInvalid;
         }
-    }
+        if inst.state.load(Ordering::Acquire) == EmfeState::Running as u8 {
+            return EmfeResult::ErrState;
+        }
+        let path_str = CStr::from_ptr(path).to_string_lossy().into_owned();
+        let content = match std::fs::read_to_string(&path_str) {
+            Ok(s) => s,
+            Err(e) => {
+                inst.last_error = CString::new(format!("Cannot open file: {}", e)).unwrap();
+                return EmfeResult::ErrIo;
+            }
+        };
 
-    if let Some(e) = entry {
-        inst.cpu.r.pc = e;
-    } else if min_addr < 0x10000 {
-        inst.cpu.r.pc = min_addr as u16;
-    }
-    inst.cpu.r.s = 0xFF00;
-    inst.program_start = if min_addr < 0x10000 { min_addr as u16 } else { 0 };
-    inst.program_end = max_addr as u16;
-    inst.last_error = CString::new("").unwrap();
-    EmfeResult::Ok
+        let hex2 = |s: &str| -> Option<u8> { u8::from_str_radix(s, 16).ok() };
+        let mut min_addr: u32 = 0x10000;
+        let mut max_addr: u32 = 0;
+        let mut entry: Option<u16> = None;
+        for line in content.lines() {
+            if line.len() < 4 || !line.starts_with('S') {
+                continue;
+            }
+            let rec = &line[1..2];
+            let bytes = &line[2..];
+            if bytes.len() < 2 {
+                continue;
+            }
+            let _bc = match hex2(&bytes[0..2]) {
+                Some(b) => b as usize,
+                None => continue,
+            };
+            match rec {
+                "1" if bytes.len() >= 8 => {
+                    let addr = ((hex2(&bytes[2..4]).unwrap_or(0) as u16) << 8)
+                        | (hex2(&bytes[4..6]).unwrap_or(0) as u16);
+                    let data_hex = &bytes[6..bytes.len() - 2];
+                    let mut a = addr;
+                    let mut p = data_hex;
+                    while p.len() >= 2 {
+                        if let Some(b) = hex2(&p[0..2]) {
+                            inst.bus.poke(a, b);
+                            let au = a as u32;
+                            if au < min_addr {
+                                min_addr = au;
+                            }
+                            if au + 1 > max_addr {
+                                max_addr = au + 1;
+                            }
+                            a = a.wrapping_add(1);
+                        }
+                        p = &p[2..];
+                    }
+                }
+                "9" if bytes.len() >= 6 => {
+                    entry = Some(
+                        ((hex2(&bytes[2..4]).unwrap_or(0) as u16) << 8)
+                            | (hex2(&bytes[4..6]).unwrap_or(0) as u16),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(e) = entry {
+            inst.cpu.r.pc = e;
+        } else if min_addr < 0x10000 {
+            inst.cpu.r.pc = min_addr as u16;
+        }
+        inst.cpu.r.s = 0xFF00;
+        inst.program_start = if min_addr < 0x10000 {
+            min_addr as u16
+        } else {
+            0
+        };
+        inst.program_end = max_addr as u16;
+        inst.last_error = CString::new("").unwrap();
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_get_last_error(instance: EmfeInstance) -> *const c_char {
     ffi_catch!(std::ptr::null::<c_char>() as *const c_char, {
-    match inst_ref(instance) {
-        Some(i) => i.last_error.as_ptr(),
-        None => b"Invalid instance\0".as_ptr() as *const c_char,
-    }
+        match inst_ref(instance) {
+            Some(i) => i.last_error.as_ptr(),
+            None => b"Invalid instance\0".as_ptr() as *const c_char,
+        }
     })
 }
 
@@ -2403,29 +2456,26 @@ pub unsafe extern "C" fn emfe_get_last_error(instance: EmfeInstance) -> *const c
 #[no_mangle]
 pub unsafe extern "C" fn emfe_send_char(instance: EmfeInstance, ch: c_char) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.bus.acia.receive(ch as u8);
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.bus.acia.receive(ch as u8);
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
-pub unsafe extern "C" fn emfe_send_string(
-    instance: EmfeInstance,
-    s: *const c_char,
-) -> EmfeResult {
+pub unsafe extern "C" fn emfe_send_string(instance: EmfeInstance, s: *const c_char) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if instance.is_null() || s.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let bytes = CStr::from_ptr(s).to_bytes();
-    let inst = &mut *(instance as *mut PluginInstance);
-    for &b in bytes {
-        inst.bus.acia.receive(b);
-    }
-    EmfeResult::Ok
+        if instance.is_null() || s.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let bytes = CStr::from_ptr(s).to_bytes();
+        let inst = &mut *(instance as *mut PluginInstance);
+        for &b in bytes {
+            inst.bus.acia.receive(b);
+        }
+        EmfeResult::Ok
     })
 }
 
@@ -2439,15 +2489,15 @@ pub unsafe extern "C" fn emfe_get_setting_defs(
     out: *mut *const EmfeSettingDef,
 ) -> i32 {
     ffi_catch!(0, {
-    let inst = match inst_ref(instance) {
-        Some(i) => i,
-        None => return 0,
-    };
-    if out.is_null() {
-        return 0;
-    }
-    *out = inst.settings_defs.as_ptr();
-    inst.settings_defs.len() as i32
+        let inst = match inst_ref(instance) {
+            Some(i) => i,
+            None => return 0,
+        };
+        if out.is_null() {
+            return 0;
+        }
+        *out = inst.settings_defs.as_ptr();
+        inst.settings_defs.len() as i32
     })
 }
 
@@ -2457,17 +2507,17 @@ pub unsafe extern "C" fn emfe_get_setting(
     key: *const c_char,
 ) -> *const c_char {
     ffi_catch!(std::ptr::null::<c_char>() as *const c_char, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return b"\0".as_ptr() as *const c_char,
-    };
-    if key.is_null() {
-        return b"\0".as_ptr() as *const c_char;
-    }
-    let k = CStr::from_ptr(key).to_string_lossy().into_owned();
-    let val = inst.staged.get(&k).cloned().unwrap_or_default();
-    inst.setting_value_buf = CString::new(val).unwrap();
-    inst.setting_value_buf.as_ptr()
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return b"\0".as_ptr() as *const c_char,
+        };
+        if key.is_null() {
+            return b"\0".as_ptr() as *const c_char;
+        }
+        let k = CStr::from_ptr(key).to_string_lossy().into_owned();
+        let val = inst.staged.get(&k).cloned().unwrap_or_default();
+        inst.setting_value_buf = CString::new(val).unwrap();
+        inst.setting_value_buf.as_ptr()
     })
 }
 #[no_mangle]
@@ -2477,37 +2527,37 @@ pub unsafe extern "C" fn emfe_set_setting(
     value: *const c_char,
 ) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    if key.is_null() || value.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let k = CStr::from_ptr(key).to_string_lossy().into_owned();
-    let v = CStr::from_ptr(value).to_string_lossy().into_owned();
-    inst.staged.insert(k, v);
-    EmfeResult::Ok
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        if key.is_null() || value.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let k = CStr::from_ptr(key).to_string_lossy().into_owned();
+        let v = CStr::from_ptr(value).to_string_lossy().into_owned();
+        inst.staged.insert(k, v);
+        EmfeResult::Ok
     })
 }
 #[no_mangle]
 pub unsafe extern "C" fn emfe_apply_settings(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    inst.settings = inst.staged.clone();
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        inst.settings = inst.staged.clone();
 
-    // Only hot-swap-safe settings update `applied` immediately; REQUIRES_RESET
-    // settings (BoardType, ConsoleBase, ResetVector, InitialStack) wait for emfe_reset.
-    for (k, v) in inst.staged.iter() {
-        let flags = inst.setting_flags.get(k).copied().unwrap_or(0);
-        if flags & EMFE_SETTING_FLAG_REQUIRES_RESET == 0 {
-            inst.applied.insert(k.clone(), v.clone());
+        // Only hot-swap-safe settings update `applied` immediately; REQUIRES_RESET
+        // settings (BoardType, ConsoleBase, ResetVector, InitialStack) wait for emfe_reset.
+        for (k, v) in inst.staged.iter() {
+            let flags = inst.setting_flags.get(k).copied().unwrap_or(0);
+            if flags & EMFE_SETTING_FLAG_REQUIRES_RESET == 0 {
+                inst.applied.insert(k.clone(), v.clone());
+            }
         }
-    }
-    EmfeResult::Ok
+        EmfeResult::Ok
     })
 }
 
@@ -2517,17 +2567,17 @@ pub unsafe extern "C" fn emfe_get_applied_setting(
     key: *const c_char,
 ) -> *const c_char {
     ffi_catch!(std::ptr::null::<c_char>() as *const c_char, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return b"\0".as_ptr() as *const c_char,
-    };
-    if key.is_null() {
-        return b"\0".as_ptr() as *const c_char;
-    }
-    let k = CStr::from_ptr(key).to_string_lossy().into_owned();
-    let val = inst.applied.get(&k).cloned().unwrap_or_default();
-    inst.applied_setting_value_buf = CString::new(val).unwrap();
-    inst.applied_setting_value_buf.as_ptr()
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return b"\0".as_ptr() as *const c_char,
+        };
+        if key.is_null() {
+            return b"\0".as_ptr() as *const c_char;
+        }
+        let k = CStr::from_ptr(key).to_string_lossy().into_owned();
+        let val = inst.applied.get(&k).cloned().unwrap_or_default();
+        inst.applied_setting_value_buf = CString::new(val).unwrap();
+        inst.applied_setting_value_buf.as_ptr()
     })
 }
 
@@ -2537,18 +2587,11 @@ pub extern "C" fn emfe_get_list_item_defs(
     _key: *const c_char,
     _out: *mut *const EmfeListItemDef,
 ) -> i32 {
-    ffi_catch!(0, {
-    0
-    })
+    ffi_catch!(0, { 0 })
 }
 #[no_mangle]
-pub extern "C" fn emfe_get_list_item_count(
-    _instance: EmfeInstance,
-    _key: *const c_char,
-) -> i32 {
-    ffi_catch!(0, {
-    0
-    })
+pub extern "C" fn emfe_get_list_item_count(_instance: EmfeInstance, _key: *const c_char) -> i32 {
+    ffi_catch!(0, { 0 })
 }
 #[no_mangle]
 pub extern "C" fn emfe_get_list_item_field(
@@ -2558,7 +2601,7 @@ pub extern "C" fn emfe_get_list_item_field(
     _field: *const c_char,
 ) -> *const c_char {
     ffi_catch!(std::ptr::null::<c_char>() as *const c_char, {
-    b"\0".as_ptr() as *const c_char
+        b"\0".as_ptr() as *const c_char
     })
 }
 #[no_mangle]
@@ -2569,18 +2612,11 @@ pub extern "C" fn emfe_set_list_item_field(
     _field: *const c_char,
     _value: *const c_char,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 #[no_mangle]
-pub extern "C" fn emfe_add_list_item(
-    _instance: EmfeInstance,
-    _key: *const c_char,
-) -> i32 {
-    ffi_catch!(0, {
-    -1
-    })
+pub extern "C" fn emfe_add_list_item(_instance: EmfeInstance, _key: *const c_char) -> i32 {
+    ffi_catch!(0, { -1 })
 }
 #[no_mangle]
 pub extern "C" fn emfe_remove_list_item(
@@ -2588,9 +2624,7 @@ pub extern "C" fn emfe_remove_list_item(
     _key: *const c_char,
     _index: i32,
 ) -> EmfeResult {
-    ffi_catch!(EmfeResult::ErrMemory, {
-    EmfeResult::ErrUnsupported
-    })
+    ffi_catch!(EmfeResult::ErrMemory, { EmfeResult::ErrUnsupported })
 }
 
 // ---------------------------------------------------------------------------
@@ -2683,104 +2717,104 @@ fn json_extract_string(content: &str, key: &str) -> Option<String> {
 #[no_mangle]
 pub unsafe extern "C" fn emfe_save_settings(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    let path = match get_settings_path() {
-        Some(p) => p,
-        None => {
-            inst.last_error = CString::new("No data dir available").unwrap();
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let path = match get_settings_path() {
+            Some(p) => p,
+            None => {
+                inst.last_error = CString::new("No data dir available").unwrap();
+                return EmfeResult::ErrIo;
+            }
+        };
+
+        let mut out = String::from("{\n");
+        let mut first = true;
+        for (k, v) in inst.settings.iter() {
+            if !first {
+                out.push_str(",\n");
+            }
+            out.push_str(&format!("  \"{}\": \"{}\"", json_escape(k), json_escape(v)));
+            first = false;
+        }
+        out.push_str("\n}\n");
+
+        if let Err(e) = fs::write(&path, out) {
+            inst.last_error = CString::new(e.to_string()).unwrap_or_default();
             return EmfeResult::ErrIo;
         }
-    };
-
-    let mut out = String::from("{\n");
-    let mut first = true;
-    for (k, v) in inst.settings.iter() {
-        if !first {
-            out.push_str(",\n");
-        }
-        out.push_str(&format!("  \"{}\": \"{}\"", json_escape(k), json_escape(v)));
-        first = false;
-    }
-    out.push_str("\n}\n");
-
-    if let Err(e) = fs::write(&path, out) {
-        inst.last_error = CString::new(e.to_string()).unwrap_or_default();
-        return EmfeResult::ErrIo;
-    }
-    EmfeResult::Ok
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_load_settings(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    let inst = match inst_mut(instance) {
-        Some(i) => i,
-        None => return EmfeResult::ErrInvalid,
-    };
-    let path = match get_settings_path() {
-        Some(p) => p,
-        None => return EmfeResult::Ok,  // no dir yet, nothing to load
-    };
-    if !path.exists() {
-        return EmfeResult::Ok;
-    }
-    let content = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return EmfeResult::Ok,
-    };
-
-    // Only update keys that already exist in `settings` (i.e. known to the
-    // plugin) — unknown keys in the file are silently ignored, matching the
-    // em8 / z8000 behaviour.
-    let known_keys: Vec<String> = inst.settings.keys().cloned().collect();
-    for key in known_keys {
-        if let Some(val) = json_extract_string(&content, &key) {
-            inst.settings.insert(key, val);
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return EmfeResult::ErrInvalid,
+        };
+        let path = match get_settings_path() {
+            Some(p) => p,
+            None => return EmfeResult::Ok, // no dir yet, nothing to load
+        };
+        if !path.exists() {
+            return EmfeResult::Ok;
         }
-    }
+        let content = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => return EmfeResult::Ok,
+        };
 
-    // Sync staged + applied to the loaded committed values so nothing is
-    // marked pending at startup.
-    inst.staged = inst.settings.clone();
-    inst.applied = inst.settings.clone();
-
-    // Push MC6809-specific settings (ConsoleBase etc.) that only take effect
-    // at reset, so the device reflects the loaded state.
-    let parse_u16 = |s: &str| -> Option<u16> {
-        let s = s.trim();
-        if let Some(hex) = s.strip_prefix("0x").or(s.strip_prefix("0X")) {
-            u16::from_str_radix(hex, 16).ok()
-        } else {
-            s.parse::<u16>().ok()
+        // Only update keys that already exist in `settings` (i.e. known to the
+        // plugin) — unknown keys in the file are silently ignored, matching the
+        // em8 / z8000 behaviour.
+        let known_keys: Vec<String> = inst.settings.keys().cloned().collect();
+        for key in known_keys {
+            if let Some(val) = json_extract_string(&content, &key) {
+                inst.settings.insert(key, val);
+            }
         }
-    };
-    if let Some(v) = inst.settings.get("ConsoleBase").cloned() {
-        if let Some(base) = parse_u16(&v) {
-            inst.bus.acia.base = base;
-        }
-    }
 
-    EmfeResult::Ok
+        // Sync staged + applied to the loaded committed values so nothing is
+        // marked pending at startup.
+        inst.staged = inst.settings.clone();
+        inst.applied = inst.settings.clone();
+
+        // Push MC6809-specific settings (ConsoleBase etc.) that only take effect
+        // at reset, so the device reflects the loaded state.
+        let parse_u16 = |s: &str| -> Option<u16> {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x").or(s.strip_prefix("0X")) {
+                u16::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse::<u16>().ok()
+            }
+        };
+        if let Some(v) = inst.settings.get("ConsoleBase").cloned() {
+            if let Some(base) = parse_u16(&v) {
+                inst.bus.acia.base = base;
+            }
+        }
+
+        EmfeResult::Ok
     })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn emfe_set_data_dir(path: *const c_char) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
-    if path.is_null() {
-        return EmfeResult::ErrInvalid;
-    }
-    let s = CStr::from_ptr(path).to_string_lossy().into_owned();
-    if let Ok(mut guard) = data_dir_cell().lock() {
-        *guard = Some(s);
-        EmfeResult::Ok
-    } else {
-        EmfeResult::ErrMemory
-    }
+        if path.is_null() {
+            return EmfeResult::ErrInvalid;
+        }
+        let s = CStr::from_ptr(path).to_string_lossy().into_owned();
+        if let Ok(mut guard) = data_dir_cell().lock() {
+            *guard = Some(s);
+            EmfeResult::Ok
+        } else {
+            EmfeResult::ErrMemory
+        }
     })
 }
 
@@ -2791,6 +2825,6 @@ pub unsafe extern "C" fn emfe_set_data_dir(path: *const c_char) -> EmfeResult {
 #[no_mangle]
 pub extern "C" fn emfe_release_string(_s: *const c_char) {
     ffi_catch!((), {
-    // All strings are plugin-owned; nothing to release.
+        // All strings are plugin-owned; nothing to release.
     })
 }
