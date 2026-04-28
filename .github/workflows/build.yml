@@ -98,11 +98,27 @@ jobs:
           cp z8000/build/bin/Release/emfe_plugin_z8000.dll dist/plugins/
           ls -l dist/plugins/
 
+      - name: Compile installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # Inno Setup 6 is preinstalled on windows-latest runners; iscc is on PATH.
+          # Pass APP_VERSION so the setup.exe filename and embedded version match
+          # the release tag (or 0.0.0 for non-tag PR/dispatch runs).
+          iscc /DAppVersion=${{ steps.version.outputs.APP_VERSION }} installer\emfe_plugins.iss
+          Get-ChildItem dist\
+
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: emfe-plugins-${{ env.SHORT_HASH }}
           path: dist/plugins/*.dll
+          if-no-files-found: error
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: emfe-plugins-installer-${{ env.SHORT_HASH }}
+          path: dist/emfe_plugins-*-setup.exe
           if-no-files-found: error
 
       - name: Package release zip
@@ -122,11 +138,11 @@ jobs:
           echo "--- zip contents ---"
           7z l "${ZIP}"
 
-      - name: Virus scan release zip
+      - name: Virus scan release artifacts
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          Write-Host "Scanning release zip with Windows Defender..."
+          Write-Host "Scanning release artifacts with Windows Defender..."
           # Signature update is best-effort; transient runner failures
           # should not block the release.
           try {
@@ -135,7 +151,16 @@ jobs:
           } catch {
             Write-Warning "Signature update failed (continuing with stale signatures): $_"
           }
+          # Resolve installer setup.exe path (filename embeds APP_VERSION).
+          $setupExe = Get-ChildItem dist\emfe_plugins-*-setup.exe | Select-Object -First 1
+          if (-not $setupExe) {
+            Write-Error "setup.exe not found under dist\"
+            exit 1
+          }
+          echo "SETUP_EXE_NAME=$($setupExe.Name)" >> $env:GITHUB_ENV
+          echo "SETUP_EXE_PATH=$($setupExe.FullName)" >> $env:GITHUB_ENV
           Start-MpScan -ScanType CustomScan -ScanPath "$PWD\${env:ZIP_NAME}"
+          Start-MpScan -ScanType CustomScan -ScanPath "$($setupExe.FullName)"
           $threats = Get-MpThreatDetection 2>$null
           if ($threats) {
             Write-Error "Threat detected: $($threats | Format-List | Out-String)"
@@ -152,26 +177,36 @@ jobs:
           TAG="${{ github.ref_name }}"
           # Delete existing release if tag was moved to a new commit.
           gh release delete "$TAG" --yes 2>/dev/null || true
-          gh release create "$TAG" "${ZIP_NAME}" --title "$TAG" --notes "$(cat <<EOF
+          gh release create "$TAG" "${ZIP_NAME}" "${SETUP_EXE_PATH}" --title "$TAG" --notes "$(cat <<EOF
           ## emfe_plugins ${TAG}
 
           Pre-built Windows x64 plugin DLLs for the emfe emulator frontend.
 
           ### Assets
-          - **${ZIP_NAME}** — zip containing the four plugin DLLs
+          - **${SETUP_EXE_NAME}** — Inno Setup installer (recommended). Per-user, no admin / UAC elevation required. Auto-detects which host frontend (emfe_WinUI3Cpp / emfe_CsWPF) is installed and offers component-level selection.
+          - **${ZIP_NAME}** — zip of the four plugin DLLs for manual install.
 
-          ### DLLs inside the zip
+          ### DLLs (in either asset)
           - \`emfe_plugin_mc6809.dll\` — Motorola 6809 (wraps em6809 Rust crate)
           - \`emfe_plugin_mc68030.dll\` — Motorola 68030 (reuses em68030_WinUI3Cpp core)
           - \`emfe_plugin_z8000.dll\` — Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004)
           - \`emfe_plugin_em8.dll\` — em8 minimal 8-bit CPU (ABI validation target)
 
           ### Installation
-          Extract the zip **next to the emfe host executable** (\`emfe.exe\` from
+
+          **Option 1 (recommended) — Installer**
+          Download \`${SETUP_EXE_NAME}\` and run it. Per-user install, no admin required. The installer copies the DLLs to:
+          \`\`\`
+          %LOCALAPPDATA%\\emfe_WinUI3Cpp\\plugins\\
+          %LOCALAPPDATA%\\emfe_CsWPF\\plugins\\
+          \`\`\`
+          The host scans both the system \`plugins/\` directory next to \`emfe.exe\` and the per-user directory above; the per-user copy wins on filename collisions.
+
+          **Option 2 — Manual zip**
+          Extract \`${ZIP_NAME}\` **next to the emfe host executable** (\`emfe.exe\` from
           [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF) or
           [emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp)).
-          The archive already contains a top-level \`plugins/\` directory,
-          so after extraction the host picks up the DLLs automatically:
+          The archive already contains a top-level \`plugins/\` directory:
           \`\`\`
           <install-dir>/
           ├── emfe.exe
@@ -183,7 +218,7 @@ jobs:
           \`\`\`
 
           ### Security
-          - Virus scan: **Passed** (Windows Defender, signatures updated at build time)
+          - Virus scan: **Passed** (Windows Defender, signatures updated at build time; both setup.exe and zip scanned)
 
           ### Source Code (Apache-2.0 / MIT dual)
           - **Repository**: [emfe_plugins](https://github.com/${{ github.repository }})
