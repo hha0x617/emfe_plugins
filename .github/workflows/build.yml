@@ -203,19 +203,16 @@ jobs:
           The host scans both the system \`plugins/\` directory next to \`emfe.exe\` and the per-user directory above; the per-user copy wins on filename collisions.
 
           **Option 2 — Manual zip**
-          Extract \`${ZIP_NAME}\` **next to the emfe host executable** (\`emfe.exe\` from
-          [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF) or
-          [emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp)).
-          The archive already contains a top-level \`plugins/\` directory:
+          Extract \`${ZIP_NAME}\` into \`%LOCALAPPDATA%\\emfe_WinUI3Cpp\\\` and/or \`%LOCALAPPDATA%\\emfe_CsWPF\\\` — whichever host frontends ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp) / [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF)) you have installed. The zip's top-level \`plugins/\` directory lands directly under each, matching what the installer produces:
           \`\`\`
-          <install-dir>/
-          ├── emfe.exe
-          └── plugins/
+          %LOCALAPPDATA%\\emfe_WinUI3Cpp\\
+          └── plugins\\
               ├── emfe_plugin_mc6809.dll
               ├── emfe_plugin_mc68030.dll
               ├── emfe_plugin_z8000.dll
               └── emfe_plugin_em8.dll
           \`\`\`
+          No admin / UAC elevation required. The host also scans a system \`plugins/\` directory next to \`emfe.exe\`, so for portable / dev-built hosts you can extract there instead — but for installer-deployed hosts in \`%ProgramFiles%\\\` you would need admin to write there, so the per-user path above is the right default.
 
           ### Security
           - Virus scan: **Passed** (Windows Defender, signatures updated at build time; both setup.exe and zip scanned)
