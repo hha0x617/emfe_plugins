@@ -203,7 +203,7 @@ jobs:
           The host scans both the system \`plugins/\` directory next to \`emfe.exe\` and the per-user directory above; the per-user copy wins on filename collisions.
 
           **Option 2 — Manual zip**
-          Extract \`${ZIP_NAME}\` into \`%LOCALAPPDATA%\\emfe_WinUI3Cpp\\\` and/or \`%LOCALAPPDATA%\\emfe_CsWPF\\\` — whichever host frontends ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp) / [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF)) you have installed. The zip's top-level \`plugins/\` directory lands directly under each, matching what the installer produces:
+          Extract \`${ZIP_NAME}\` into \`%LOCALAPPDATA%\\emfe_WinUI3Cpp\\\` and/or \`%LOCALAPPDATA%\\emfe_CsWPF\\\` — whichever host frontends ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp) / [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF)) you have installed. The zip's top-level \`plugins/\` directory lands directly under each, matching what the installer produces. Example layout for emfe_WinUI3Cpp (the \`%LOCALAPPDATA%\\emfe_CsWPF\\\` tree is identical):
           \`\`\`
           %LOCALAPPDATA%\\emfe_WinUI3Cpp\\
           └── plugins\\
