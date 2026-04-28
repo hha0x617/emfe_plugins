@@ -176,7 +176,7 @@ function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if CurPageID = wpSelectComponents then begin
-    if not (IsComponentSelected('winui3cpp') or IsComponentSelected('cswpf')) then begin
+    if not (WizardIsComponentSelected('winui3cpp') or WizardIsComponentSelected('cswpf')) then begin
       MsgBox('Select at least one host frontend to install for.', mbError, MB_OK);
       Result := False;
     end;
