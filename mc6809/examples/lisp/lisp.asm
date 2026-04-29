@@ -207,6 +207,9 @@ cold:
             ldx     #s_setq_lit
             lbsr    intern
             stx     sym_SETQ
+            ldx     #s_setbang_lit      ; SET! is a Scheme-style alias for SETQ
+            lbsr    intern
+            stx     sym_SETBANG
             ldx     #s_gc_lit
             lbsr    intern
             stx     sym_GC
@@ -631,6 +634,8 @@ s_let_lit   fcb     3
             fcc     "LET"
 s_setq_lit  fcb     4
             fcc     "SETQ"
+s_setbang_lit fcb   4
+            fcc     "SET!"
 s_gc_lit    fcb     2
             fcc     "GC"
 s_progn_lit fcb     5
@@ -2063,6 +2068,8 @@ ev_form:
             lbeq    ev_let
             cmpy    sym_SETQ
             lbeq    ev_setq
+            cmpy    sym_SETBANG         ; (set! sym val) — Scheme-style alias for setq
+            lbeq    ev_setq
             cmpy    sym_PROGN
             lbeq    ev_progn
             cmpy    sym_AND
@@ -3064,6 +3071,8 @@ ev_ap_tail_dispatch:
             cmpy    sym_LET
             lbeq    ev_ap_tail_reg
             cmpy    sym_SETQ
+            lbeq    ev_ap_tail_reg
+            cmpy    sym_SETBANG         ; SET! also opts out of TCO — it's a special form
             lbeq    ev_ap_tail_reg
             cmpy    sym_PROGN
             lbeq    ev_ap_tail_reg
@@ -6573,6 +6582,7 @@ sym_DEFUN   fdb     0
 sym_COND    fdb     0
 sym_LET     fdb     0
 sym_SETQ    fdb     0
+sym_SETBANG fdb     0
 sym_GC      fdb     0
 sym_PROGN   fdb     0
 sym_AND     fdb     0
