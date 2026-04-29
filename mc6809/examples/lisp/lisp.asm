@@ -24,12 +24,26 @@ ACIA_DATA   equ     $FF01
 TIB_ADDR    equ     $A000
 TIB_SIZE    equ     512             ; enlarged to fit long stdlib macro bodies
 
-PAIR_POOL   equ     $4C80           ; pair pool (moved up to make room for
-PAIR_END    equ     $6800           ; growing code/data region; 7 KB = 1792 cells)
-SYM_POOL    equ     $6800
-SYM_END     equ     $7000           ; exclusive (2 KB sym — fits ≥150 syms)
-BUILTIN_POOL equ    $7000           ; built-in primitive function values
-BUILTIN_END equ     $8000           ; exclusive (stride 2 per ID)
+PAIR_POOL   equ     $4C80           ; pair pool start (after code+data)
+PAIR_END    equ     $7000           ; exclusive — extends through what was
+                                    ; SYM_POOL ($6800..$6FFF) and the address
+                                    ; range previously reserved for builtin
+                                    ; tag values ($7000..$7FFF).  See
+                                    ; BUILTIN_POOL note below.  9088 bytes
+                                    ; = 2272 cells, up from 1760.
+SYM_POOL    equ     $7000           ; relocated from $6800 — now occupies the
+                                    ; range that used to be the builtin tag
+SYM_END     equ     $7E00           ; range ($7000..$7FFF).  3.5 KB = ~280 syms
+                                    ; max (stdlib + typical session uses ~115).
+BUILTIN_POOL equ    $7E00           ; built-in primitive tag values relocated
+BUILTIN_END equ     $7E80           ; from $7000..$7FFF to $7E00..$7E7F to
+                                    ; free 4 KB of pair / symbol headroom.
+                                    ; Tag values are LOGICAL — no physical RAM
+                                    ; lives in this range, so the move is just
+                                    ; an arithmetic shift of every BI_* equ
+                                    ; (mechanical, ABI-invisible to the host).
+                                    ; 62 entries × 2 bytes = 124 bytes used;
+                                    ; 128 bytes reserved for future primitives.
 STR_POOL    equ     $9000           ; string pool
 STR_END     equ     $A000           ; exclusive — 4 KB of string space
 INT32_POOL  equ     $B000           ; 32-bit int box pool (for overflow fixnum)
@@ -46,68 +60,68 @@ T_VAL       equ     $0002
 
 ; Built-in IDs — each is BUILTIN_POOL + 2*N so the low bit is never set
 ; (otherwise print_expr would mis-classify the value as a fixnum).
-BI_CONS     equ     $7000
-BI_CAR      equ     $7002
-BI_CDR      equ     $7004
-BI_ATOM     equ     $7006
-BI_EQ       equ     $7008
-BI_NULL     equ     $700A
-BI_PLUS     equ     $700C
-BI_MINUS    equ     $700E
-BI_LT       equ     $7010
-BI_GC       equ     $7012
-BI_MUL      equ     $7014
-BI_CADR     equ     $7016
-BI_CADDR    equ     $7018
-BI_CDDR     equ     $701A
-BI_LENGTH   equ     $701C
-BI_APPEND   equ     $701E
-BI_APPLY    equ     $7020
-BI_LIST     equ     $7022
-BI_PRINT    equ     $7024
-BI_NEWLINE  equ     $7026
-BI_ASSOC    equ     $7028
-BI_GENSYM   equ     $702A
-BI_STRLEN   equ     $702C
-BI_STREQ    equ     $702E
-BI_STRAPP   equ     $7030
-BI_STRREF   equ     $7032
-BI_STR2L    equ     $7034
-BI_L2STR    equ     $7036
-BI_DIV      equ     $7038
-BI_MOD      equ     $703A
-BI_ERROR    equ     $703C
-BI_THROW    equ     $703E
-BI_NUM_EQ   equ     $7040
-BI_CHAR_INT equ     $7042
-BI_INT_CHAR equ     $7044
-BI_CHARP    equ     $7046
-BI_MAKE_VEC equ     $7048
-BI_VEC_LEN  equ     $704A
-BI_VEC_REF  equ     $704C
-BI_VEC_SET  equ     $704E
-BI_VEC_LIST equ     $7050
-BI_LIST_VEC equ     $7052
-BI_VECP     equ     $7054
-BI_LOGAND   equ     $7056
-BI_LOGIOR   equ     $7058
-BI_LOGXOR   equ     $705A
-BI_LOGNOT   equ     $705C
-BI_ASH      equ     $705E
-BI_NUM2STR  equ     $7060
-BI_STR2NUM  equ     $7062
-BI_SYM2STR  equ     $7064
-BI_STR2SYM  equ     $7066
-BI_EVAL     equ     $7068
-BI_RDSTR    equ     $706A
-BI_LOADMEM  equ     $706C
-BI_DISPLAY  equ     $706E
-BI_PUTCHAR  equ     $7070
-BI_RAND     equ     $7072
-BI_SEED     equ     $7074
-BI_TICK     equ     $7076
-BI_PCASE_GET equ    $7078           ; (print-case) → 0 (upper) or 1 (lower)
-BI_PCASE_SET equ    $707A           ; (set-print-case! n) → n  (n must be 0 or 1)
+BI_CONS     equ     $7E00
+BI_CAR      equ     $7E02
+BI_CDR      equ     $7E04
+BI_ATOM     equ     $7E06
+BI_EQ       equ     $7E08
+BI_NULL     equ     $7E0A
+BI_PLUS     equ     $7E0C
+BI_MINUS    equ     $7E0E
+BI_LT       equ     $7E10
+BI_GC       equ     $7E12
+BI_MUL      equ     $7E14
+BI_CADR     equ     $7E16
+BI_CADDR    equ     $7E18
+BI_CDDR     equ     $7E1A
+BI_LENGTH   equ     $7E1C
+BI_APPEND   equ     $7E1E
+BI_APPLY    equ     $7E20
+BI_LIST     equ     $7E22
+BI_PRINT    equ     $7E24
+BI_NEWLINE  equ     $7E26
+BI_ASSOC    equ     $7E28
+BI_GENSYM   equ     $7E2A
+BI_STRLEN   equ     $7E2C
+BI_STREQ    equ     $7E2E
+BI_STRAPP   equ     $7E30
+BI_STRREF   equ     $7E32
+BI_STR2L    equ     $7E34
+BI_L2STR    equ     $7E36
+BI_DIV      equ     $7E38
+BI_MOD      equ     $7E3A
+BI_ERROR    equ     $7E3C
+BI_THROW    equ     $7E3E
+BI_NUM_EQ   equ     $7E40
+BI_CHAR_INT equ     $7E42
+BI_INT_CHAR equ     $7E44
+BI_CHARP    equ     $7E46
+BI_MAKE_VEC equ     $7E48
+BI_VEC_LEN  equ     $7E4A
+BI_VEC_REF  equ     $7E4C
+BI_VEC_SET  equ     $7E4E
+BI_VEC_LIST equ     $7E50
+BI_LIST_VEC equ     $7E52
+BI_VECP     equ     $7E54
+BI_LOGAND   equ     $7E56
+BI_LOGIOR   equ     $7E58
+BI_LOGXOR   equ     $7E5A
+BI_LOGNOT   equ     $7E5C
+BI_ASH      equ     $7E5E
+BI_NUM2STR  equ     $7E60
+BI_STR2NUM  equ     $7E62
+BI_SYM2STR  equ     $7E64
+BI_STR2SYM  equ     $7E66
+BI_EVAL     equ     $7E68
+BI_RDSTR    equ     $7E6A
+BI_LOADMEM  equ     $7E6C
+BI_DISPLAY  equ     $7E6E
+BI_PUTCHAR  equ     $7E70
+BI_RAND     equ     $7E72
+BI_SEED     equ     $7E74
+BI_TICK     equ     $7E76
+BI_PCASE_GET equ    $7E78           ; (print-case) → 0 (upper) or 1 (lower)
+BI_PCASE_SET equ    $7E7A           ; (set-print-case! n) → n  (n must be 0 or 1)
 
 ; Mark-sweep GC — 1-byte-per-pair mark table (simpler than a bitmap, and the
 ; memory map has 8 KB of unused space at $8000-$9FFF anyway).  PAIR_POOL..
@@ -3323,6 +3337,11 @@ ev_ap_tif_no_else:
 ; in tail position.
 ev_ap_tail_progn:
             ldx     2,x                 ; rest = (e1 . e2 . ... . eN . NIL)
+; Tail-progn entry that takes the body list directly in X instead of a
+; (PROGN . body) form.  Used by ev_ap_tail_cond so a cond match doesn't
+; have to alloc_pair a temporary `(PROGN . body)` wrapper — saves one
+; pair per matched cond clause, which adds up fast in deep search.
+ev_ap_tail_progn_rest:
 ev_ap_tp_loop:
             cmpx    #NIL_VAL
             beq     ev_ap_tp_empty
@@ -3367,14 +3386,15 @@ ev_ap_tcn_loop:
             lbsr    eval                ; reentrant test eval
             cmpx    #NIL_VAL
             beq     ev_ap_tcn_next
-            ; Match: get body, wrap in PROGN, tail-dispatch the result so
-            ; the body's last form gets full TCO (and earlier forms are
-            ; evaluated for side effect via ev_ap_tail_progn).
+            ; Match: get body and tail-dispatch through ev_ap_tail_progn_rest
+            ; directly with the body list — skipping the wrap_progn alloc that
+            ; would otherwise create a transient (PROGN . body) pair on every
+            ; matched clause.  Significant under deep recursion (queens(8)
+            ; saves tens of thousands of transient pairs vs the wrap path).
             puls    x                   ; X = clause
             leas    2,s                 ; drop args
             ldx     2,x                 ; (body...)
-            lbsr    wrap_progn
-            lbra    ev_ap_tail_dispatch
+            lbra    ev_ap_tail_progn_rest
 ev_ap_tcn_next:
             puls    x                   ; drop clause
             ldx     ,s

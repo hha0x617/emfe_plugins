@@ -107,9 +107,9 @@ Every Lisp value is a 16-bit tagged word.
 | `$0000` | NIL_VAL | NIL (false / empty list) |
 | `$0002` | T_VAL | T (true) |
 | `$0003..$2FFF` **odd** | fixnum | bit 0 = 1; `(x-1)/2` is a signed 15-bit integer (-16384..16383) |
-| `$4C00..$67FF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
-| `$6800..$6FFF` | symbol | variable-length entry (next 2B + len 1B + name bytes) |
-| `$7000..$7FFF` | builtin | primitive-function tag ID |
+| `$4C80..$6FFF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
+| `$7000..$7DFF` | symbol | variable-length entry (next 2B + len 1B + name bytes) |
+| `$7E00..$7E7F` | builtin | primitive-function tag ID |
 | `$8E00..$8FFF` | char | `CHAR_BASE + 2*code` (stride 2 avoids colliding with fixnum tag) |
 | `$9000..$9FFF` | string | even-aligned, `[len 1B][content]` |
 | `$A200..$AFFF` | vector | even-aligned, `[len 2B][elem 2B]*` |
@@ -124,9 +124,9 @@ during allocation.
 
 ```
 $0100..$4BFF  code + initialised data  (~19 KB)
-$4C00..$67FF  pair pool      (7 KB = 1792 cells, GC-managed)
-$6800..$6FFF  symbol pool    (2 KB, permanent)
-$7000..$7FFF  builtin tag range (no RAM)
+$4C80..$6FFF  pair pool      (9 KB = 2272 cells, GC-managed)
+$7000..$7DFF  symbol pool    (3.5 KB, permanent)
+$7E00..$7E7F  builtin tag range (no RAM, 64 tag values reserved)
 $8000..$8BFF  pair mark bitmap (3 KB)
 $8C00..$8C7F  int32 mark     (128 B, currently unused)
 $8C80..$8DFF  reserved
@@ -183,7 +183,7 @@ semantics are identical; pick the name that matches your background.
 
 After evaluating the operator:
 
-- **Builtin value** (`$7000..$7FFF`): dispatch via the `BI_*` table
+- **Builtin value** (`$7E00..$7E7F`): dispatch via the `BI_*` table
 - **Closure** (pair whose car is `sym_LAMBDA`): a 3-pair chain
   `(LAMBDA . (params . (body . env)))`; bind params to arg values in a
   fresh env and evaluate body
@@ -274,7 +274,7 @@ position.
 
 ### 4.6 First-class primitives
 
-Builtins live as tag IDs in `$7000..$7FFF` and are bound in `global_env`:
+Builtins live as tag IDs in `$7E00..$7E7F` and are bound in `global_env`:
 
 ```
 (CONS . $7000)  (CAR . $7002)  (CDR . $7004)  …
