@@ -1960,6 +1960,81 @@ fn lisp_usability_pack() {
 }
 
 #[test]
+fn lisp_queens_then_extend_repro() {
+    // User reported pool exhaustion when adding visualisation defuns on top
+    // of an 8-queens solver.  After the BUILTIN_POOL relocation (this PR)
+    // the pair pool is large enough that the user's full session — define
+    // queens, run queens(4), queens(5), then add five visualisation defuns
+    // — completes without ALLOC: pool exhausted.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        send(b"(defun safe? (row placed dist) (if (null? placed) t (if (= (car placed) row) nil (if (= (abs (- (car placed) row)) dist) nil (safe? row (cdr placed) (+ dist 1))))))\r");
+        send(b"(defvar qc 0)\r");
+        send(b"(defun place-col (n placed col) (if (> col n) (setq qc (+ qc 1)) (try-rows n placed col 1)))\r");
+        send(b"(defun try-rows (n placed col row) (if (<= row n) (progn (if (safe? row placed 1) (place-col n (cons row placed) (+ col 1))) (try-rows n placed col (+ row 1)))))\r");
+        send(b"(defun queens (n) (setq qc 0) (place-col n nil 1) qc)\r");
+        send(b"(queens 4)\r");
+        send(b"(queens 5)\r");
+        send(b"(defun print-row (queen-col n c) (cond ((> c n) (newline)) ((= c queen-col) (display \"Q\") (print-row queen-col n (+ c 1))) (t (display \".\") (print-row queen-col n (+ c 1)))))\r");
+        send(b"(defun print-board (rows n) (dolist (r rows) (print-row r n 1)) (newline))\r");
+        send(b"(defun try-rows-show (n placed col row count) (if (> row n) count (try-rows-show n placed col (+ row 1) (if (safe? row placed 1) (place-col-show n (cons row placed) (+ col 1) count) count))))\r");
+        send(b"(defun place-col-show (n placed col count) (cond ((> col n) (print-board (reverse placed) n) (+ count 1)) (t (try-rows-show n placed col 1 count))))\r");
+        send(b"(defun show-queens (n) (place-col-show n nil 1 0))\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("SHOW-QUEENS") || waited_ms >= 30_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            got.contains("(queens 5)\r\n10\r\n"),
+            "queens(5) must equal 10; got {:?}",
+            got
+        );
+        assert!(
+            !got.contains("ALLOC: pool exhausted"),
+            "pool must not exhaust during user-reported sequence; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("SHOW-QUEENS"),
+            "all visualisation defuns must complete; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_cond_reentrant_and_tail_transparent() {
     // Regression test for issue #14: ev_cond used global scratches
     // (ev_cn_args / ev_cn_clause) that nested cond evaluations
