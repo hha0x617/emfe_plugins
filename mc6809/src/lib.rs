@@ -1640,6 +1640,12 @@ pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // The worker-loop drain only runs under emfe_run.  Mirror it here
+        // so single-step harnesses (typical pattern: `emfe_send_char`
+        // followed by `emfe_step` to read the byte off the ACIA) see
+        // pending host bytes immediately.  No race vs the worker because
+        // emfe_step is mutually exclusive with the run state above.
+        drain_host_rx(inst);
         let _ = step_one(inst);
         let st = EmfeState::Stopped;
         inst.state.store(st as u8, Ordering::Release);
@@ -1692,6 +1698,9 @@ pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // Drain pending host RX bytes before stepping — see emfe_step
+        // for why this matches the worker-loop drain.
+        drain_host_rx(inst);
 
         // Delegate to em6809::Cpu::step_over — it handles the
         // is-CALL check (BSR / LBSR / JSR / SWI / SWI2 / SWI3),
@@ -1728,6 +1737,9 @@ pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // Drain pending host RX bytes before stepping — see emfe_step
+        // for why this matches the worker-loop drain.
+        drain_host_rx(inst);
 
         // Delegate to em6809::Cpu::step_out, which uses the topmost
         // shadow-frame's `return_addr` instead of reading 2 bytes
