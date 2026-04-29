@@ -8,10 +8,21 @@ A compact Lisp interpreter for the MC6809, running on the `em6809` +
 - **Primitives**: 60, **stdlib entries**: 47
 - **Tests**: 35 smoke tests, all passing
 
-Classic Lisp surface syntax (`defun` / `T` / `NIL` / `'x`), hygienic macros,
-mark-sweep GC, tail-call optimisation, strings, characters, vectors, and
-automatic 15-bit fixnum ↔ 32-bit box promotion — enough to run serious
-tiny programs.
+Classic Lisp surface syntax (`defun` / `T` / `NIL` / `'x`), `defmacro`
++ quasiquote (manual hygiene via `with-gensyms`), mark-sweep GC,
+tail-call optimisation, strings, characters, vectors, and automatic
+15-bit fixnum ↔ 32-bit box promotion — enough to run serious tiny
+programs.
+
+**Lineage at a glance**: Common Lisp surface syntax (`defun` / `setq`
+/ `t` / `nil`) + **Lisp-1 evaluation** (Scheme / Arc / Clojure
+tradition) + Scheme-style utility names (`string->symbol` /
+`vector-set!`).  Closest single named relative is uLisp, but Lisp-1.
+Cross-tradition aliases (`null?` / `atom?` / `eq?` / `zero?` for the
+predicates, `set!` for `setq`) are **additive**, never replacements,
+so SICP / CL / Emacs Lisp users can read the same code without
+friction.  See [docs/LANGUAGE_AND_IMPL.md §0](docs/LANGUAGE_AND_IMPL.md)
+for the full lineage map and design principles.
 
 ```
 > (defun fact (n) (if (< n 2) 1 (* n (fact (- n 1)))))

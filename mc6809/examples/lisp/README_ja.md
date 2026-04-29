@@ -9,9 +9,19 @@ MC6809 上で動作する小規模 Lisp 処理系です。
 - **Primitive 数**: 60 個、**stdlib エントリ**: 47 本
 - **テスト**: 35 smoke test すべて passing
 
-古典 Lisp 風 (`defun` / `T` / `NIL` / `'x`) の構文、衛生的マクロ、mark-sweep GC、
+古典 Lisp 風 (`defun` / `T` / `NIL` / `'x`) の構文、`defmacro` +
+quasiquote (`with-gensyms` による手動衛生化)、mark-sweep GC、
 末尾呼出最適化、文字列・文字・ベクタ・32-bit 自動昇格整数まで備えた
 実用レベルの小型処理系です。
+
+**系譜の概要**: Common Lisp 風の表面構文 (`defun` / `setq` / `t` / `nil`) +
+**Lisp-1 評価** (Scheme / Arc / Clojure 系) + Scheme 流のユーティリティ名
+(`string->symbol` / `vector-set!`) のハイブリッド。最も近い直系は uLisp
+ですが、Lisp-1 化されています。複数文化からの利用者向けのエイリアス
+(述語の `null?` / `atom?` / `eq?` / `zero?`、mutate の `set!`) は
+**追加のみで置換ではない**ため、SICP / CL / Emacs Lisp 出身者が
+同じコードを摩擦なく読めます。系譜マップと設計原則の詳細は
+[docs/LANGUAGE_AND_IMPL_ja.md §0](docs/LANGUAGE_AND_IMPL_ja.md) を参照。
 
 ```
 > (defun fact (n) (if (< n 2) 1 (* n (fact (- n 1)))))
