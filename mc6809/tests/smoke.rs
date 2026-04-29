@@ -60,6 +60,84 @@ fn create_and_destroy() {
 }
 
 #[test]
+fn console_tx_space_capability_advertised() {
+    // The plugin must declare EMFE_CAP_CONSOLE_TX_SPACE so hosts know to
+    // call emfe_console_tx_space for paste backpressure.  Without the
+    // flag the host falls back to a fixed 64-char burst that overruns
+    // a small RX FIFO.
+    let mut info = EmfeBoardInfo {
+        board_name: ptr::null(),
+        cpu_name: ptr::null(),
+        description: ptr::null(),
+        version: ptr::null(),
+        capabilities: 0,
+    };
+    assert_eq!(emfe_get_board_info(&mut info), EmfeResult::Ok);
+    assert!(
+        (info.capabilities & EMFE_CAP_CONSOLE_TX_SPACE) != 0,
+        "capabilities must advertise EMFE_CAP_CONSOLE_TX_SPACE; got {:#x}",
+        info.capabilities
+    );
+}
+
+#[test]
+fn console_tx_space_returns_headroom() {
+    // emfe_console_tx_space returns the number of bytes the host can
+    // still push without overflowing the RX FIFO.  Verify:
+    //  - after CPU initialises the ACIA, the empty FIFO reports the full capacity
+    //  - each emfe_send_char decrements by one
+    //  - sending the full capacity drives it to 0
+    //  - one more send still returns 0 (overrun is silent at the cap)
+    //
+    // The MC6850 model starts in `in_master_reset == true` and ignores
+    // RX bytes until the guest writes the configuration byte; we run
+    // the standard init sequence so receive() actually queues bytes.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        init_acia_and_prep_cpu(h);
+        let cap = emfe_console_tx_space(h);
+        assert!(cap > 0, "empty FIFO must report > 0 space; got {}", cap);
+        assert_eq!(emfe_send_char(h, b'x' as c_char), EmfeResult::Ok);
+        let after_one = emfe_console_tx_space(h);
+        assert_eq!(
+            after_one,
+            cap - 1,
+            "one send should consume one slot; got {} -> {}",
+            cap,
+            after_one
+        );
+        // Burn through the rest of the FIFO.
+        for _ in 0..(cap - 1) {
+            assert_eq!(emfe_send_char(h, b'.' as c_char), EmfeResult::Ok);
+        }
+        assert_eq!(
+            emfe_console_tx_space(h),
+            0,
+            "FIFO should be saturated after cap sends"
+        );
+        // Overrun is silent — one more send doesn't error and tx_space
+        // still reports 0.
+        assert_eq!(emfe_send_char(h, b'!' as c_char), EmfeResult::Ok);
+        assert_eq!(
+            emfe_console_tx_space(h),
+            0,
+            "tx_space must clamp at 0, not go negative"
+        );
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
+fn console_tx_space_invalid_instance() {
+    // Per ABI: -1 means "unsupported" (also used for invalid handle).
+    unsafe {
+        assert_eq!(emfe_console_tx_space(ptr::null_mut()), -1);
+    }
+}
+
+#[test]
 fn step_nop() {
     let mut h: EmfeInstance = ptr::null_mut();
     assert_eq!(emfe_create(&mut h), EmfeResult::Ok);

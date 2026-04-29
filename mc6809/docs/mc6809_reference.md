@@ -136,7 +136,8 @@ on `emfe_apply_settings`.
 - Watchpoints: add/remove/enable/condition/clear/get (read / write / RW)
 - File loading: `load_binary`, `load_srec` (ELF unsupported)
 - Settings: `BoardType`, `ConsoleBase`, `Theme`, console size
-- Console I/O: `send_char`, `send_string`
+- Console I/O: `send_char`, `send_string`, `console_tx_space` (RX FIFO
+  headroom query for paste backpressure; FIFO holds up to 1024 bytes)
 - `step_over` / `step_out`: not supported in Phase 1
 
 ## 5. Not supported (Phase 1)
