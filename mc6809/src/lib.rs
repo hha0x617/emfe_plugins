@@ -514,18 +514,20 @@ impl Mc6850 {
         self.tdre = true;
     }
 
-    /// Called when the host delivers an RX byte (`emfe_send_char`).
+    /// Called from the worker thread when a queued host byte is ready
+    /// to deliver to the chip.  This path is **not** safe to call from
+    /// the host thread — host bytes go through `PluginInstance::host_rx_pending`
+    /// and the worker drains that queue at each step.
     fn receive(&mut self, ch: u8) {
         if self.in_master_reset {
             return;
         }
         // Real chip has a 1-byte RX register; extra bytes overflow.
-        // We keep a host-side FIFO so paste-style bursts and rapid typing
-        // don't drop bytes while the guest's polling loop hasn't caught up.
-        // 1024 bytes is large enough for practical clipboard paste while
-        // staying tiny in absolute terms; combined with the
-        // emfe_console_tx_space backpressure query the host can drip-feed
-        // exactly into the headroom and never overflow this cap.
+        // We keep a tiny chip-side FIFO so back-to-back receives within
+        // a single worker step don't lose bytes if the guest is slow to
+        // poll.  Larger paste bursts are absorbed by the host-side
+        // staging queue (PluginInstance::host_rx_pending), which the
+        // worker drains into here only when there is room.
         if self.rx_fifo.len() >= Self::RX_FIFO_MAX {
             self.rx_overrun = true;
             return;
@@ -534,10 +536,14 @@ impl Mc6850 {
         self.rdrf = true;
     }
 
-    /// Maximum host-side RX FIFO depth.  See `receive` for rationale.
-    /// Exposed as a constant so `emfe_console_tx_space` can compute the
-    /// remaining headroom for the host's paste-handshake path.
-    const RX_FIFO_MAX: usize = 1024;
+    /// True when the chip-side FIFO can accept at least one more byte.
+    fn can_receive(&self) -> bool {
+        !self.in_master_reset && self.rx_fifo.len() < Self::RX_FIFO_MAX
+    }
+
+    /// Chip-side RX FIFO depth.  Kept tiny — paste-style bursts ride on
+    /// the host-side staging queue (see `HOST_RX_CAP`).
+    const RX_FIFO_MAX: usize = 16;
 
     fn irq_active(&self) -> bool {
         (self.rdrf && self.rie) || (self.tdre && self.tx_irq_enable)
@@ -708,7 +714,21 @@ struct PluginInstance {
     stop_address: AtomicU64,
     instructions: AtomicI64,
     cycles_counter: AtomicI64,
+
+    // Host → worker RX channel.  emfe_send_char (host thread) pushes
+    // bytes here; the worker thread drains them into the ACIA's
+    // chip-side rx_fifo at each step.  Without this hand-off the host
+    // and worker would mutate the same VecDeque concurrently, which is
+    // undefined behavior in Rust and was observed to inject phantom
+    // characters into long pastes.  The host queue capacity also acts
+    // as the backpressure ceiling reported by emfe_console_tx_space.
+    host_rx_pending: Mutex<std::collections::VecDeque<u8>>,
 }
+
+/// Capacity of the host-side RX staging queue.  Chosen large enough for
+/// realistic clipboard pastes (the user-reported failure mode pasted ~200
+/// bytes) without being so large that runaway hosts could balloon memory.
+const HOST_RX_CAP: usize = 1024;
 
 // SAFETY: raw pointers are opaque host handles.
 unsafe impl Send for PluginInstance {}
@@ -753,6 +773,9 @@ impl PluginInstance {
             stop_address: AtomicU64::new(0),
             instructions: AtomicI64::new(0),
             cycles_counter: AtomicI64::new(0),
+            host_rx_pending: Mutex::new(std::collections::VecDeque::with_capacity(
+                HOST_RX_CAP,
+            )),
         };
         inst.build_reg_defs();
         inst.build_setting_defs();
@@ -1580,6 +1603,31 @@ fn step_one(inst: &mut PluginInstance) -> u32 {
     cycles
 }
 
+/// Move any host-staged RX bytes into the chip-side ACIA FIFO.  Called
+/// from the worker thread (and only the worker thread) at every step
+/// loop iteration, ensuring `bus.acia.rx_fifo` is single-writer.
+///
+/// The host pushes into `host_rx_pending` from its own thread via
+/// `emfe_send_char`; without this hand-off, host and worker would
+/// race on the same VecDeque (undefined behavior, observed as
+/// phantom characters being injected into long pastes).
+fn drain_host_rx(inst: &mut PluginInstance) {
+    // Lock briefly, transfer up to the chip FIFO's spare slots, drop
+    // the lock.  No CPU work happens inside the critical section.
+    let mut q = match inst.host_rx_pending.try_lock() {
+        Ok(g) => g,
+        // If the host happens to be pushing right now we'll catch
+        // those bytes on the next iteration — no need to block the CPU.
+        Err(_) => return,
+    };
+    while inst.bus.acia.can_receive() {
+        match q.pop_front() {
+            Some(b) => inst.bus.acia.receive(b),
+            None => break,
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
     ffi_catch!(EmfeResult::ErrMemory, {
@@ -1592,6 +1640,12 @@ pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // The worker-loop drain only runs under emfe_run.  Mirror it here
+        // so single-step harnesses (typical pattern: `emfe_send_char`
+        // followed by `emfe_step` to read the byte off the ACIA) see
+        // pending host bytes immediately.  No race vs the worker because
+        // emfe_step is mutually exclusive with the run state above.
+        drain_host_rx(inst);
         let _ = step_one(inst);
         let st = EmfeState::Stopped;
         inst.state.store(st as u8, Ordering::Release);
@@ -1644,6 +1698,9 @@ pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // Drain pending host RX bytes before stepping — see emfe_step
+        // for why this matches the worker-loop drain.
+        drain_host_rx(inst);
 
         // Delegate to em6809::Cpu::step_over — it handles the
         // is-CALL check (BSR / LBSR / JSR / SWI / SWI2 / SWI3),
@@ -1680,6 +1737,9 @@ pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
         }
         inst.state
             .store(EmfeState::Stepping as u8, Ordering::Release);
+        // Drain pending host RX bytes before stepping — see emfe_step
+        // for why this matches the worker-loop drain.
+        drain_host_rx(inst);
 
         // Delegate to em6809::Cpu::step_out, which uses the topmost
         // shadow-frame's `return_addr` instead of reading 2 bytes
@@ -1744,6 +1804,11 @@ pub unsafe extern "C" fn emfe_run(instance: EmfeInstance) -> EmfeResult {
                     );
                     break;
                 }
+                // Drain any host-staged RX bytes into the chip's FIFO.
+                // The host pushes via emfe_send_char on its own thread;
+                // this is the worker-side hand-off point that keeps the
+                // chip's rx_fifo single-writer.
+                drain_host_rx(inst);
                 // Breakpoint check (before execute). check_breakpoint
                 // applies condition / ignore_count / hit_count semantics.
                 if inst.cpu.check_breakpoint(inst.cpu.r.pc).is_some() {
@@ -2453,7 +2518,14 @@ pub unsafe extern "C" fn emfe_send_char(instance: EmfeInstance, ch: c_char) -> E
             Some(i) => i,
             None => return EmfeResult::ErrInvalid,
         };
-        inst.bus.acia.receive(ch as u8);
+        // Stage on the host-side queue; the worker thread drains into
+        // the chip's rx_fifo at each step.  This is the only legal way
+        // to feed bytes from the host thread — touching bus.acia
+        // directly here would race with the worker's CPU loop.
+        let mut q = inst.host_rx_pending.lock().unwrap();
+        if q.len() < HOST_RX_CAP {
+            q.push_back(ch as u8);
+        }
         EmfeResult::Ok
     })
 }
@@ -2465,18 +2537,22 @@ pub unsafe extern "C" fn emfe_send_string(instance: EmfeInstance, s: *const c_ch
         }
         let bytes = CStr::from_ptr(s).to_bytes();
         let inst = &mut *(instance as *mut PluginInstance);
+        let mut q = inst.host_rx_pending.lock().unwrap();
         for &b in bytes {
-            inst.bus.acia.receive(b);
+            if q.len() >= HOST_RX_CAP {
+                break;
+            }
+            q.push_back(b);
         }
         EmfeResult::Ok
     })
 }
 
-/// Returns the number of bytes the host can push into the ACIA RX FIFO
-/// right now without overflowing the host-side buffer.  The host uses
-/// this for paste backpressure: it drip-feeds into the reported
-/// headroom, queries again, and keeps going.  Returns -1 if the
-/// instance pointer is invalid (per ABI: -1 means "unsupported").
+/// Returns the number of bytes the host can push without overflowing
+/// the host-side staging queue.  The host uses this for paste
+/// backpressure: drip-feed into the reported headroom, query again,
+/// keep going.  Returns -1 if the instance pointer is invalid (per
+/// ABI: -1 means "unsupported").
 #[no_mangle]
 pub unsafe extern "C" fn emfe_console_tx_space(instance: EmfeInstance) -> i32 {
     ffi_catch!(-1, {
@@ -2484,9 +2560,8 @@ pub unsafe extern "C" fn emfe_console_tx_space(instance: EmfeInstance) -> i32 {
             Some(i) => i,
             None => return -1,
         };
-        let used = inst.bus.acia.rx_fifo.len();
-        let cap = Mc6850::RX_FIFO_MAX;
-        (cap.saturating_sub(used)) as i32
+        let used = inst.host_rx_pending.lock().unwrap().len();
+        (HOST_RX_CAP.saturating_sub(used)) as i32
     })
 }
 
