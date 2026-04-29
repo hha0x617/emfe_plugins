@@ -107,7 +107,7 @@ Every Lisp value is a 16-bit tagged word.
 | `$0000` | NIL_VAL | NIL (false / empty list) |
 | `$0002` | T_VAL | T (true) |
 | `$0003..$2FFF` **odd** | fixnum | bit 0 = 1; `(x-1)/2` is a signed 15-bit integer (-16384..16383) |
-| `$4C80..$6FFF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
+| `$4CC0..$6FFF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
 | `$7000..$7DFF` | symbol | variable-length entry (next 2B + len 1B + name bytes) |
 | `$7E00..$7E7F` | builtin | primitive-function tag ID |
 | `$8E00..$8FFF` | char | `CHAR_BASE + 2*code` (stride 2 avoids colliding with fixnum tag) |
@@ -124,7 +124,7 @@ during allocation.
 
 ```
 $0100..$4BFF  code + initialised data  (~19 KB)
-$4C80..$6FFF  pair pool      (9 KB = 2272 cells, GC-managed)
+$4CC0..$6FFF  pair pool      (~9 KB = 2256 cells, GC-managed)
 $7000..$7DFF  symbol pool    (3.5 KB, permanent)
 $7E00..$7E7F  builtin tag range (no RAM, 64 tag values reserved)
 $8000..$8BFF  pair mark bitmap (3 KB)
