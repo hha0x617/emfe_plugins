@@ -3112,6 +3112,8 @@ ev_ap_tail_dispatch:
             lbeq    ev_ap_tail_if
             cmpy    sym_PROGN
             lbeq    ev_ap_tail_progn
+            cmpy    sym_COND
+            lbeq    ev_ap_tail_cond
             ; Reject other special forms — evaluate normally via ev_form.
             cmpy    sym_QUOTE
             lbeq    ev_ap_tail_reg
@@ -3120,8 +3122,6 @@ ev_ap_tail_dispatch:
             cmpy    sym_LAMBDA
             lbeq    ev_ap_tail_reg
             cmpy    sym_DEFUN
-            lbeq    ev_ap_tail_reg
-            cmpy    sym_COND
             lbeq    ev_ap_tail_reg
             cmpy    sym_LET
             lbeq    ev_ap_tail_reg
@@ -3349,6 +3349,51 @@ ev_ap_tp_empty:
             ldx     ev_ap_val
             rts
 
+; Tail-transparent COND: walk clauses, evaluate each test reentrantly
+; (loop state on S stack), and tail-dispatch the matching clause body.
+; Without this, cond bodies whose last form is a self-tail-call lost
+; their TCO opportunity (issue #14) and ran with non-tail recursion,
+; quickly blowing the pair pool on search algorithms like 8-queens.
+ev_ap_tail_cond:
+            ldx     2,x                 ; X = clause list
+            pshs    x                   ; [S+0] = current args
+ev_ap_tcn_loop:
+            ldx     ,s
+            cmpx    #NIL_VAL
+            beq     ev_ap_tcn_none
+            ldx     ,x                  ; X = clause = (test . body)
+            pshs    x                   ; [S+0] = clause, [S+2] = args
+            ldx     ,x                  ; test form
+            lbsr    eval                ; reentrant test eval
+            cmpx    #NIL_VAL
+            beq     ev_ap_tcn_next
+            ; Match: get body, wrap in PROGN, tail-dispatch the result so
+            ; the body's last form gets full TCO (and earlier forms are
+            ; evaluated for side effect via ev_ap_tail_progn).
+            puls    x                   ; X = clause
+            leas    2,s                 ; drop args
+            ldx     2,x                 ; (body...)
+            lbsr    wrap_progn
+            lbra    ev_ap_tail_dispatch
+ev_ap_tcn_next:
+            puls    x                   ; drop clause
+            ldx     ,s
+            ldx     2,x
+            stx     ,s
+            bra     ev_ap_tcn_loop
+ev_ap_tcn_none:
+            leas    2,s                 ; drop args
+            ; No clause matched — return NIL through the function-exit
+            ; path so the saved env / closure get restored.
+            ldx     #NIL_VAL
+            stx     ev_ap_val
+            puls    d
+            std     current_closure
+            puls    d
+            std     current_env
+            ldx     ev_ap_val
+            rts
+
 ev_tail_mode fcb    0
 current_closure fdb 0
 stco_params  fdb    0
@@ -3518,30 +3563,39 @@ mac_done_bind:
 ; ---------------------------------------------------------------------------
 
 ; (COND (test1 expr1) (test2 expr2) ... ) — evaluate tests in order; the
-; first clause whose test is non-NIL has its expr evaluated and returned.
-; If no test succeeds the result is NIL.
+; first clause whose test is non-NIL has its body (implicit PROGN)
+; evaluated and returned.  If no test succeeds the result is NIL.
+;
+; Loop state lives on the S stack so nested COND evaluation (e.g. the
+; test form contains another COND) can not corrupt the outer iteration.
+; The previous global-scratch implementation (ev_cn_args / ev_cn_clause)
+; was clobbered by recursive cond calls, which silently bypassed the
+; outer clause body — see issue #14.
 ev_cond:    ldx     ev_expr_scratch
-            ldx     2,x                 ; args = clause list
-            stx     ev_cn_args
-ev_cn_loop: ldx     ev_cn_args
+            ldx     2,x                 ; X = clause list
+            pshs    x                   ; [S+0] = current args
+ev_cn_loop: ldx     ,s                  ; reload current args
             cmpx    #NIL_VAL
             beq     ev_cn_none
-            ldx     ,x                  ; clause = (test expr)
-            stx     ev_cn_clause
+            ldx     ,x                  ; X = clause = (test . body)
+            pshs    x                   ; [S+0] = clause, [S+2] = args
             ldx     ,x                  ; test form
-            lbsr    eval
+            lbsr    eval                ; recursive eval — safely reentrant
             cmpx    #NIL_VAL
             beq     ev_cn_next
-            ; Non-NIL: evaluate the body (implicit PROGN) and return.
-            ldx     ev_cn_clause
+            ; Non-NIL: evaluate the body (implicit PROGN) and tail-eval.
+            puls    x                   ; X = clause (saved)
+            leas    2,s                 ; drop args
             ldx     2,x                 ; (body...)
             lbsr    wrap_progn
             lbra    eval
-ev_cn_next: ldx     ev_cn_args
-            ldx     2,x
-            stx     ev_cn_args
+ev_cn_next: puls    x                   ; drop saved clause
+            ldx     ,s                  ; current args
+            ldx     2,x                 ; cdr → next clause list
+            stx     ,s
             bra     ev_cn_loop
-ev_cn_none: ldx     #NIL_VAL
+ev_cn_none: leas    2,s                 ; drop args
+            ldx     #NIL_VAL
             rts
 
 ; (LET ((v1 e1) (v2 e2) ...) body) — evaluate each ei in the outer env,
@@ -6369,8 +6423,8 @@ sl_eq_q     fcc     "(defvar eq? eq)"
 sl_zero_q   fcc     "(defvar zero? zerop)"
             fcb     0
 
-ev_cn_args   fdb    0
-ev_cn_clause fdb    0
+; ev_cn_args / ev_cn_clause removed: ev_cond now uses the S stack for
+; loop state to stay reentrant across nested cond evaluation (issue #14).
 ev_pn_rest   fdb    0
 ev_pn_last   fdb    0
 ev_lt_args   fdb    0

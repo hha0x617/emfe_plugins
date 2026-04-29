@@ -312,6 +312,37 @@ bare-name predicates.  See §6 for the rationale.
 would overwrite all four.  The fix is pshs / puls around the inner
 `lbsr eval`.
 
+### 4.8a ev_cond reentrancy + tail-transparency
+
+`ev_cond` originally used `ev_cn_args` / `ev_cn_clause` globals as
+loop state.  When a clause's test form recursively triggered another
+`cond` (e.g. a predicate function whose body is itself a `cond`), the
+inner evaluation overwrote those globals — and after the test
+returned the outer `ev_cond` reloaded the wrong clause, silently
+skipping the matched clause's body and returning whatever value the
+inner cond's body happened to leave there.  Combined with the fact
+that `cond` was on `ev_ap_tail_dispatch`'s blacklist (so a
+cond-bodied function never got TCO), the canonical multi-body
+recursive idiom would either explode the pair pool or return a
+clearly-wrong number from a sound algorithm.  Both issues bit a
+straightforward 8-queens solver that called `(safe? ...)` (a cond)
+inside `try-rows`'s test position.
+
+The fix has two halves:
+
+- `ev_cond` now keeps its loop state on the S stack, just like
+  `ev_progn` and `ev_let` already did.  Nested cond evaluation in the
+  test no longer corrupts the outer iteration.
+- `ev_ap_tail_dispatch` recognises `cond` as tail-transparent and
+  routes the matched clause body through `ev_ap_tail_progn`, so the
+  body's last form gets full TCO and earlier forms run as side
+  effects.  This gives `(cond ((test) body1 body2 ...))` the same
+  loop-friendly behavior as `(if test (progn body1 body2 ...))`.
+
+Regression: `lisp_cond_reentrant_and_tail_transparent` runs the cond
+8-queens for n ∈ {4, 5, 6} and asserts the canonical counts (2 / 10
+/ 4).
+
 ### 4.9 Cycle-counter MMIO
 
 - `PluginBus::tick_word: u16` is updated in `step_one` by adding each

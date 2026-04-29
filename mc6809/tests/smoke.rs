@@ -1960,6 +1960,85 @@ fn lisp_usability_pack() {
 }
 
 #[test]
+fn lisp_cond_reentrant_and_tail_transparent() {
+    // Regression test for issue #14: ev_cond used global scratches
+    // (ev_cn_args / ev_cn_clause) that nested cond evaluations
+    // clobbered, AND cond was not in ev_ap_tail_dispatch's whitelist
+    // so cond bodies couldn't TCO their last form.  Together those
+    // silently broke the canonical cond-multi-body pattern of an
+    // 8-queens solver, returning 0 instead of the expected counts.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        // safe? uses cond — exercises the reentrancy fix.
+        send(b"(defun safe? (row placed dist) (cond ((null? placed) t) ((= (car placed) row) nil) ((= (abs (- (car placed) row)) dist) nil) (t (safe? row (cdr placed) (+ dist 1)))))\r");
+        send(b"(defvar qc 0)\r");
+        send(b"(defun place-col (n placed col) (if (> col n) (setq qc (+ qc 1)) (try-rows n placed col 1)))\r");
+        // try-rows uses cond multi-body — exercises the tail-transparent
+        // fix: the last body form (self-tail-call) must be TCO'd, the
+        // earlier body form (non-special function call) must run.
+        send(b"(defun try-rows (n placed col row) (cond ((> row n) nil) ((safe? row placed 1) (place-col n (cons row placed) (+ col 1)) (try-rows n placed col (+ row 1))) (t (try-rows n placed col (+ row 1)))))\r");
+        send(b"(defun queens (n) (setq qc 0) (place-col n nil 1) qc)\r");
+        send(b"(queens 4)\r");
+        send(b"(queens 5)\r");
+        send(b"(queens 6)\r");
+        // queens(8) is too slow for a smoke test — its 92 solutions need
+        // a much longer time budget than queens(6)'s 4.  Verifying the
+        // smaller sizes already proves both bug components are fixed.
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(queens 6)\r\n4\r\n") || waited_ms >= 60_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            got.contains("(queens 4)\r\n2\r\n"),
+            "queens(4) must equal 2 (not 0); got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(queens 5)\r\n10\r\n"),
+            "queens(5) must equal 10; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(queens 6)\r\n4\r\n"),
+            "queens(6) must equal 4; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_print_case_toggle() {
     // Printer case mode: default 0 (upper / CL convention, transcript
     // compat) with `(set-print-case! 1)` opt-in to lowercase output.
