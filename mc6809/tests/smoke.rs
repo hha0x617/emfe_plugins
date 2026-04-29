@@ -2035,6 +2035,90 @@ fn lisp_queens_then_extend_repro() {
 }
 
 #[test]
+fn lisp_print_board_no_intermittent_errors() {
+    // Regression test for the long-standing intermittent print-board
+    // bug: under deep recursion (`(show-queens N)` etc.), `dolist` /
+    // `let` / `print-row` chains occasionally produced `UNBOUND: R`
+    // or `APPLY: not a function` errors mid-output.  Root cause:
+    // gc_run_safe's root set didn't include several scratch globals
+    // that hold in-flight pair chains between alloc_pair calls
+    // (qq_head/tail for quasiquote macro expansion, ev_lt_newenv for
+    // `let`, ev_app_a/b/head/tail for `append`, ev_af_qargs/qtail for
+    // `apply`, ev_ls_*, ev_str_*, plus the self-TCO stco_vals[]
+    // buffer).  Without explicit rooting, those chains got swept
+    // mid-construction and the resulting expansions / envs were
+    // corrupted.
+    //
+    // This test exercises the user-reported repro path
+    // (show-queens 4) and asserts no UNBOUND/APPLY messages slip
+    // into the transcript while the count comes out right.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        send(b"(defun safe? (row placed dist) (if (null? placed) t (if (= (car placed) row) nil (if (= (abs (- (car placed) row)) dist) nil (safe? row (cdr placed) (+ dist 1))))))\r");
+        send(b"(defun print-row (queen-col n c) (cond ((> c n) (newline)) ((= c queen-col) (display \"Q\") (print-row queen-col n (+ c 1))) (t (display \".\") (print-row queen-col n (+ c 1)))))\r");
+        send(b"(defun print-board (rows n) (dolist (r rows) (print-row r n 1)) (newline))\r");
+        send(b"(defun try-rows-show (n placed col row count) (if (> row n) count (try-rows-show n placed col (+ row 1) (if (safe? row placed 1) (place-col-show n (cons row placed) (+ col 1) count) count))))\r");
+        send(b"(defun place-col-show (n placed col count) (cond ((> col n) (print-board (reverse placed) n) (+ count 1)) (t (try-rows-show n placed col 1 count))))\r");
+        send(b"(defun show-queens (n) (place-col-show n nil 1 0))\r");
+        send(b"(show-queens 4)\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(show-queens 4)") && s.contains("\r\n2\r\n") {
+                break;
+            }
+            if waited_ms >= 60_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            !got.contains("UNBOUND: R"),
+            "must not see UNBOUND: R during print-board iteration; got {:?}",
+            got
+        );
+        assert!(
+            !got.contains("APPLY: not a function"),
+            "must not see APPLY: not a function during show-queens; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n2\r\n"),
+            "show-queens(4) must equal 2; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_show_queens_self_tco_reentrant() {
     // Regression for the second 8-queens bug the user found after the
     // BUILTIN_POOL relocation (PR #17): `(show-queens 4)` returned 0

@@ -24,23 +24,24 @@ ACIA_DATA   equ     $FF01
 TIB_ADDR    equ     $A000
 TIB_SIZE    equ     512             ; enlarged to fit long stdlib macro bodies
 
-PAIR_POOL   equ     $4CC0           ; pair pool start (after code+data).
-                                    ; Bumped from $4C80 → $4CC0 to absorb
-                                    ; the bytes added by the self-TCO
-                                    ; phase-1 stco_* save/restore around
-                                    ; lbsr eval — the buffer prefix and
-                                    ; cursors are pushed on the S stack
-                                    ; so a nested self-TCO can't clobber
-                                    ; the outer's stco_vals[] (see
-                                    ; ev_ap_self_tco).
+PAIR_POOL   equ     $4D60           ; pair pool start (after code+data).
+                                    ; Originally $4C80; bumped to $4CC0
+                                    ; for self-TCO save/restore (PR #18);
+                                    ; bumped again to $4D40 to absorb the
+                                    ; gc_run_safe root expansion that
+                                    ; closes the dolist / macro-expansion
+                                    ; intermittent UNBOUND/APPLY bug
+                                    ; (qq_head / ev_lt_newenv / append /
+                                    ; apply / list / string builders all
+                                    ; rooted explicitly — see gc_run_safe).
 PAIR_END    equ     $7000           ; exclusive — extends through what was
                                     ; SYM_POOL ($6800..$6FFF) and the address
                                     ; range previously reserved for builtin
                                     ; tag values ($7000..$7FFF).  See
-                                    ; BUILTIN_POOL note below.  9024 bytes
-                                    ; = 2256 cells (was 2272, lost 16 cells
-                                    ; for the headroom; previous baseline
-                                    ; was 1760).
+                                    ; BUILTIN_POOL note below.  ~8896 bytes
+                                    ; = 2224 cells (was 2256, lost 32 cells
+                                    ; for the new GC roots; previous
+                                    ; baseline was 1760).
 SYM_POOL    equ     $7000           ; relocated from $6800 — now occupies the
                                     ; range that used to be the builtin tag
 SYM_END     equ     $7E00           ; range ($7000..$7FFF).  3.5 KB = ~280 syms
@@ -6693,6 +6694,73 @@ grs_clr:    std     ,x++
             lbsr    gc_mark
             ldx     ev_ap_fn
             lbsr    gc_mark
+            ; Mark every other scratch global that may hold an
+            ; in-flight pair chain at the moment alloc_pair triggers
+            ; GC.  Without these, lists/envs being constructed get
+            ; swept and corrupted (root-cause for the long-standing
+            ; `(show-queens N)` / dolist intermittent UNBOUND/APPLY
+            ; errors).  Group by builder:
+            ;   quasiquote walk (macro expansion):
+            ldx     qq_head
+            lbsr    gc_mark
+            ldx     qq_tail
+            lbsr    gc_mark
+            ;   let new-env construction:
+            ldx     ev_lt_newenv
+            lbsr    gc_mark
+            ldx     ev_lt_val
+            lbsr    gc_mark
+            ldx     ev_lts_val
+            lbsr    gc_mark
+            ldx     ev_lts_result
+            lbsr    gc_mark
+            ldx     ev_ltr_val
+            lbsr    gc_mark
+            ;   append: source list cursors AND output builder.
+            ldx     ev_app_a
+            lbsr    gc_mark
+            ldx     ev_app_b
+            lbsr    gc_mark
+            ldx     ev_app_head
+            lbsr    gc_mark
+            ldx     ev_app_tail
+            lbsr    gc_mark
+            ;   apply-fn quoted-args builder:
+            ldx     ev_af_fn
+            lbsr    gc_mark
+            ldx     ev_af_argvals
+            lbsr    gc_mark
+            ldx     ev_af_qargs
+            lbsr    gc_mark
+            ldx     ev_af_qtail
+            lbsr    gc_mark
+            ;   list / string-related builders:
+            ldx     ev_ls_head
+            lbsr    gc_mark
+            ldx     ev_ls_tail
+            lbsr    gc_mark
+            ldx     ev_str_head
+            lbsr    gc_mark
+            ldx     ev_str_tail
+            lbsr    gc_mark
+            ;   self-TCO buffer (PR #18): cursors plus all 16 entries of
+            ;   stco_vals[].  Phase 1 has already pushed the WRITTEN
+            ;   prefix onto the S stack, but if gc runs OUTSIDE phase 1
+            ;   (e.g. while body is running between iterations), the
+            ;   buffer still holds the most recent call's arg values
+            ;   that may only be reachable via mutation in env — and
+            ;   freshly allocated arg values straddling the prefix.
+            ldx     stco_params
+            lbsr    gc_mark
+            ldx     stco_args
+            lbsr    gc_mark
+            ldx     stco_val
+            lbsr    gc_mark
+            ldu     #stco_vals
+gc_stco_lp: ldx     ,u++
+            lbsr    gc_mark
+            cmpu    #stco_vals_end
+            blo     gc_stco_lp
             lbsr    gc_mark_vec_pool
             ; Conservative stack scan: walk every 16-bit word between the
             ; current S and repl_init_s.  Any value that lands in the pair
