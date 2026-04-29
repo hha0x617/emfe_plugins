@@ -75,9 +75,12 @@ pairs.
 ## 4. Special forms
 
 `quote` / `'` / `if` / `cond` / `let` / `let*` / `letrec` / `defvar` /
-`defun` / `lambda` / `setq` / `progn` / `and` / `or` / `defmacro` /
-`` ` `` (quasi-quote) + `,` + `,@` / `catch` / `throw` / `case` (stdlib
-macro).
+`defun` / `lambda` / `setq` (alias `set!`) / `progn` / `and` / `or` /
+`defmacro` / `` ` `` (quasi-quote) + `,` + `,@` / `catch` / `throw` /
+`case` (stdlib macro).
+
+`set!` is a Scheme-style alias for `setq` — both forms mutate the same
+binding identically.  Pick whichever name matches your background.
 
 Dotted-rest parameters for variadic functions:
 

@@ -87,7 +87,7 @@ Hha Lisp for MC6809
 | `(defvar sym value)` | global 束縛 |
 | `(defun name (params) body...)` | 関数定義 (暗黙 PROGN body) |
 | `(lambda (params) body...)` | 匿名関数 |
-| `(setq sym value)` | 既存束縛を mutate |
+| `(setq sym value)` / `(set! sym value)` | 既存束縛を mutate (`set!` は Scheme 流のエイリアス、意味は完全に同じ) |
 | `(progn e1 e2 ... eN)` | 順次実行、最終値を返す |
 | `(and e1 e2 ...)` / `(or e1 e2 ...)` | 短絡評価 |
 | `(defmacro name (params) body...)` | マクロ定義 |

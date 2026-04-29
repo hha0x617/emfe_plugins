@@ -101,6 +101,11 @@ eval(x) =
 `QUOTE` `IF` `DEFVAR` `LAMBDA` `DEFUN` `COND` `LET` `LET*` `LETREC` `SETQ`
 `PROGN` `AND` `OR` `DEFMACRO` `QUASIQUOTE` `CATCH` `THROW`
 
+`SET!` は `SETQ` の Scheme 流エイリアスとして eval dispatcher
+(および TCO bail-out 判定) に登録されている。シンボルとしては
+別個に intern されるが、どちらも同じ `ev_setq` ハンドラへ分岐するため
+mutation の意味は完全に同じ。出身言語に合わせて好きな方を使えばよい。
+
 ### 3.4 関数適用 (`ev_apply`)
 
 - 評価された operator が
@@ -293,6 +298,7 @@ lisp.asm       6,635 行 (単一ファイル)
 | Classic Lisp 風 (defun/setq) | Scheme より書きやすく教材向き |
 | 第一級 primitive | `(mapcar car ...)` が動く Modern Lisp 感 |
 | Scheme 風 `?`-末尾エイリアス (`null?` / `atom?` / `eq?` / `zero?`) | SICP / Racket / Clojure 出身者の onboarding コスト低減、実装コストは defvar 1 行ずつ |
+| `SET!` を dispatcher で `SETQ` のエイリアスとして認識 | 同じ層の利用者向け — Scheme では `(set! x v)` が反射的に手から出る。コストはシンボルスロット 1 個と 2 箇所の dispatch site への `cmpy/lbeq` 各 1 ペアのみ |
 | 3-pair closure | Lisp 1.5 風で実装単純、GC 対象 |
 | 2-phase self-TCO | eval 順序と mutation のタイミング分離で semantic 正しい |
 | ROM 埋込 stdlib | ライブラリロード機構不要、cold boot で確実に使える |

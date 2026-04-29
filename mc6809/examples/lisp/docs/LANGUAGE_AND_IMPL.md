@@ -103,6 +103,11 @@ eval(x) =
 `QUOTE` `IF` `DEFVAR` `LAMBDA` `DEFUN` `COND` `LET` `LET*` `LETREC` `SETQ`
 `PROGN` `AND` `OR` `DEFMACRO` `QUASIQUOTE` `CATCH` `THROW`
 
+`SET!` is recognised as a Scheme-style alias for `SETQ` at the eval
+dispatcher (and at the TCO bail-out check) — both symbols intern
+distinctly but route to the same `ev_setq` handler.  Mutation
+semantics are identical; pick the name that matches your background.
+
 ### 3.4 Function application (`ev_apply`)
 
 After evaluating the operator:
@@ -299,6 +304,7 @@ All were fixed upstream in the `em6809` crate.
 | Classic-Lisp surface (defun/setq) | Easier for teaching than Scheme |
 | First-class primitives | `(mapcar car …)` just works |
 | Scheme `?`-suffix aliases (`null?` / `atom?` / `eq?` / `zero?`) | Lower onboarding cost for SICP / Racket / Clojure refugees; cost is one defvar each |
+| `SET!` recognised as `SETQ` alias at the dispatcher | Same audience as above — Scheme writes `(set! x v)` reflexively; cost is one extra symbol slot + one `cmpy/lbeq` pair at two dispatch sites |
 | 3-pair closure layout | Simple and GC-friendly |
 | Two-phase self-TCO | Preserves left-to-right arg eval semantics when mutating bindings |
 | ROM-embedded stdlib | No load-time I/O needed; everything is ready after cold boot |

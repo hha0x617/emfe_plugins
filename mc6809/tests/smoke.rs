@@ -1793,6 +1793,84 @@ fn lisp_usability_pack() {
 }
 
 #[test]
+fn lisp_set_bang_alias() {
+    // SET! is recognised as a Scheme-style alias for SETQ at the eval
+    // dispatcher.  Both forms must mutate the same binding identically;
+    // (set! x v) inside a let, dolist, or top-level should behave the
+    // same as (setq x v).
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        // Top-level mutation of a global.
+        send(b"(defvar x 10)\r"); // X
+        send(b"(set! x 99)\r"); // 99
+        send(b"x\r"); // 99
+        // Mutation inside a let — should affect the let-bound binding.
+        send(b"(let ((y 1)) (set! y 7) y)\r"); // 7
+        // SET! and SETQ on the same global agree.
+        send(b"(setq x 1) (set! x 2) x\r"); // 2
+        // SET! works inside dolist (which uses gensym + setq internally).
+        send(b"(defvar tot 0)\r");
+        send(b"(dolist (n '(1 2 3 4)) (set! tot (+ tot n)))\r");
+        send(b"tot\r"); // 10
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            got.contains("(set! x 99)\r\n99\r\n"),
+            "set! returns new value; got {:?}",
+            got
+        );
+        // Order in transcript: defvar X => 10 (newly bound), set! returns 99,
+        // then bare x echoes 99.
+        assert!(
+            got.contains("\r\n99\r\n> x\r\n99\r\n"),
+            "set! mutated global; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(let ((y 1)) (set! y 7) y)\r\n7\r\n"),
+            "set! inside let; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(dolist (n '(1 2 3 4)) (set! tot (+ tot n)))\r\nNIL\r\n"),
+            "set! inside dolist; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("> tot\r\n10\r\n"),
+            "dolist accumulator total; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_predicate_aliases() {
     // Scheme-style ?-suffix aliases for the CL-style bare predicates.
     // Verifies that NULL?, ATOM?, EQ?, ZERO? evaluate to the same callable
