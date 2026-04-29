@@ -24,7 +24,7 @@ ACIA_DATA   equ     $FF01
 TIB_ADDR    equ     $A000
 TIB_SIZE    equ     512             ; enlarged to fit long stdlib macro bodies
 
-PAIR_POOL   equ     $4C00           ; pair pool (moved up to make room for
+PAIR_POOL   equ     $4C80           ; pair pool (moved up to make room for
 PAIR_END    equ     $6800           ; growing code/data region; 7 KB = 1792 cells)
 SYM_POOL    equ     $6800
 SYM_END     equ     $7000           ; exclusive (2 KB sym — fits ≥150 syms)
@@ -106,6 +106,8 @@ BI_PUTCHAR  equ     $7070
 BI_RAND     equ     $7072
 BI_SEED     equ     $7074
 BI_TICK     equ     $7076
+BI_PCASE_GET equ    $7078           ; (print-case) → 0 (upper) or 1 (lower)
+BI_PCASE_SET equ    $707A           ; (set-print-case! n) → n  (n must be 0 or 1)
 
 ; Mark-sweep GC — 1-byte-per-pair mark table (simpler than a bitmap, and the
 ; memory map has 8 KB of unused space at $8000-$9FFF anyway).  PAIR_POOL..
@@ -396,6 +398,12 @@ cold:
             ldx     #s_tick_lit
             lbsr    intern
             stx     sym_TICK
+            ldx     #s_pcase_get_lit
+            lbsr    intern
+            stx     sym_PCASE_GET
+            ldx     #s_pcase_set_lit
+            lbsr    intern
+            stx     sym_PCASE_SET
             ; Bind primitives as first-class function values in global_env.
             ldy     sym_CONS
             ldd     #BI_CONS
@@ -580,6 +588,12 @@ cold:
             ldy     sym_TICK
             ldd     #BI_TICK
             lbsr    bind_global
+            ldy     sym_PCASE_GET
+            ldd     #BI_PCASE_GET
+            lbsr    bind_global
+            ldy     sym_PCASE_SET
+            ldd     #BI_PCASE_SET
+            lbsr    bind_global
             ; Bootstrap Tier 1 + Tier 2 standard library from ROM-resident
             ; Lisp source strings.
             lbsr    load_stdlib
@@ -760,6 +774,10 @@ s_tick_lit  fcb     4
             fcc     "TICK"
 s_putchar_lit fcb   7
             fcc     "PUTCHAR"
+s_pcase_get_lit fcb 10
+            fcc     "PRINT-CASE"
+s_pcase_set_lit fcb 15
+            fcc     "SET-PRINT-CASE!"
 
 ; --- native helpers --------------------------------------------------------
 
@@ -774,6 +792,37 @@ pn_wait:    ldb     ACIA_SR
             bra     puts_native
 puts_done:  rts
 
+; puts_cased: X -> NUL-terminated string.  Like puts_native but routes
+; each byte through emit_a_cased so the printer's case-mode fold
+; applies.  Used for `T` / `NIL` / `#<CLOSURE>` / `#<MACRO>` /
+; `#<BUILTIN>` so they follow the user's chosen case.  Destroys X, A,
+; B.
+puts_cased:
+            lda     ,x+
+            beq     puts_cased_done
+            pshs    x
+            lbsr    emit_a_cased
+            puls    x
+            bra     puts_cased
+puts_cased_done:
+            rts
+
+; emit_a_cased: emit A as one char, applying the printer's case-mode
+; fold.  If print_case_mode == 1 and A is in 'A'..'Z', it is folded to
+; the corresponding lowercase letter before emit.  Other bytes pass
+; through unchanged so digits / punctuation / `<` / `>` / `#` etc. are
+; never touched.  Preserves A on return; uses B internally.
+emit_a_cased:
+            tst     print_case_mode
+            beq     emit_a              ; mode 0 (upper / default) → no fold
+            cmpa    #'A'
+            blo     emit_a
+            cmpa    #'Z'
+            bhi     emit_a
+            adda    #$20            ; 'a' - 'A' = 0x20
+            ; Fall through to emit_a — but emit_a expects to return A
+            ; intact.  We've already mutated A; that's fine because
+            ; callers of emit_a_cased don't read A after.
 ; emit_a: emit A as one char.  Preserves A; uses B.
 emit_a:     pshs    a
 ea_wait:    ldb     ACIA_SR
@@ -1649,7 +1698,7 @@ pr_unknown: ; Print "#<?xxxx>"
 pr_nil:     ldx     #str_nil
             bra     pr_puts
 pr_t:       ldx     #str_t
-pr_puts:    lbsr    puts_native
+pr_puts:    lbsr    puts_cased
             rts
 
 str_nil     fcc     "NIL"
@@ -1719,7 +1768,9 @@ eh_dig:     adda    #'0'
             lbra    emit_a
 
 pr_symbol:
-            ; X = symbol entry, name at +2 (len) / +3 (bytes)
+            ; X = symbol entry, name at +2 (len) / +3 (bytes).  Emit
+            ; each name byte through emit_a_cased so the active case
+            ; mode (upper / lower) is applied.
             ldx     pr_val
             ldb     2,x             ; len
             leay    3,x             ; ptr to name bytes
@@ -1728,7 +1779,7 @@ ps_sym_loop:
             beq     ps_sym_done
             lda     ,y+
             pshs    b
-            lbsr    emit_a
+            lbsr    emit_a_cased
             puls    b
             decb
             bra     ps_sym_loop
@@ -1781,16 +1832,16 @@ pp_end:     lda     #')'
             rts
 
 pr_closure: ldx     #str_closure
-            lbsr    puts_native
+            lbsr    puts_cased
             rts
 
 pr_macro_tag:
             ldx     #str_macrotag
-            lbsr    puts_native
+            lbsr    puts_cased
             rts
 
 pr_builtin: ldx     #str_builtin
-            lbsr    puts_native
+            lbsr    puts_cased
             rts
 
 ; Print int32 box as signed decimal.  pr_val = box pointer.
@@ -2885,6 +2936,10 @@ ev_apply:   ldx     ev_expr_scratch
             lbeq    ev_seed
             cmpd    #BI_TICK
             lbeq    ev_tick
+            cmpd    #BI_PCASE_GET
+            lbeq    ev_pcase_get
+            cmpd    #BI_PCASE_SET
+            lbeq    ev_pcase_set
             lbra    ev_ap_err
 ev_ap_try_closure:
             ; Must be a pair.  Tagged via car: sym_LAMBDA = closure (evaluate
@@ -4809,6 +4864,41 @@ ev_tick:    ldd     $FF02
             tfr     d,x
             rts
 
+; (PRINT-CASE) — return current printer case mode as a fixnum
+; (0 = upper / default, 1 = lower).  Use SET-PRINT-CASE! to change.
+ev_pcase_get:
+            clra
+            ldb     print_case_mode
+            aslb
+            rola
+            addd    #1                  ; fixnum tag (bit 0 = 1)
+            tfr     d,x
+            rts
+
+; (SET-PRINT-CASE! n) — set printer case mode to fixnum n
+; (0 = upper, 1 = lower).  Non-fixnum / non-{0,1} args are silently
+; coerced to 0.  Returns the canonical fixnum 0 or 1.
+ev_pcase_set:
+            lbsr    eval_one_arg        ; X = arg value
+            tfr     x,d
+            andb    #1
+            beq     pcs_zero            ; bit 0 == 0 → not a fixnum → upper
+            tfr     x,d
+            asra
+            rorb                        ; D = signed value
+            tstb
+            beq     pcs_store           ; 0 stays 0
+            ldb     #1                  ; anything else normalised to 1
+            bra     pcs_store
+pcs_zero:   clrb
+pcs_store:  stb     print_case_mode
+            clra
+            aslb
+            rola
+            addd    #1                  ; fixnum tag
+            tfr     d,x
+            rts
+
 rand_state  fdb     0,0
 rs_tmp      fdb     0,0
 
@@ -6645,6 +6735,11 @@ sym_PUTCHAR fdb     0
 sym_RAND    fdb     0
 sym_SEED    fdb     0
 sym_TICK    fdb     0
+sym_PCASE_GET fdb   0
+sym_PCASE_SET fdb   0
+print_case_mode fcb 0               ; 0 = upper (default), 1 = lower
+                                    ; — toggles the printer's case folding for
+                                    ; symbol names and #<TYPE>-style displays
 gensym_counter fdb  0
 repl_init_s fdb     0
 rdr_base    fdb     TIB_ADDR

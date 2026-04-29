@@ -5,8 +5,8 @@ A compact Lisp interpreter for the MC6809, running on the `em6809` +
 
 - **Single assembly source**: `lisp.asm` (~6,600 lines)
 - **ROM image**: ~19 KB (code + initialised data)
-- **Primitives**: 60, **stdlib entries**: 47
-- **Tests**: 35 smoke tests, all passing
+- **Primitives**: 62, **stdlib entries**: 51
+- **Tests**: 38 smoke tests, all passing
 
 Classic Lisp surface syntax (`defun` / `T` / `NIL` / `'x`), `defmacro`
 + quasiquote (manual hygiene via `with-gensyms`), mark-sweep GC,

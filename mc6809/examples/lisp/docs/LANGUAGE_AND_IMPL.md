@@ -58,8 +58,9 @@ set smaller than uLisp (60 vs 200+) and its core leaner.
 5. **Reader stays the same; printer is configurable** — UPPERCASE on
    read is non-negotiable (changing it would break symbol identity)
    but printer-side case (the "shouty" feel of `T` / `NIL` / `FACT`
-   in transcripts) is on the roadmap as a per-session toggle that
-   defaults to upper for transcript compatibility.
+   in transcripts) is a per-session toggle: `(set-print-case! 1)`
+   switches to lowercase symbol output mid-session, `(set-print-case! 0)`
+   restores upper.  Default is upper for transcript compatibility.
 
 ### 0.3 What this means for users
 
@@ -83,10 +84,10 @@ existing names is what we avoid.
 | Assembly source | **6,635 lines** (single `lisp.asm`) |
 | Raw binary | **18,981 bytes** (~18.5 KB) |
 | SREC file | 52,150 bytes (ASCII encoding of the raw image) |
-| Primitives (`BI_*`) | **60** |
-| Pre-declared symbols | **82** |
-| Stdlib entries (ROM-embedded Lisp) | **47** |
-| Smoke tests | **35** (~128 s, all passing) |
+| Primitives (`BI_*`) | **62** |
+| Pre-declared symbols | **84** |
+| Stdlib entries (ROM-embedded Lisp) | **51** |
+| Smoke tests | **38** (~135 s, all passing) |
 
 For context:
 - Far larger than SectorLisp (512 B, 7 primitives)
@@ -375,6 +376,7 @@ All were fixed upstream in the `em6809` crate.
 | First-class primitives | `(mapcar car …)` just works |
 | Scheme `?`-suffix aliases (`null?` / `atom?` / `eq?` / `zero?`) | Lower onboarding cost for SICP / Racket / Clojure refugees; cost is one defvar each |
 | `SET!` recognised as `SETQ` alias at the dispatcher | Same audience as above — Scheme writes `(set! x v)` reflexively; cost is one extra symbol slot + one `cmpy/lbeq` pair at two dispatch sites |
+| Printer case mode toggle (`(set-print-case! 0|1)`) | Lets users escape "shouty" UPPERCASE output without breaking symbol identity (reader stays unchanged); cost is two BI primitives, one RAM byte, and a fold check inside `pr_symbol` + `puts_cased` |
 | 3-pair closure layout | Simple and GC-friendly |
 | Two-phase self-TCO | Preserves left-to-right arg eval semantics when mutating bindings |
 | ROM-embedded stdlib | No load-time I/O needed; everything is ready after cold boot |

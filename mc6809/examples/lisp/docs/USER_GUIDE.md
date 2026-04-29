@@ -147,6 +147,31 @@ Dotted-rest parameters for variadic functions:
 - **PRNG / clock**: `(seed n)`, `(rand)` — 0..16383, `(tick)` — 14-bit
   cycle-derived counter
 - **GC / misc**: `gc` `gensym` `error` `catch` `throw`
+- **Printer case mode**: `(print-case)` returns the current symbol-name
+  case mode as a fixnum (0 = upper, 1 = lower).
+  `(set-print-case! n)` sets it; `n` must be 0 or 1 (any other value
+  silently coerces to 0).  Default is 0 (upper) for transcript
+  compatibility — flip to lowercase output mid-session with
+  `(set-print-case! 1)`:
+
+  ```
+  > (defun foo () 42)
+  FOO
+  > (set-print-case! 1)
+  1
+  > (defun bar () 99)
+  bar
+  > t
+  t
+  ```
+
+  Only ASCII letters in symbol names and the literal `T` / `NIL` /
+  `#<BUILTIN>` / `#<MACRO>` / `#<CLOSURE>` displays are affected;
+  digits, punctuation, string contents, character literals, and the
+  reader (which always upcases input) are untouched.  See
+  [LANGUAGE_AND_IMPL.md §0.2 principle 5](LANGUAGE_AND_IMPL.md) for
+  the rationale on why the reader is fixed and only the printer is
+  configurable.
 
 ---
 
