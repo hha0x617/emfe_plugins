@@ -1793,6 +1793,106 @@ fn lisp_usability_pack() {
 }
 
 #[test]
+fn lisp_predicate_aliases() {
+    // Scheme-style ?-suffix aliases for the CL-style bare predicates.
+    // Verifies that NULL?, ATOM?, EQ?, ZERO? evaluate to the same callable
+    // values as NULL / ATOM / EQ / ZEROP and produce identical results.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        send(b"(null? nil)\r"); // T
+        send(b"(null? '(1 2))\r"); // NIL
+        send(b"(atom? 42)\r"); // T
+        send(b"(atom? '(1 2))\r"); // NIL
+        send(b"(eq? 'a 'a)\r"); // T
+        send(b"(eq? 'a 'b)\r"); // NIL
+        send(b"(zero? 0)\r"); // T
+        send(b"(zero? 5)\r"); // NIL
+        // Higher-order use confirms the alias is a callable value, not just
+        // a special-form keyword.
+        send(b"(filter zero? '(0 1 0 2 0))\r"); // (0 0 0)
+        send(b"(any null? '(1 nil 2))\r"); // T
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            got.contains("(null? nil)\r\nT\r\n"),
+            "null? on nil; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(null? '(1 2))\r\nNIL\r\n"),
+            "null? on pair; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(atom? 42)\r\nT\r\n"),
+            "atom? on fixnum; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(atom? '(1 2))\r\nNIL\r\n"),
+            "atom? on pair; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(eq? 'a 'a)\r\nT\r\n"),
+            "eq? same; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(eq? 'a 'b)\r\nNIL\r\n"),
+            "eq? diff; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(zero? 0)\r\nT\r\n"),
+            "zero? on 0; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(zero? 5)\r\nNIL\r\n"),
+            "zero? on 5; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(filter zero? '(0 1 0 2 0))\r\n(0 0 0)\r\n"),
+            "zero? higher-order; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(any null? '(1 nil 2))\r\nT\r\n"),
+            "null? higher-order; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_macros_phase_ab() {
     // Phase A (defmacro + macro dispatch) and Phase B (quasi-quote reader
     // and QUASIQUOTE expansion).

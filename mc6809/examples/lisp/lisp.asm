@@ -6094,6 +6094,16 @@ stdlib_table
             fdb     sl_ht_hash
             fdb     sl_ht_get
             fdb     sl_ht_put
+            ; Scheme-style ?-suffix aliases for the CL-style bare predicates.
+            ; Hha Lisp's surface is Common Lisp (defun/setq/t/nil) but Scheme
+            ; users coming from SICP / Racket / Clojure expect (null? x) and
+            ; (eq? a b).  First-class primitives let us alias for free via
+            ; defvar.  Original names (NULL/ATOM/EQ/ZEROP) remain bound for
+            ; CL-style callers.
+            fdb     sl_null_q
+            fdb     sl_atom_q
+            fdb     sl_eq_q
+            fdb     sl_zero_q
             fdb     0
 
 sl_not      fcc     "(defun not (x) (if x nil t))"
@@ -6245,6 +6255,19 @@ sl_ht_hash  fcc     "(defun ht-hash (k) (let ((s (symbol->string k))) (if (null 
 sl_ht_get   fcc     "(defun ht-get (h k) (let ((e (assoc k (vector-ref h (+ 1 (ht-hash k)))))) (if e (cdr e) nil)))"
             fcb     0
 sl_ht_put   fcc     "(defun ht-put (h k v) (let ((i (+ 1 (ht-hash k)))) (vector-set! h i (cons (cons k v) (vector-ref h i))) v))"
+            fcb     0
+; Scheme-style ?-suffix predicate aliases.  These rebind the existing
+; built-in / stdlib predicates under their Scheme-conventional names so
+; users coming from SICP / Racket / Clojure can write (null? xs) and
+; (eq? a b) naturally.  defvar is enough — first-class primitives mean
+; the right-hand side evaluates to the same callable value.
+sl_null_q   fcc     "(defvar null? null)"
+            fcb     0
+sl_atom_q   fcc     "(defvar atom? atom)"
+            fcb     0
+sl_eq_q     fcc     "(defvar eq? eq)"
+            fcb     0
+sl_zero_q   fcc     "(defvar zero? zerop)"
             fcb     0
 
 ev_cn_args   fdb    0
