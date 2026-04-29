@@ -221,6 +221,7 @@ pub const EMFE_CAP_WATCHPOINTS: u64 = 1 << 6;
 pub const EMFE_CAP_FRAMEBUFFER: u64 = 1 << 7;
 pub const EMFE_CAP_INPUT_KEYBOARD: u64 = 1 << 8;
 pub const EMFE_CAP_INPUT_MOUSE: u64 = 1 << 9;
+pub const EMFE_CAP_CONSOLE_TX_SPACE: u64 = 1 << 10;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -519,16 +520,24 @@ impl Mc6850 {
             return;
         }
         // Real chip has a 1-byte RX register; extra bytes overflow.
-        // We keep a small FIFO for host convenience but flag overrun if it
-        // grows too large.
-        const RX_FIFO_MAX: usize = 16;
-        if self.rx_fifo.len() >= RX_FIFO_MAX {
+        // We keep a host-side FIFO so paste-style bursts and rapid typing
+        // don't drop bytes while the guest's polling loop hasn't caught up.
+        // 1024 bytes is large enough for practical clipboard paste while
+        // staying tiny in absolute terms; combined with the
+        // emfe_console_tx_space backpressure query the host can drip-feed
+        // exactly into the headroom and never overflow this cap.
+        if self.rx_fifo.len() >= Self::RX_FIFO_MAX {
             self.rx_overrun = true;
             return;
         }
         self.rx_fifo.push_back(ch);
         self.rdrf = true;
     }
+
+    /// Maximum host-side RX FIFO depth.  See `receive` for rationale.
+    /// Exposed as a constant so `emfe_console_tx_space` can compute the
+    /// remaining headroom for the host's paste-handshake path.
+    const RX_FIFO_MAX: usize = 1024;
 
     fn irq_active(&self) -> bool {
         (self.rdrf && self.rie) || (self.tdre && self.tx_irq_enable)
@@ -1031,7 +1040,8 @@ pub extern "C" fn emfe_get_board_info(out: *mut EmfeBoardInfo) -> EmfeResult {
                 | EMFE_CAP_WATCHPOINTS
                 | EMFE_CAP_STEP_OVER
                 | EMFE_CAP_STEP_OUT
-                | EMFE_CAP_CALL_STACK;
+                | EMFE_CAP_CALL_STACK
+                | EMFE_CAP_CONSOLE_TX_SPACE;
         }
         EmfeResult::Ok
     })
@@ -2459,6 +2469,24 @@ pub unsafe extern "C" fn emfe_send_string(instance: EmfeInstance, s: *const c_ch
             inst.bus.acia.receive(b);
         }
         EmfeResult::Ok
+    })
+}
+
+/// Returns the number of bytes the host can push into the ACIA RX FIFO
+/// right now without overflowing the host-side buffer.  The host uses
+/// this for paste backpressure: it drip-feeds into the reported
+/// headroom, queries again, and keeps going.  Returns -1 if the
+/// instance pointer is invalid (per ABI: -1 means "unsupported").
+#[no_mangle]
+pub unsafe extern "C" fn emfe_console_tx_space(instance: EmfeInstance) -> i32 {
+    ffi_catch!(-1, {
+        let inst = match inst_mut(instance) {
+            Some(i) => i,
+            None => return -1,
+        };
+        let used = inst.bus.acia.rx_fifo.len();
+        let cap = Mc6850::RX_FIFO_MAX;
+        (cap.saturating_sub(used)) as i32
     })
 }
 
