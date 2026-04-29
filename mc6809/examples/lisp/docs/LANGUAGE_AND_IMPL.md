@@ -207,6 +207,20 @@ Builtins live as tag IDs in `$7000..$7FFF` and are bound in `global_env`:
 Evaluating `CONS` returns `$7000` (a builtin value).  `(cons 1 2)`,
 `((eval 'cons) 1 2)`, and `((if t car cdr) '(1 . 2))` all work.
 
+This also lets the stdlib expose Scheme-style `?`-suffix predicate
+aliases without any additional opcode work — `(defvar null? null)`
+binds the same callable to a second name:
+
+```
+(defvar null? null)
+(defvar atom? atom)
+(defvar eq?    eq)
+(defvar zero?  zerop)
+```
+
+So `(filter zero? xs)` and `(any null? xs)` work alongside the CL
+bare-name predicates.  See §6 for the rationale.
+
 ### 4.7 Error handling
 
 - `catch_stack` holds up to 8 frames of `(tag, saved_s, saved_env)`
@@ -284,6 +298,7 @@ All were fixed upstream in the `em6809` crate.
 | UPPERCASE normalisation | Classic Lisp convention; lowercase input still works |
 | Classic-Lisp surface (defun/setq) | Easier for teaching than Scheme |
 | First-class primitives | `(mapcar car …)` just works |
+| Scheme `?`-suffix aliases (`null?` / `atom?` / `eq?` / `zero?`) | Lower onboarding cost for SICP / Racket / Clojure refugees; cost is one defvar each |
 | 3-pair closure layout | Simple and GC-friendly |
 | Two-phase self-TCO | Preserves left-to-right arg eval semantics when mutating bindings |
 | ROM-embedded stdlib | No load-time I/O needed; everything is ready after cold boot |

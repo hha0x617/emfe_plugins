@@ -121,6 +121,10 @@ Dotted-rest parameters for variadic functions:
 - **Hashtable**: `make-ht` `ht-hash` `ht-get` `ht-put`
 - **Fixed-point Q8.8**: `q-from` `q-to` `q*` `q/`
 - **Debug**: `trace` `untrace`
+- **Scheme-style aliases**: `null?` `atom?` `eq?` `zero?` — bound to
+  the same callable values as `null` / `atom` / `eq` / `zerop`, so
+  `(filter zero? xs)` and `(any null? xs)` work alongside the CL
+  bare names.  Adopt whichever style matches your background.
 
 ---
 

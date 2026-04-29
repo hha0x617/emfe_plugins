@@ -172,6 +172,14 @@ point-y / set-point-x / set-point-y` を自動生成
 ### デバッグ
 `trace` `untrace` — 関数呼出の入出力を自動ログ
 
+### Scheme スタイルのエイリアス
+`null?` `atom?` `eq?` `zero?` — それぞれ `null` / `atom` / `eq` / `zerop`
+と同じ callable 値を指す束縛。第一級プリミティブのため、
+`(filter zero? xs)` や `(any null? xs)` のように高階関数の引数としても
+そのまま使える。SICP / Scheme / Clojure 出身の利用者は `?` 付きの
+記法を、Common Lisp / Emacs Lisp 出身の利用者は元の名前をそのまま
+使ってよい。
+
 ---
 
 ## 7. 使用例
