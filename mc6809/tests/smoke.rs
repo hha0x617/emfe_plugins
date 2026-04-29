@@ -1793,6 +1793,143 @@ fn lisp_usability_pack() {
 }
 
 #[test]
+fn lisp_print_case_toggle() {
+    // Printer case mode: default 0 (upper / CL convention, transcript
+    // compat) with `(set-print-case! 1)` opt-in to lowercase output.
+    // Verifies:
+    //  - `(print-case)` defaults to 0
+    //  - symbol output, T / NIL, and #<BUILTIN> all fold to lowercase
+    //    after `(set-print-case! 1)`
+    //  - `(set-print-case! 0)` restores upper-case output mid-session
+    //  - non-letter chars (digits, parens, hyphens) are never folded
+    //  - bad argument prints an error message and returns NIL
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        // Default mode is upper.
+        send(b"(print-case)\r"); // 0
+        send(b"(defun foo () 42)\r"); // FOO
+        send(b"t\r"); // T
+        send(b"car\r"); // #<BUILTIN>
+        // Switch to lower.
+        send(b"(set-print-case! 1)\r"); // 1
+        send(b"(print-case)\r"); // 1
+        send(b"(defun bar () 99)\r"); // bar
+        send(b"t\r"); // t
+        send(b"car\r"); // #<builtin>
+        // Numbers + punctuation must NOT be folded — only ASCII letters.
+        send(b"42\r"); // 42
+        send(b"'(1 2 3)\r"); // (1 2 3)
+        // Switch back to upper.
+        send(b"(set-print-case! 0)\r"); // 0
+        send(b"t\r"); // T
+        // Bad argument prints an error message and returns NIL.
+        send(b"(set-print-case! 'foo)\r");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        // Default upper.
+        assert!(
+            got.contains("(print-case)\r\n0\r\n"),
+            "default upper; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(defun foo () 42)\r\nFOO\r\n"),
+            "defun upper; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("> t\r\nT\r\n"),
+            "T literal upper; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("> car\r\n#<BUILTIN>\r\n"),
+            "BUILTIN upper; got {:?}",
+            got
+        );
+        // Switched to lower.
+        assert!(
+            got.contains("(set-print-case! 1)\r\n1\r\n"),
+            "set lower returns 1; got {:?}",
+            got
+        );
+        // After the switch, all subsequent output is folded.  Slice
+        // the transcript so we only assert against post-switch lines.
+        let post_switch = got.split("(set-print-case! 1)").nth(1).unwrap_or("");
+        assert!(
+            post_switch.contains("(print-case)\r\n1\r\n"),
+            "get reports 1; got post-switch: {:?}",
+            post_switch
+        );
+        assert!(
+            post_switch.contains("(defun bar () 99)\r\nbar\r\n"),
+            "defun lower; got post-switch: {:?}",
+            post_switch
+        );
+        assert!(
+            post_switch.contains("> t\r\nt\r\n"),
+            "t literal lower; got post-switch: {:?}",
+            post_switch
+        );
+        assert!(
+            post_switch.contains("> car\r\n#<builtin>\r\n"),
+            "builtin lower; got post-switch: {:?}",
+            post_switch
+        );
+        // Numbers + parens + spaces still unaffected by case mode.
+        assert!(
+            post_switch.contains("> 42\r\n42\r\n"),
+            "fixnum unaffected; got post-switch: {:?}",
+            post_switch
+        );
+        assert!(
+            post_switch.contains("'(1 2 3)\r\n(1 2 3)\r\n"),
+            "list of fixnums unaffected; got post-switch: {:?}",
+            post_switch
+        );
+        // Restore upper.
+        assert!(
+            got.contains("(set-print-case! 0)\r\n0\r\n"),
+            "restore upper; got {:?}",
+            got
+        );
+        // Bad argument: silently coerced to 0 (upper).  The wrapper
+        // returns the canonical fixnum so users can see what stuck.
+        assert!(
+            got.contains("(set-print-case! 'foo)\r\n0\r\n"),
+            "bad arg silent coerce; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_set_bang_alias() {
     // SET! is recognised as a Scheme-style alias for SETQ at the eval
     // dispatcher.  Both forms must mutate the same binding identically;

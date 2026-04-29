@@ -180,6 +180,29 @@ Hha Lisp for MC6809
 ### GC / メタ
 `gc` `gensym` `error` `catch` `throw`
 
+### Printer case mode
+- `(print-case)` — シンボル名の case mode を fixnum で返す
+  (0 = upper、1 = lower)
+- `(set-print-case! n)` — case mode を設定。`n` は 0 または 1
+  (それ以外は黙って 0 に正規化)。default は 0 (upper) で既存
+  トランスクリプト互換のため。途中で lowercase 出力に切り替えるには:
+
+  ```
+  > (defun foo () 42)
+  FOO
+  > (set-print-case! 1)
+  1
+  > (defun bar () 99)
+  bar
+  > t
+  t
+  ```
+
+  対象はシンボル名内の ASCII 英字と `T` / `NIL` / `#<BUILTIN>` /
+  `#<MACRO>` / `#<CLOSURE>` の表示のみ。数字・記号・文字列内容・
+  文字リテラル・reader (常に upcase) は影響を受けない。背景は
+  [LANGUAGE_AND_IMPL_ja.md §0.2 原則 5](LANGUAGE_AND_IMPL_ja.md) を参照。
+
 ---
 
 ## 6. Stdlib (ROM 埋込 Lisp 関数)

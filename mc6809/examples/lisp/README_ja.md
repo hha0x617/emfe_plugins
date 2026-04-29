@@ -6,8 +6,8 @@ MC6809 上で動作する小規模 Lisp 処理系です。
 
 - **単一アセンブリソース**: `lisp.asm` (約 6,600 行)
 - **ROM イメージ**: 約 19 KB (code + 初期化済みデータ)
-- **Primitive 数**: 60 個、**stdlib エントリ**: 47 本
-- **テスト**: 35 smoke test すべて passing
+- **Primitive 数**: 62 個、**stdlib エントリ**: 51 本
+- **テスト**: 38 smoke test すべて passing
 
 古典 Lisp 風 (`defun` / `T` / `NIL` / `'x`) の構文、`defmacro` +
 quasiquote (`with-gensyms` による手動衛生化)、mark-sweep GC、
