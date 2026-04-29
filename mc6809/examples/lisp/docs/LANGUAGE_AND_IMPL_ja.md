@@ -105,7 +105,7 @@ Lisp 値は常に 16-bit のタグ付き word。
 | `$0000` | NIL_VAL | NIL (偽 / 空リスト) |
 | `$0002` | T_VAL | T (真) |
 | `$0003..$2FFF` (**odd**) | fixnum | bit 0 = 1、`(x-1)/2` が符号付き整数 (-16384..16383) |
-| `$4C80..$6FFF` (**even**) | pair | cons セル、4 バイト単位 (car 2B + cdr 2B) |
+| `$4CC0..$6FFF` (**even**) | pair | cons セル、4 バイト単位 (car 2B + cdr 2B) |
 | `$7000..$7DFF` | symbol | 可変長エントリ (next 2B + len 1B + name bytes) |
 | `$7E00..$7E7F` | builtin | primitive 関数の識別子 (BI_* tag) |
 | `$8E00..$8FFF` | char | `CHAR_BASE + 2*code` (stride 2 で fixnum と衝突回避) |
@@ -121,7 +121,7 @@ Lisp 値は常に 16-bit のタグ付き word。
 
 ```
 $0100..$4BFF  code + initialised data  (~19 KB)
-$4C80..$6FFF  pair pool      (9 KB = 2272 cells, GC 対象)
+$4CC0..$6FFF  pair pool      (~9 KB = 2256 cells, GC 対象)
 $7000..$7DFF  symbol pool    (3.5 KB, 永続)
 $7E00..$7E7F  builtin tag range (no RAM, 64 値分予約)
 $8000..$8BFF  pair mark bitmap (3 KB)

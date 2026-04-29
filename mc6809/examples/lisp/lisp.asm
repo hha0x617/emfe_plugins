@@ -24,13 +24,23 @@ ACIA_DATA   equ     $FF01
 TIB_ADDR    equ     $A000
 TIB_SIZE    equ     512             ; enlarged to fit long stdlib macro bodies
 
-PAIR_POOL   equ     $4C80           ; pair pool start (after code+data)
+PAIR_POOL   equ     $4CC0           ; pair pool start (after code+data).
+                                    ; Bumped from $4C80 → $4CC0 to absorb
+                                    ; the bytes added by the self-TCO
+                                    ; phase-1 stco_* save/restore around
+                                    ; lbsr eval — the buffer prefix and
+                                    ; cursors are pushed on the S stack
+                                    ; so a nested self-TCO can't clobber
+                                    ; the outer's stco_vals[] (see
+                                    ; ev_ap_self_tco).
 PAIR_END    equ     $7000           ; exclusive — extends through what was
                                     ; SYM_POOL ($6800..$6FFF) and the address
                                     ; range previously reserved for builtin
                                     ; tag values ($7000..$7FFF).  See
-                                    ; BUILTIN_POOL note below.  9088 bytes
-                                    ; = 2272 cells, up from 1760.
+                                    ; BUILTIN_POOL note below.  9024 bytes
+                                    ; = 2256 cells (was 2272, lost 16 cells
+                                    ; for the headroom; previous baseline
+                                    ; was 1760).
 SYM_POOL    equ     $7000           ; relocated from $6800 — now occupies the
                                     ; range that used to be the builtin tag
 SYM_END     equ     $7E00           ; range ($7000..$7FFF).  3.5 KB = ~280 syms
@@ -3207,7 +3217,7 @@ ev_ap_self_tco:
 stco_eval_loop:
             ldx     stco_params
             cmpx    #NIL_VAL
-            beq     stco_eval_done
+            lbeq    stco_eval_done
             cmpx    #PAIR_POOL
             lblo    stco_fallback
             cmpx    #PAIR_END
@@ -3220,8 +3230,49 @@ stco_eval_loop:
             cmpy    #PAIR_END
             lbhs    stco_fallback
             ldx     ,y                  ; arg form
-            lbsr    eval
+            ; Save stco_* (cursors AND the buffer prefix written so far)
+            ; across `eval` because the arg form may recurse into another
+            ; self-TCO that resets stco_vy and overwrites stco_vals[0..n]
+            ; — e.g. 8-queens' try-rows-show / place-col-show trio that
+            ; threads a count argument.  Cursors alone aren't enough; the
+            ; buffer contents themselves are clobbered.
+            ldd     stco_params
+            pshs    d
+            ldd     stco_args
+            pshs    d
+            ; Push stco_vals[0..stco_vy] (in reverse so we can pop in
+            ; ascending order back into stco_vals[0..]) — Y walks from
+            ; stco_vy down to stco_vals.
             ldy     stco_vy
+stco_pre_save:
+            cmpy    #stco_vals
+            beq     stco_pre_save_done
+            leay    -2,y
+            ldd     ,y
+            pshs    d
+            bra     stco_pre_save
+stco_pre_save_done:
+            ldd     stco_vy
+            subd    #stco_vals
+            pshs    d                   ; byte count of pushed buffer
+            lbsr    eval
+            puls    d                   ; B = byte count low (high always 0; <=32)
+            ldu     #stco_vals
+            tstb
+            beq     stco_post_done
+stco_post_loop:
+            puls    y
+            sty     ,u++
+            decb
+            decb
+            bne     stco_post_loop
+stco_post_done:
+            tfr     u,y                 ; U now points just past last restored word
+            sty     stco_vy             ; stco_vy = stco_vals + byte_count
+            puls    d
+            std     stco_args
+            puls    d
+            std     stco_params
             cmpy    #stco_vals_end
             lbhs    stco_fallback       ; too many args for buffer
             stx     ,y++

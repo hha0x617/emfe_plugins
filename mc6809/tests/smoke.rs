@@ -2035,6 +2035,87 @@ fn lisp_queens_then_extend_repro() {
 }
 
 #[test]
+fn lisp_show_queens_self_tco_reentrant() {
+    // Regression for the second 8-queens bug the user found after the
+    // BUILTIN_POOL relocation (PR #17): `(show-queens 4)` returned 0
+    // instead of 2 even though `(queens 4)` was already correct.
+    // Difference between the two solvers: `place-col` / `try-rows`
+    // discard the recursive count, while `place-col-show` /
+    // `try-rows-show` THREAD a count argument through the recursion —
+    // every iteration is a self-tail-call whose phase-1 arg evaluation
+    // re-enters self-TCO via the mutual `place-col-show ⇄ try-rows-show`
+    // pair.  The nested call reset `stco_vy` to `stco_vals[0]` AND
+    // overwrote `stco_vals[0..n]` with its own arg values, so by the
+    // time the OUTER iteration reached phase 2 (mutate bindings) it
+    // pulled the nested call's `stco_vals[0]` into every param —
+    // corrupting the running count and making it always 0.
+    //
+    // Fix: in phase 1, around the `lbsr eval` call, save the cursors
+    // (stco_params / stco_args) AND the already-written prefix of
+    // stco_vals[] onto the S stack, then restore after eval returns.
+    // Saving cursors alone wasn't enough — the buffer contents
+    // themselves had to be preserved.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        send(b"(defun safe? (row placed dist) (if (null? placed) t (if (= (car placed) row) nil (if (= (abs (- (car placed) row)) dist) nil (safe? row (cdr placed) (+ dist 1))))))\r");
+        // Visualisation-style mutually recursive pair that threads a
+        // running count through every tail call — exactly the pattern
+        // that exposes the nested-self-TCO clobber of stco_vals.
+        send(b"(defun try-rows-show (n placed col row count) (if (> row n) count (try-rows-show n placed col (+ row 1) (if (safe? row placed 1) (place-col-show n (cons row placed) (+ col 1) count) count))))\r");
+        send(b"(defun place-col-show (n placed col count) (if (> col n) (+ count 1) (try-rows-show n placed col 1 count)))\r");
+        send(b"(defun show-queens (n) (place-col-show n nil 1 0))\r");
+        send(b"(show-queens 4)\r");
+        send(b"(show-queens 5)\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(show-queens 5)\r\n10\r\n") || waited_ms >= 60_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            got.contains("(show-queens 4)\r\n2\r\n"),
+            "show-queens(4) must equal 2 (was 0 before stco_* save/restore); got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(show-queens 5)\r\n10\r\n"),
+            "show-queens(5) must equal 10; got {:?}",
+            got
+        );
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_cond_reentrant_and_tail_transparent() {
     // Regression test for issue #14: ev_cond used global scratches
     // (ev_cn_args / ev_cn_clause) that nested cond evaluations
