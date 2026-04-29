@@ -5,6 +5,44 @@ emfe_plugin_mc6809 and talks to the outside world via a single ACIA.
 
 ---
 
+## 0. About this Lisp (lineage at a glance)
+
+Hha Lisp combines:
+
+- **Common Lisp surface syntax** — `defun` / `setq` / `t` / `nil` /
+  `cond` / `progn` / `defmacro` / quasiquote.  Easier to teach than
+  Scheme.
+- **Lisp-1 evaluation** — single namespace; primitives are first-class
+  values, so `(filter zero? xs)` and `(mapcar car '((1) (2) (3)))`
+  Just Work.  No `#'` needed.
+- **Scheme-style utility naming** — `string->symbol`, `vector-set!`,
+  `char->integer`.  Arrows for conversion, `!` for mutation.
+
+The closest single named relative is **uLisp** (a Common Lisp subset
+for AVR / ARM microcontrollers), with the deliberate twist that Hha
+Lisp is Lisp-1 rather than Lisp-2.
+
+**Cross-tradition aliases** are provided so users from different Lisp
+backgrounds can write naturally:
+
+| You can write… | … or equivalently | Style |
+|---|---|---|
+| `(null? xs)` | `(null xs)` | Scheme / CL |
+| `(atom? x)` | `(atom x)` | Scheme / CL |
+| `(eq? a b)` | `(eq a b)` | Scheme / CL |
+| `(zero? n)` | `(zerop n)` | Scheme / CL |
+| `(set! x v)` | `(setq x v)` | Scheme / CL |
+
+These are **additive**: nothing has been renamed or removed.  Pick the
+names that match your background, or mix freely.
+
+For the full lineage map and design principles (including why `defun`
+/ `setq` / `t` / `nil` stay first-class names instead of becoming
+aliases of Scheme equivalents), see
+[LANGUAGE_AND_IMPL.md §0](LANGUAGE_AND_IMPL.md).
+
+---
+
 ## 1. Build & Run
 
 Assuming [`lwasm`](http://www.lwtools.ca/) (from lwtools) is on your

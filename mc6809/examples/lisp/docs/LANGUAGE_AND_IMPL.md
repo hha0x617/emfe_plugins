@@ -6,6 +6,76 @@ design** of `examples/lisp/lisp.asm`.  For everyday usage, see
 
 ---
 
+## 0. Lineage & design philosophy
+
+Hha Lisp doesn't fit cleanly into any single Lisp lineage.  It picks
+features deliberately from several traditions to balance teaching
+clarity, embedded-target constraints, and onboarding cost for users
+arriving from different Lisps.  Reading this section first makes
+later design decisions (predicate aliases, `set!`, printer case mode,
+...) easier to evaluate on their own merits rather than as accidents.
+
+### 0.1 Lineage map
+
+| Aspect | Tradition adopted | Why |
+|---|---|---|
+| Surface special forms (`defun` / `setq` / `cond` / `progn` / `defmacro`) | Common Lisp | `(defun f (x) ...)` is more direct to teach than `(define (f x) ...)` |
+| Boolean / empty list | Common Lisp (`t` / `nil`, `nil` is also empty list) | Simpler tag scheme; one less constant to allocate |
+| Symbol case | Common Lisp (reader upcases on read) | Allows lowercase input, displays canonically; printer-side case toggle is a planned extension |
+| Quasiquote syntax | Common Lisp + Scheme (`` ` `` / `,` / `,@`) | Universal Lisp dialect — same syntax everywhere |
+| Macro hygiene | Common Lisp (`defmacro` non-hygienic, `with-gensyms` for hand-rolled hygiene) | `syntax-rules` would be too costly; manual `gensym` is cheap and a good teaching tool |
+| Evaluation namespace | **Lisp-1** (Scheme / Arc / Clojure tradition) | First-class primitives mean `(filter zero? xs)` works without `#'` |
+| Utility naming (`string->symbol` / `vector-set!` / `char->integer`) | Scheme / R5RS | Arrows for conversion and `!` for mutation are widely understood |
+| Tail call optimisation | Scheme (mandatory) | Loops express naturally as recursion in Lisp-1 land |
+| Memory model (fixed pools, mark-sweep GC, ROM stdlib) | Embedded Lisp tradition (uLisp, Lispkit) | Predictable; no `malloc` or load-time I/O |
+
+The closest single named lineage is **uLisp** (a CL-subset Lisp for
+AVR / ARM microcontrollers), with the deliberate twist that Hha Lisp
+is **Lisp-1** instead of Lisp-2.  Hha Lisp also keeps its primitive
+set smaller than uLisp (60 vs 200+) and its core leaner.
+
+### 0.2 Design principles
+
+1. **Classic Lisp surface preserved** — `defun` / `setq` / `t` /
+   `nil` are first-class names, not aliases of Scheme equivalents.
+   This stays intentional even though Lisp-1 evaluation makes `defun`
+   semantically equivalent to Scheme's `define`; renaming would
+   surprise the CL / Emacs Lisp audience for no payoff.
+2. **Cross-tradition aliases are additive** — `null?` / `atom?` /
+   `eq?` / `zero?` / `set!` are aliases for the existing CL-style
+   names so Scheme / Racket / Clojure / SICP users can read and write
+   naturally.  No old name has ever been renamed or redirected;
+   aliases are pure additions.
+3. **Trade-offs are documented openly** — see §6 ("Design choices and
+   trade-offs") for the table of explicit choices.  Adding new
+   aliases or features means weighing them against ROM cost,
+   dispatcher cycles, and conceptual surface area.
+4. **Embedded constraints are first-class** — every feature must fit
+   in a fixed-size pool, survive mark-sweep GC unchanged, and be
+   implementable in lwasm without runtime libraries.  Features that
+   don't fit (full CL `loop` macro, `call/cc`, IEEE 754) stay out
+   unless the cost/benefit clearly justifies them.
+5. **Reader stays the same; printer is configurable** — UPPERCASE on
+   read is non-negotiable (changing it would break symbol identity)
+   but printer-side case (the "shouty" feel of `T` / `NIL` / `FACT`
+   in transcripts) is on the roadmap as a per-session toggle that
+   defaults to upper for transcript compatibility.
+
+### 0.3 What this means for users
+
+| Background | What works for you out of the box |
+|---|---|
+| **Common Lisp / Emacs Lisp** | All special forms (`defun` / `setq` / `t` / `nil` / `defmacro` / quasiquote) are exactly what you expect.  The fact that `#'` isn't required for higher-order primitives is a pleasant simplification, not a footgun |
+| **Scheme / Racket / SICP / Clojure** | Use `null?` / `atom?` / `eq?` / `zero?` / `set!`; recognise `cons` / `car` / `cdr`; tail-recursive idioms work; pass primitives directly as arguments to higher-order functions |
+| **uLisp / embedded Lisp users** | Surface forms identical except for Lisp-1 evaluation; ROM-friendly stdlib bootstrap is the same family |
+| **Programming beginners** | `(defun f (x) ...)` is the simplest entry point; numeric / list / string / vector / Q8.8 / hashtable / records all available with classic naming |
+
+If you find a missing alias or a surface choice that hurts your
+tradition, additive accommodations land easily; renaming or removing
+existing names is what we avoid.
+
+---
+
 ## 1. Code-size metrics
 
 | Metric | Value |

@@ -6,6 +6,74 @@
 
 ---
 
+## 0. 系譜と設計方針
+
+Hha Lisp は単一の Lisp 系譜には収まりません。教育用としての分かりやすさ・
+組込みターゲットの制約・複数文化からのユーザー受け入れコストの 3 軸の
+バランスを取って、複数伝統から機能を意図的に組み合わせています。本章を
+最初に読むと、後続の設計判断 (述語エイリアス、`set!`、printer の
+case mode 等) を「個別の判断」として評価しやすくなります。
+
+### 0.1 系譜マップ
+
+| 観点 | 採用伝統 | 理由 |
+|---|---|---|
+| 表面の特殊形式 (`defun` / `setq` / `cond` / `progn` / `defmacro`) | Common Lisp | `(defun f (x) ...)` は `(define (f x) ...)` より初学者に説明しやすい |
+| ブール / 空リスト | Common Lisp (`t` / `nil`、`nil` は空リストでもある) | tag 体系がシンプル、定数 1 個分の節約 |
+| シンボル case | Common Lisp (reader が読み込み時に UPPERCASE 化) | 小文字入力も受け、表示は正規化される。printer 側の case mode は今後対応予定 |
+| Quasiquote | Common Lisp + Scheme 共通 (`` ` `` / `,` / `,@`) | Lisp 共通方言、構文同一 |
+| マクロ衛生性 | Common Lisp (`defmacro` 非衛生、`with-gensyms` で手動衛生化) | `syntax-rules` はコスト過大、手動 gensym は教材としても良い |
+| 評価名前空間 | **Lisp-1** (Scheme / Arc / Clojure 系) | 第一級プリミティブで `(filter zero? xs)` が `#'` 不要で動く |
+| ユーティリティ命名 (`string->symbol` / `vector-set!` / `char->integer`) | Scheme / R5RS | 矢印は変換、`!` は破壊的操作という規約が広く通じる |
+| 末尾呼出最適化 | Scheme (必須) | Lisp-1 環境ではループは再帰で書くのが自然 |
+| メモリモデル (固定 pool / mark-sweep GC / ROM 埋込 stdlib) | 組込み Lisp 伝統 (uLisp、Lispkit) | 予測可能、`malloc` 不要、起動時 I/O 不要 |
+
+最も近い直系は **uLisp** (AVR / ARM 向け Common Lisp サブセット
+組込み Lisp) ですが、Hha Lisp は意図的に **Lisp-1** 化されています。
+プリミティブ数も uLisp より小さく (60 個 vs 200+)、コアもよりリーン
+です。
+
+### 0.2 設計原則
+
+1. **Classic Lisp 表面を保つ** — `defun` / `setq` / `t` / `nil` は
+   Scheme エイリアスの別名ではなく、それ自体が一級の名前。Lisp-1
+   評価により `defun` は意味的に Scheme の `define` と等価だが、
+   それでも名前を変えない。CL / Emacs Lisp 出身者を混乱させる
+   見返りが無いから。
+2. **複数文化からのエイリアスは追加のみ** — `null?` / `atom?` /
+   `eq?` / `zero?` / `set!` は CL 流の既存名のエイリアスとして
+   提供される。Scheme / Racket / Clojure / SICP 出身者が自然に
+   読み書きできるように。古い名前は一切リネーム/リダイレクトされて
+   いない。
+3. **トレードオフは docs に明記する** — 第 6 章「設計上の選択と
+   妥協」表を見れば、明示的な選択がすべて並んでいる。新規エイリアス
+   や機能の追加判断は ROM コスト・dispatcher cycle・概念表面積との
+   引き換えで毎回判定。
+4. **組込み制約は一級市民** — どの機能も固定 pool に収まり、
+   mark-sweep GC で正しく動き、lwasm でランタイムライブラリ不要で
+   実装可能でなければならない。収まらない機能 (CL の `loop` マクロ
+   フル実装、`call/cc`、IEEE 754) は cost/benefit が明白に勝つまで
+   保留。
+5. **Reader は変えない、printer は設定可能に** — 読み込み時の
+   UPPERCASE 化は変えられない (シンボル identity が壊れる) が、
+   printer 側の case (`T` / `NIL` / `FACT` の "叫んでる" 感覚) は
+   セッション単位の toggle として実装予定 (デフォルトは upper、
+   トランスクリプト互換のため)。
+
+### 0.3 これが利用者に意味すること
+
+| 出身 | そのまま動くこと |
+|---|---|
+| **Common Lisp / Emacs Lisp** | 全特殊形式 (`defun` / `setq` / `t` / `nil` / `defmacro` / quasiquote) が完全に期待通り。高階関数で `#'` が不要なのは罠ではなく嬉しい簡素化 |
+| **Scheme / Racket / SICP / Clojure** | `null?` / `atom?` / `eq?` / `zero?` / `set!` を使える、`cons` / `car` / `cdr` が分かる、末尾再帰 idiom が動く、プリミティブを高階関数の引数に直接渡せる |
+| **uLisp / 組込み Lisp 利用者** | 表面構文は Lisp-1 という違い以外そのまま、ROM 埋込 stdlib bootstrap も同系統 |
+| **プログラミング初学者** | `(defun f (x) ...)` から素直に入れる、数値 / リスト / 文字列 / ベクタ / Q8.8 / hashtable / records が classic 命名で揃う |
+
+足りないエイリアスや表面の選択で困ったら、追加なら気軽に対応する。
+既存名のリネーム/削除こそが避けたいケース。
+
+---
+
 ## 1. 実装規模
 
 | 指標 | 値 |
