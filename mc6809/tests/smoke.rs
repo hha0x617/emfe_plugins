@@ -130,6 +130,95 @@ fn console_tx_space_returns_headroom() {
 }
 
 #[test]
+fn console_tx_paste_no_corruption_under_concurrent_run() {
+    // Regression test for the host-vs-worker thread race on the ACIA
+    // RX FIFO.  Before the host_rx_pending hand-off, emfe_send_char
+    // mutated the chip's VecDeque from one thread while the worker's
+    // CPU loop popped from it on another — UB which manifested as
+    // either dropped or duplicated bytes (`defun` -> `efun` /
+    // `helper` -> `helperc` in user reports).
+    //
+    // We reproduce the conditions: load the echo example, start
+    // emfe_run, then push a long ASCII payload while the worker spins.
+    // The CPU echoes everything it receives, so we can recover what
+    // actually made it into the chip and assert byte-for-byte equality.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/echo/echo.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        // Wait for the boot banner so the ACIA is out of master-reset.
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if !UART_BUF.is_empty() {
+                break;
+            }
+        }
+        let banner_len = UART_BUF.len();
+
+        // 256 bytes covering all printable ASCII letters / digits in a
+        // pattern that makes adjacent-letter substitutions easy to spot
+        // (substitution / duplication / drop all break the cycle).
+        let payload: Vec<u8> = (b'A'..=b'Z')
+            .chain(b'a'..=b'z')
+            .chain(b'0'..=b'9')
+            .cycle()
+            .take(256)
+            .collect();
+        for &b in &payload {
+            // Respect host backpressure: spin briefly when the staging
+            // queue fills, otherwise the host outruns the worker.
+            for _ in 0..1000 {
+                if emfe_console_tx_space(h) > 0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(emfe_send_char(h, b as c_char), EmfeResult::Ok);
+        }
+        // Wait for the echo to drain.
+        for _ in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if UART_BUF.len() >= banner_len + payload.len() {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let echoed = &UART_BUF[banner_len..banner_len + payload.len()];
+        assert_eq!(
+            UART_BUF.len() - banner_len >= payload.len(),
+            true,
+            "expected at least {} echoed bytes; got {}",
+            payload.len(),
+            UART_BUF.len() - banner_len
+        );
+        if echoed != payload.as_slice() {
+            let first_mismatch = echoed
+                .iter()
+                .zip(payload.iter())
+                .position(|(a, b)| a != b)
+                .unwrap_or(usize::MAX);
+            panic!(
+                "echo must be byte-identical (no drops/dups/subs); first mismatch at index {}: sent={:?} got={:?}",
+                first_mismatch,
+                std::str::from_utf8(&payload[first_mismatch..(first_mismatch + 8).min(payload.len())]).unwrap_or("?"),
+                std::str::from_utf8(&echoed[first_mismatch..(first_mismatch + 8).min(echoed.len())]).unwrap_or("?"),
+            );
+        }
+
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn console_tx_space_invalid_instance() {
     // Per ABI: -1 means "unsupported" (also used for invalid handle).
     unsafe {
