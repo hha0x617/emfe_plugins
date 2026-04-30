@@ -37,6 +37,7 @@ Hha Forth for MC6809 ready.
 |---|---|
 | **[docs/USER_GUIDE_ja.md](docs/USER_GUIDE_ja.md)** | 起動方法、REPL 操作、全組込語 (primitives + コンパイラ)、使用例 |
 | **[docs/LANGUAGE_AND_IMPL_ja.md](docs/LANGUAGE_AND_IMPL_ja.md)** | 言語仕様 (ITC スレッディング、辞書エントリ構造、内側インタプリタ) と実装解説、実装規模 |
+| **[docs/SHOWCASE_ja.md](docs/SHOWCASE_ja.md)** | 5 つのアルゴリズム — ハノイの塔、8 クイーン、クイックソート、Forth 固有の `CREATE`/`DOES>`、`BASE` 切替 — を paste-ready REPL トランスクリプトとイディオム解説で紹介 |
 
 ## English
 
