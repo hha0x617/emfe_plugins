@@ -151,6 +151,14 @@ scales to `n = 8` in this small-pool Lisp.
 92
 ```
 
+> 📊 **Canonical solution counts** ([OEIS A000170](https://oeis.org/A000170)).
+> The n-queens sequence is `1, 0, 0, 2, 10, 4, 40, 92, 352, 724, ...`
+> for `n = 1, 2, 3, ...`.  The dip at `n = 6` (four solutions —
+> *fewer* than `n = 5` 's ten) genuinely is the right answer: there
+> is exactly **one** fundamental layout, and its four rotations make
+> up the total.  Don't be alarmed when Variant B below also reports
+> `4` for `n = 6`.
+
 ### Variant B — pure functional, count threaded through `+`
 
 No global mutation — each recursive call returns a count and the
