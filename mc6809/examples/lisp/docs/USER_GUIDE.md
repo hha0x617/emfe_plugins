@@ -45,6 +45,29 @@ aliases of Scheme equivalents), see
 
 ## 1. Build & Run
 
+### Quick start (with a prebuilt emfe frontend)
+
+If you just want to **try Hha Lisp** without building anything from source:
+
+1. Grab the latest `emfe.exe` from one of the GUI host releases
+   ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
+   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))
+   plus the matching `emfe_plugin_mc6809.dll` from the
+   [emfe_plugins release page](https://github.com/hha0x617/emfe_plugins/releases).
+   Drop the DLL into the `plugins\` folder next to `emfe.exe`.
+2. Launch `emfe.exe`, then **File → Switch Plugin…** and pick **MC6809**.
+3. **File → Open S-Record…** (Ctrl+S) and select the shipped
+   `examples/lisp/lisp.s19` (also bundled with each release).
+4. Press **F5** (Run). The Console window shows the boot banner and the
+   `> ` prompt — start typing.
+
+`lisp.s19` is committed to this repository and re-published with every
+release, so the steps above work without installing `lwasm`. The build /
+C-ABI sections below are only needed if you want to **modify** `lisp.asm`
+or embed Hha Lisp from your own code.
+
+### Build (only when modifying `lisp.asm`)
+
 Assuming [`lwasm`](http://www.lwtools.ca/) (from lwtools) is on your
 PATH:
 
@@ -55,7 +78,7 @@ lwasm -9 -f srec -o lisp.s19 lisp.asm
 If it isn't on PATH, invoke it with the full path instead
 (e.g. `C:\path\to\lwasm.exe` / `/usr/local/bin/lwasm`).
 
-Load the S-record from a host program:
+### Loading from a host program (Rust example)
 
 ```rust
 let mut h: EmfeInstance = ptr::null_mut();

@@ -43,7 +43,28 @@ Hha Lisp は次の 3 つを意図的に組み合わせています:
 
 ## 1. ビルドと起動
 
-### ビルド
+### クイックスタート (ビルド済 emfe フロントエンド利用)
+
+何もビルドせずに **すぐ Hha Lisp を試したい** 場合の最短経路:
+
+1. GUI ホストの最新リリースから `emfe.exe` を入手
+   ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
+   または [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))。
+   合わせて [emfe_plugins リリース](https://github.com/hha0x617/emfe_plugins/releases)
+   から `emfe_plugin_mc6809.dll` を入手し、`emfe.exe` 隣の `plugins\`
+   フォルダに配置する。
+2. `emfe.exe` を起動し、**File → Switch Plugin…** で **MC6809** を選択。
+3. **File → Open S-Record…** (Ctrl+S) で同梱の
+   `examples/lisp/lisp.s19` を開く (リリースにも同梱されている)。
+4. **F5** (Run) を押す。Console ウィンドウに boot banner と `> `
+   プロンプトが表示されたら入力開始。
+
+`lisp.s19` は本リポジトリにコミット済みかつリリース毎にも同梱される
+ので、上記手順は `lwasm` のインストールなしで動きます。以下の
+「ビルド」「ホストからのロード」セクションは、`lisp.asm` を **改変**
+したい場合や Hha Lisp を自前のコードから埋め込みたい場合のみ必要です。
+
+### ビルド (`lisp.asm` を改変するときのみ)
 
 [lwasm](http://www.lwtools.ca/) (lwtools 同梱) が PATH にあることを前提:
 
