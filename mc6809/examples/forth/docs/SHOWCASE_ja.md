@@ -141,19 +141,23 @@ Forth は他のどの実装とも同じ数値を返す。
 
 Lomuto partition による in-place 配列クイックソート。Forth で書ける
 QSort の **一つの選択肢** であって、後述するように他にも道はある。
-それでも in-place を採るのは、Forth に GC が無い以上これが **最も
-自然** だから。
+それでも in-place を採るのは、**Hha Forth に GC が無い** から
+(Forth-79 から Forth 2012 までいずれの仕様も GC を規定していない —
+ANS Forth / Forth-94 は代わりに明示的 `ALLOCATE` / `FREE` を導入
+したが、自動回収は応用側に委ねる立場をとった)。untyped cell +
+linear data space という Forth の core モデルが GC を構造的に
+組み込みにくくしている。
 
 ### 代替案 — なぜ in-place が勝つか
 
 | 方式 | Pros | Cons |
 |---|---|---|
 | **配列 in-place (採用)** | メモリ最小、追加確保不要、`CELLS @ !` の標準イディオム、GC 不在環境でも安全 | Lomuto は安定でない、スタック juggling、index 演算が in-bounds に収まる前提 |
-| **cons セル連結リスト** (手作りの `HERE 2! 4 ALLOT`) | Lisp に近い書き味、再帰 partition が短く綺麗 | Forth に GC が無いため、再帰 1 回ごとに dictionary が永久に伸びる。2 回目の呼出で領域が枯渇する可能性 |
+| **cons セル連結リスト** (手作りの `HERE 2! 4 ALLOT`) | Lisp に近い書き味、再帰 partition が短く綺麗 | GC が無いため、再帰 1 回ごとに dictionary が永久に伸びる。2 回目の呼出で領域が枯渇する可能性 |
 | **auxiliary buffer + マージソート** | 安定ソートにできる、partition logic が単純 | メモリ 2 倍、`CREATE` で事前に固定サイズを取る必要 |
 
-3 つのうち GC 不在の Forth で **繰返し** 走らせられる (free-list を
-手作りせずに) のは最初のものだけなので、本章は in-place 方式で進める。
+3 つのうち、free-list を手作りせずに **繰返し** 走らせられるのは最初の
+ものだけなので、本章は in-place 方式で進める。
 
 ### コード
 

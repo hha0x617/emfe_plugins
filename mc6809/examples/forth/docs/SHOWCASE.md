@@ -147,20 +147,24 @@ hits the same numbers as any other implementation.
 
 In-place array quicksort with Lomuto partition. This is **one** way
 to write quicksort in Forth — there are alternatives, summarised
-below — but in-place is the most natural fit because Forth has no
-garbage collector.
+below — but in-place is the most natural fit because **Hha Forth has
+no garbage collector** (no Forth standard from Forth-79 through
+Forth 2012 specifies one either; ANS Forth / Forth-94 added explicit
+`ALLOCATE` / `FREE` instead, leaving GC to the application). The
+untyped-cell, linear-data-space model is what makes GC structurally
+awkward to bolt on.
 
 ### Alternatives — and why in-place wins
 
 | Approach | Pros | Cons |
 |---|---|---|
 | **In-place array (chosen)** | Minimum memory, no allocation needed; standard `CELLS @ !` idiom; safe under no-GC | Lomuto is unstable; stack juggling; index arithmetic must stay in-bounds |
-| **Linked list of cons cells** (manually `HERE 2! 4 ALLOT`) | Reads close to Lisp; recursive partition is short and pretty | Forth has no GC — every recursive call permanently grows the dictionary, and a second invocation may exhaust RAM |
+| **Linked list of cons cells** (manually `HERE 2! 4 ALLOT`) | Reads close to Lisp; recursive partition is short and pretty | No GC, so every recursive call permanently grows the dictionary, and a second invocation may exhaust RAM |
 | **Auxiliary buffer + merge sort** | Can be made stable; partition logic is simpler | Doubles memory; needs a sized `CREATE` buffer reserved up front |
 
-Of these three, only the first runs **repeatably** in a no-GC Forth
-without manual free-list machinery, so the rest of this section
-follows the in-place path.
+Of these three, only the first runs **repeatably** without manual
+free-list machinery, so the rest of this section follows the
+in-place path.
 
 ### Code
 
