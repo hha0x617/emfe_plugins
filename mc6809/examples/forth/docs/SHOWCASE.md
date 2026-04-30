@@ -13,8 +13,8 @@ internals see [LANGUAGE_AND_IMPL.md](LANGUAGE_AND_IMPL.md).
 > **Multi-line `:` definitions are supported** even though there is
 > no `>>` continuation prompt.  Each line gets ` ok` while compile
 > mode persists across `ACCEPT` cycles, and `;` ends the definition.
-> The 128-byte TIB means each *line* must stay short, but each
-> *word* can span as many lines as needed.
+> Use multi-line whenever it improves readability — the 512-byte TIB
+> is large enough that line-length is no longer a constraint.
 
 ---
 
@@ -35,20 +35,11 @@ itself only carries `n`.
 ```forth
 VARIABLE FROM-PEG  VARIABLE DEST-PEG  VARIABLE VIA-PEG
 
-: SHOW-MOVE  ( n -- )
-  ." Move disk " . ." from " FROM-PEG @ EMIT SPACE
-  ." to " DEST-PEG @ EMIT CR ;
-
+: SHOW-MOVE  ( n -- )  ." Move disk " . ." from " FROM-PEG @ EMIT SPACE ." to " DEST-PEG @ EMIT CR ;
 : SWAP-DV  DEST-PEG @ VIA-PEG @ DEST-PEG ! VIA-PEG ! ;
 : SWAP-FV  FROM-PEG @ VIA-PEG @ FROM-PEG ! VIA-PEG ! ;
 
-: HANOI  ( n -- )
-  DUP 0> IF
-    SWAP-DV  DUP 1- RECURSE  SWAP-DV
-    DUP SHOW-MOVE
-    SWAP-FV  DUP 1- RECURSE  SWAP-FV
-  THEN
-  DROP ;
+: HANOI  ( n -- )  DUP 0> IF  SWAP-DV  DUP 1- RECURSE  SWAP-DV  DUP SHOW-MOVE  SWAP-FV  DUP 1- RECURSE  SWAP-FV  THEN  DROP ;
 
 CHAR A FROM-PEG !  CHAR C DEST-PEG !  CHAR B VIA-PEG !
 ```
@@ -100,33 +91,16 @@ VARIABLE COL-V  VARIABLE ROW-V  VARIABLE CFL
 : ABS_  DUP 0< IF NEGATE THEN ;
 : GET-ROW  CELLS QROW + @ ;
 : BAD-ROW?  GET-ROW ROW-V @ = ;
-: BAD-DIAG?
-  DUP GET-ROW ROW-V @ - ABS_  SWAP COL-V @ - ABS_  = ;
-: AT-CONFL?
-  DUP BAD-ROW? IF DROP TRUE EXIT THEN
-  BAD-DIAG? ;
+: BAD-DIAG?  DUP GET-ROW ROW-V @ - ABS_  SWAP COL-V @ - ABS_  = ;
+: AT-CONFL?  DUP BAD-ROW? IF DROP TRUE EXIT THEN BAD-DIAG? ;
 
-: SAFE?
-  COL-V @ 0= IF TRUE EXIT THEN
-  0 CFL !
-  COL-V @ 0 DO
-    I AT-CONFL? IF TRUE CFL ! LEAVE THEN
-  LOOP
-  CFL @ 0= ;
+: SAFE?  ( -- flag )
+  COL-V @ 0= IF TRUE EXIT THEN  0 CFL !  COL-V @ 0 DO I AT-CONFL? IF TRUE CFL ! LEAVE THEN LOOP  CFL @ 0= ;
 
-: PLACE-COL
-  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN
-  NQ @ 0 DO
-    DUP COL-V !  I ROW-V !
-    SAFE? IF
-      DUP CELLS QROW + I SWAP !
-      DUP 1+ RECURSE
-    THEN
-  LOOP
-  DROP ;
+: PLACE-COL  ( c -- )
+  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN  NQ @ 0 DO  DUP COL-V !  I ROW-V !  SAFE? IF DUP CELLS QROW + I SWAP !  DUP 1+ RECURSE THEN  LOOP  DROP ;
 
-: QUEENS  ( n -- count )
-  NQ !  0 QCNT !  0 PLACE-COL  QCNT @ ;
+: QUEENS  ( n -- count )  NQ !  0 QCNT !  0 PLACE-COL  QCNT @ ;
 ```
 
 ### REPL transcript
@@ -136,6 +110,10 @@ VARIABLE COL-V  VARIABLE ROW-V  VARIABLE CFL
 2  ok
 > 5 QUEENS .
 10  ok
+> 6 QUEENS .
+4  ok
+> 7 QUEENS .
+40  ok
 > 8 QUEENS .
 92  ok
 ```
@@ -146,10 +124,6 @@ hits the same numbers as any other implementation.
 
 ### Points
 
-- **Multi-line `:` definitions** are essential here: `SAFE?`
-  alone wouldn't fit in one 128-byte TIB line. Note how the
-  ` ok` prompt appears after each line yet compilation continues —
-  this is the standard Forth REPL behaviour.
 - **`I` works only inside the immediately enclosing `DO`/`LOOP`**.
   When `PLACE-COL`'s body calls a colon-defined word like `SAFE?`,
   `SAFE?`'s own `DO` loop pushes a fresh frame on the return stack;
@@ -159,7 +133,7 @@ hits the same numbers as any other implementation.
 - **No `?DO`** in FORTH-83. `0 DO` with start `==` limit would
   iterate 65536 times instead of zero, so `SAFE?` short-circuits
   with `COL-V @ 0= IF TRUE EXIT THEN` before entering the loop.
-- **`+!` (`PSTORE`)** in-place increment for QCNT is one of the
+- **`+!` (`PSTORE`)** in-place increment for `QCNT` is one of the
   many short Forth idioms that other languages need a temporary
   for.
 - **Stack juggling** is the dominant cost: this is a 14-line
@@ -171,9 +145,26 @@ hits the same numbers as any other implementation.
 
 ## 3. Quicksort
 
-In-place array quicksort with Lomuto partition. Operates directly
-on `ARR[lo..hi]` using `@` and `!` — no list allocation, no GC,
-fully imperative.
+In-place array quicksort with Lomuto partition. This is **one** way
+to write quicksort in Forth — there are alternatives, summarised
+below — but in-place is the most natural fit because **Hha Forth has
+no garbage collector** (no Forth standard from Forth-79 through
+Forth 2012 specifies one either; ANS Forth / Forth-94 added explicit
+`ALLOCATE` / `FREE` instead, leaving GC to the application). The
+untyped-cell, linear-data-space model is what makes GC structurally
+awkward to bolt on.
+
+### Alternatives — and why in-place wins
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **In-place array (chosen)** | Minimum memory, no allocation needed; standard `CELLS @ !` idiom; safe under no-GC | Lomuto is unstable; stack juggling; index arithmetic must stay in-bounds |
+| **Linked list of cons cells** (manually `HERE 2! 4 ALLOT`) | Reads close to Lisp; recursive partition is short and pretty | No GC, so every recursive call permanently grows the dictionary, and a second invocation may exhaust RAM |
+| **Auxiliary buffer + merge sort** | Can be made stable; partition logic is simpler | Doubles memory; needs a sized `CREATE` buffer reserved up front |
+
+Of these three, only the first runs **repeatably** without manual
+free-list machinery, so the rest of this section follows the
+in-place path.
 
 ### Code
 
@@ -184,36 +175,18 @@ CREATE ARR NN CELLS ALLOT
 : ARR@  CELLS ARR + @ ;
 : ARR!  CELLS ARR + ! ;
 
-VARIABLE QS-TMP  VARIABLE QS-PIV  VARIABLE QS-PI
-VARIABLE QS-LO  VARIABLE QS-HI
+VARIABLE QS-TMP  VARIABLE QS-PIV  VARIABLE QS-PI  VARIABLE QS-LO  VARIABLE QS-HI
 
-: SWAP-CELLS  ( i j -- )
-  OVER ARR@ QS-TMP !
-  DUP ARR@ ROT ARR!
-  QS-TMP @ SWAP ARR! ;
+: SWAP-CELLS  ( i j -- )  OVER ARR@ QS-TMP !  DUP ARR@ ROT ARR!  QS-TMP @ SWAP ARR! ;
 
 : PARTITION  ( lo hi -- p )
-  QS-HI !  QS-LO !
-  QS-HI @ ARR@ QS-PIV !
-  QS-LO @ 1- QS-PI !
-  QS-HI @ QS-LO @ DO
-    I ARR@ QS-PIV @ > 0= IF
-      QS-PI @ 1+ QS-PI !
-      QS-PI @ I SWAP-CELLS
-    THEN
-  LOOP
+  QS-HI !  QS-LO !  QS-HI @ ARR@ QS-PIV !  QS-LO @ 1- QS-PI !
+  QS-HI @ QS-LO @ DO I ARR@ QS-PIV @ > 0= IF QS-PI @ 1+ QS-PI !  QS-PI @ I SWAP-CELLS THEN LOOP
   QS-PI @ 1+ DUP QS-HI @ SWAP-CELLS ;
 
-: QSORT-R  ( lo hi -- )
-  BEGIN 2DUP < WHILE
-    2DUP PARTITION
-    >R SWAP R@ 1- RECURSE
-    R> 1+ SWAP
-  REPEAT 2DROP ;
+: QSORT-R  ( lo hi -- )  BEGIN 2DUP < WHILE 2DUP PARTITION >R SWAP R@ 1- RECURSE R> 1+ SWAP REPEAT 2DROP ;
 
-: LOAD-TEST
-  5 0 ARR! 3 1 ARR! 8 2 ARR! 1 3 ARR!
-  9 4 ARR! 4 5 ARR! 2 6 ARR! 7 7 ARR! ;
+: LOAD-TEST  5 0 ARR! 3 1 ARR! 8 2 ARR! 1 3 ARR!  9 4 ARR! 4 5 ARR! 2 6 ARR! 7 7 ARR! ;
 : SHOW-N  ( n -- ) 0 DO I ARR@ . LOOP ;
 ```
 

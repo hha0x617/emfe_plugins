@@ -20,7 +20,7 @@
 ; Memory map:
 ;   $0100..$1FFF   kernel code + built-in dictionary
 ;   $2000..$9FFF   user dictionary (HERE grows upward)
-;   $A000..$A07F   TIB (terminal input buffer, 128 bytes)
+;   $A000..$A1FF   TIB (terminal input buffer, 512 bytes)
 ;   $B000..$BFFE   data stack (U starts at $BFFE)
 ;   $C000..$FEFE   return stack (S starts at $FEFE)
 ;   $FF00/$FF01    ACIA SR/CR, RDR/TDR
@@ -34,7 +34,7 @@ ACIA_DATA   equ     $FF01       ; read: RDR         write: TDR
 PSP_TOP     equ     $BFFE       ; data stack top (U)
 RSP_TOP     equ     $FEFE       ; return stack top (S)
 TIB_ADDR    equ     $A000       ; terminal input buffer
-TIB_SIZE    equ     128
+TIB_SIZE    equ     512
 DICT_START  equ     $2800       ; user dictionary grows from here
                                 ; (kernel code now exceeds $2000; headroom up to ~$9FFF)
 

@@ -45,7 +45,7 @@ Word Set の大半をカバー。コロン定義、`IF`/`ELSE`/`THEN`、
 
 ### 2.2 REPL (Outer Interpreter)
 
-- `ACCEPT` が TIB (128 バイト) に 1 行読込
+- `ACCEPT` が TIB (512 バイト) に 1 行読込
 - `INTERPRET` が `PARSE-NAME` → `SFIND` / `NUMBER?` の順に dispatch
 - 行末到達で `" ok"` + CRLF を出力してループ
 - 不明語は `<word>?` を表示、REPL は継続 (スタックは巻き戻らない)
@@ -102,8 +102,8 @@ Word Set の大半をカバー。コロン定義、`IF`/`ELSE`/`THEN`、
 ```
 $0100..$1FFF  kernel code + built-in dictionary  (~8 KB)
 $2000..$9FFF  user dictionary (HERE grows upward, ~32 KB)
-$A000..$A07F  TIB (terminal input buffer, 128 bytes)
-$A080..$AFFF  未使用
+$A000..$A1FF  TIB (terminal input buffer, 512 bytes)
+$A200..$AFFF  未使用
 $B000..$BFFE  data stack (U starts at $BFFE, grows down)
 $BFFF..$BFFF  ガード
 $C000..$FEFE  return stack (S starts at $FEFE)
@@ -352,7 +352,7 @@ IMMEDIATE word は即実行されて制御構造のパッチが入る。
 |---|---|---|
 | Data stack | $BFFE → $B000 = 4 KB | 2048 セル |
 | Return stack | $FEFE → $C000 = 16 KB | 8192 セル (BSR 戻り番地と共用) |
-| TIB | 128 bytes | 1 行 |
+| TIB | 512 bytes | 1 行 |
 | User dict | $2000 → $9FFF = 32 KB | 十分な余裕 |
 
 両スタックとも底に向かって伸長、衝突検出は無し。オーバーフローすると

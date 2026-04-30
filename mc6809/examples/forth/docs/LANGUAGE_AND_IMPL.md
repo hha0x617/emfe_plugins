@@ -46,7 +46,7 @@ jonesforth family of minimal-but-usable implementations.
 
 ### 2.2 REPL (outer interpreter)
 
-- `ACCEPT` reads one line (up to 128 bytes) into TIB
+- `ACCEPT` reads one line (up to 512 bytes) into TIB
 - `INTERPRET` calls `PARSE-NAME` then `SFIND` / `NUMBER?`
 - At end of line, prints `" ok"` + CRLF and loops
 - Unknown words print `<word>?`; the REPL survives but the stack is
@@ -104,8 +104,8 @@ jonesforth family of minimal-but-usable implementations.
 ```
 $0100..$27FF  kernel code + built-in dictionary  (~10 KB)
 $2800..$9FFF  user dictionary (HERE grows upward, ~30 KB)
-$A000..$A07F  TIB (terminal input buffer, 128 bytes)
-$A080..$AFFF  unused
+$A000..$A1FF  TIB (terminal input buffer, 512 bytes)
+$A200..$AFFF  unused
 $B000..$BFFE  data stack (U starts at $BFFE, grows down)
 $BFFF..$BFFF  guard
 $C000..$FEFE  return stack (S starts at $FEFE)
@@ -329,7 +329,7 @@ placeholders.
 |---|---|---|
 | Data stack | $BFFE → $B000 = 4 KB | 2048 cells |
 | Return stack | $FEFE → $C000 = 16 KB | ~8192 cells (shared with BSR frames) |
-| TIB | 128 bytes | one line |
+| TIB | 512 bytes | one line |
 | User dictionary | $2000 → $9FFF = 32 KB | generous |
 
 Both stacks grow downward with no overflow detection — keep depth

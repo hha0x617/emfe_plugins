@@ -19,7 +19,29 @@ interpreter, code-size metrics) see
 
 ## 1. Building and Running
 
-### Build
+### Quick start (with a prebuilt emfe frontend)
+
+If you just want to **try Forth** without building anything from source:
+
+1. Grab the latest `emfe.exe` from one of the GUI host releases
+   ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
+   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))
+   plus the matching `emfe_plugin_mc6809.dll` from the
+   [emfe_plugins release page](https://github.com/hha0x617/emfe_plugins/releases).
+   Drop the DLL into the `plugins\` folder next to `emfe.exe`.
+2. Launch `emfe.exe`, then **File → Switch Plugin…** and pick
+   **MC6809**.
+3. **File → Open S-Record…** (Ctrl+S) and select the shipped
+   `examples/forth/forth.s19` (also bundled with each release).
+4. Press **F5** (Run). The Console window shows
+   `Hha Forth for MC6809 ready.` — start typing.
+
+`forth.s19` is committed to this repository and re-published with
+every release, so the steps above work without installing `lwasm`.
+The build / C-ABI sections below are only needed if you want to
+**modify** `forth.asm` or embed Hha Forth from your own code.
+
+### Build (only when modifying `forth.asm`)
 
 Assuming [`lwasm`](http://www.lwtools.ca/) (from lwtools) is on your
 PATH:
@@ -62,7 +84,7 @@ Hha Forth for MC6809 ready.
 |------|------|
 | `$0100..$27FF` | Kernel code + built-in dictionary |
 | `$2800..$9FFF` | User dictionary (`HERE` grows upward into this region) |
-| `$A000..$A07F` | TIB (terminal input buffer, 128 bytes) |
+| `$A000..$A1FF` | TIB (terminal input buffer, 512 bytes) |
 | `$B000..$BFFE` | Data stack (U, grows downward; TOS at the lower address) |
 | `$C000..$FEFE` | Return stack (S) |
 | `$FF00/$FF01` | ACIA SR/CR, RDR/TDR |
@@ -76,7 +98,7 @@ Hha Forth for MC6809 ready.
 
 ## 3. How the REPL Works
 
-1. `ACCEPT` reads one line into the TIB (up to 128 bytes).
+1. `ACCEPT` reads one line into the TIB (up to 512 bytes).
    - Each character is echoed as it arrives.
    - `BS` (0x08) and `DEL` (0x7F) delete the previous character and emit
      `BS SPACE BS`.

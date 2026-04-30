@@ -20,7 +20,30 @@ English: [USER_GUIDE.md](USER_GUIDE.md)
 
 ## 1. ビルドと起動
 
-### ビルド
+### クイックスタート (ビルド済 emfe フロントエンド利用)
+
+何もビルドせずに **すぐ Forth を試したい** 場合の最短経路:
+
+1. GUI ホストの最新リリースから `emfe.exe` を入手
+   ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
+   または [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))。
+   合わせて [emfe_plugins リリース](https://github.com/hha0x617/emfe_plugins/releases)
+   から `emfe_plugin_mc6809.dll` を入手し、`emfe.exe` 隣の
+   `plugins\` フォルダに配置する。
+2. `emfe.exe` を起動し、**File → Switch Plugin…** で **MC6809**
+   を選択。
+3. **File → Open S-Record…** (Ctrl+S) で同梱の
+   `examples/forth/forth.s19` を開く (リリースにも同梱されている)。
+4. **F5** (Run) を押す。Console ウィンドウに
+   `Hha Forth for MC6809 ready.` が表示されたら入力開始。
+
+`forth.s19` は本リポジトリにコミット済みかつリリース毎にも同梱
+されるので、上記手順は `lwasm` のインストールなしで動きます。
+以下の「ビルド」「ホストからのロード」セクションは、`forth.asm` を
+**改変** したい場合や Hha Forth を自前のコードから埋め込みたい
+場合のみ必要です。
+
+### ビルド (`forth.asm` を改変するときのみ)
 
 [lwasm](http://www.lwtools.ca/) (lwtools 同梱) が PATH にあることを前提:
 
@@ -61,7 +84,7 @@ Hha Forth for MC6809 ready.
 |------|------|
 | `$0100..$27FF` | カーネルコード + 組込辞書 |
 | `$2800..$9FFF` | ユーザ辞書 (`HERE` が伸びる先) |
-| `$A000..$A07F` | TIB (端末入力バッファ、128 バイト) |
+| `$A000..$A1FF` | TIB (端末入力バッファ、512 バイト) |
 | `$B000..$BFFE` | データスタック (U、下方向伸長、TOS が低番地) |
 | `$C000..$FEFE` | リターンスタック (S) |
 | `$FF00/$FF01` | ACIA SR/CR, RDR/TDR |
@@ -75,7 +98,7 @@ Hha Forth for MC6809 ready.
 
 ## 3. REPL の動作
 
-1. `ACCEPT` が TIB に 1 行 (最大 128 バイト) 読み込む。
+1. `ACCEPT` が TIB に 1 行 (最大 512 バイト) 読み込む。
    - 文字は即エコーされる。
    - `BS` (0x08) / `DEL` (0x7F) で 1 文字削除、`BS SPACE BS` 表示。
    - `CR` または `LF` で入力確定、`CRLF` を出力。
