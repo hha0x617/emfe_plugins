@@ -2223,9 +2223,12 @@ fn lisp_showcase_samples_diag() {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         };
-        // -------- Tower of Hanoi --------
+        // -------- Tower of Hanoi (variant A: explicit n=1 base case + display chain) --------
         send(b"(defun hanoi (n from via to) (if (= n 1) (progn (display \"Move disk 1 from \") (display from) (display \" to \") (display to) (newline)) (progn (hanoi (- n 1) from to via) (display \"Move disk \") (display n) (display \" from \") (display from) (display \" to \") (display to) (newline) (hanoi (- n 1) via from to))))\r");
         send(b"(hanoi 3 'A 'B 'C)\r");
+        // -------- Tower of Hanoi (variant B: when + format) --------
+        send(b"(defun hanoi2 (n source dest helper) (when (> n 0) (hanoi2 (- n 1) source helper dest) (format \"Move disk ~d from ~a to ~a\" n source dest) (newline) (hanoi2 (- n 1) helper dest source)))\r");
+        send(b"(hanoi2 3 'A 'C 'B)\r");
         // -------- 8 Queens (count) --------
         send(b"(defvar qc 0)\r");
         send(b"(defun safe? (row placed dist) (cond ((null? placed) t) ((= (car placed) row) nil) ((= (abs (- (car placed) row)) dist) nil) (t (safe? row (cdr placed) (+ dist 1)))))\r");

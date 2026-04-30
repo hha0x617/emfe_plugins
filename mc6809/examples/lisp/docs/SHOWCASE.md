@@ -16,7 +16,11 @@ The simplest demonstration of recursion: move *n* disks from peg `A`
 to peg `C`, using `B` as scratch, never placing a larger disk on a
 smaller one.
 
-### Code
+Two equally valid formulations, both producing the same 7-line trace
+for `n = 3`. They differ in *style* — useful for contrasting Common
+Lisp idioms.
+
+### Variant A — explicit `n = 1` base case + display chain
 
 ```lisp
 (defun hanoi (n from via to)
@@ -30,8 +34,6 @@ smaller one.
              (hanoi (- n 1) via from to))))
 ```
 
-### REPL transcript
-
 ```
 > (hanoi 3 'A 'B 'C)
 Move disk 1 from A to C
@@ -44,13 +46,62 @@ Move disk 1 from A to C
 NIL
 ```
 
-### Points
+### Variant B — `when` guard + `format`
 
-- **Direct recursion**, no loops.
-- I/O is done with `display` (no surrounding quotes) plus
-  `(newline)`. There is no `format` `~%` shortcut; emit the line
-  break explicitly.
-- The return value is `NIL` — `display` is for side effects.
+```lisp
+(defun hanoi (n source dest helper)
+  (when (> n 0)
+    (hanoi (- n 1) source helper dest)
+    (format "Move disk ~d from ~a to ~a" n source dest)
+    (newline)
+    (hanoi (- n 1) helper dest source)))
+```
+
+```
+> (hanoi 3 'A 'C 'B)
+Move disk 1 from A to C
+Move disk 2 from A to B
+Move disk 1 from C to B
+Move disk 3 from A to C
+Move disk 1 from B to A
+Move disk 2 from B to C
+Move disk 1 from A to C
+NIL
+```
+
+### Style comparison
+
+| Aspect | Variant A | Variant B |
+|---|---|---|
+| **Base case** | Explicit `(= n 1)` — names the smallest move | `(> n 0)` — `n = 0` bottoms out as a no-op via `when` |
+| **Conditional** | `if` with two branches | `when` (one-armed; no else) |
+| **Output** | `display` chain + `newline` | `format` placeholders + `newline` |
+| **Length** | ~9 lines | ~5 lines |
+
+A few notes worth flagging:
+
+- **Whether to special-case `n = 1`** is the key axis. Variant A
+  makes the smallest move explicit (`"Move disk 1 from ..."`),
+  which reads well when teaching the algorithm. Variant B unifies
+  every move under one `format` call and lets the recursion
+  bottom out at `n = 0` with no output — mathematically cleaner
+  and shorter, but the smallest move is no longer a distinct
+  literal in the source.
+- **`when` vs `if`** — `when` is the idiomatic way to express
+  "do this sequence only if the predicate holds, otherwise return
+  NIL." It saves the explicit `else` branch when there's nothing
+  to do.
+- **`format` in Hha Lisp is intentionally minimal** — every
+  `~<char>` substitutes the next argument regardless of `<char>`.
+  So `~d` and `~a` are functionally interchangeable; using
+  `~d` for numbers and `~a` for symbols documents intent the way
+  Common Lisp programmers expect, even though the runtime doesn't
+  enforce the distinction.
+- Both variants start the recursion exactly the same way — only
+  the parameter names differ (`from`/`via`/`to` vs
+  `source`/`helper`/`dest`). That's why `(hanoi 3 'A 'B 'C)` for
+  variant A and `(hanoi 3 'A 'C 'B)` for variant B produce the
+  same move sequence.
 
 ---
 

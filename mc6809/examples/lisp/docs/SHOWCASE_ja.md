@@ -16,7 +16,10 @@ MC6809 エミュレータ上の Hha Lisp で動かす古典アルゴリズムを
 へ、`B` を中継地点として、常に大きい円盤を小さい円盤の上に置かない
 ように移動する。
 
-### コード
+書き方の異なる 2 通り。`n = 3` での出力 (7 行) はどちらも同一だが、
+**スタイル**が違う — Common Lisp 流イディオムの対比として参考になる。
+
+### バリアント A — `n = 1` の明示的なベースケース + display 連鎖
 
 ```lisp
 (defun hanoi (n from via to)
@@ -30,8 +33,6 @@ MC6809 エミュレータ上の Hha Lisp で動かす古典アルゴリズムを
              (hanoi (- n 1) via from to))))
 ```
 
-### REPL トランスクリプト
-
 ```
 > (hanoi 3 'A 'B 'C)
 Move disk 1 from A to C
@@ -44,12 +45,58 @@ Move disk 1 from A to C
 NIL
 ```
 
-### 解説ポイント
+### バリアント B — `when` ガード + `format`
 
-- **直接再帰のみ**、ループ無し。
-- 出力は `display` (引用符なし) と `(newline)` の組合せ。`format`
-  の `~%` は無いので明示的に改行を出す。
-- 戻り値は `NIL` — `display` は副作用専用。
+```lisp
+(defun hanoi (n source dest helper)
+  (when (> n 0)
+    (hanoi (- n 1) source helper dest)
+    (format "Move disk ~d from ~a to ~a" n source dest)
+    (newline)
+    (hanoi (- n 1) helper dest source)))
+```
+
+```
+> (hanoi 3 'A 'C 'B)
+Move disk 1 from A to C
+Move disk 2 from A to B
+Move disk 1 from C to B
+Move disk 3 from A to C
+Move disk 1 from B to A
+Move disk 2 from B to C
+Move disk 1 from A to C
+NIL
+```
+
+### スタイル比較
+
+| 観点 | バリアント A | バリアント B |
+|---|---|---|
+| **ベースケース** | `(= n 1)` で最小の移動を明示 | `(> n 0)`、`n = 0` は `when` で何もせず止まる |
+| **条件分岐** | `if` で 2 分岐 | `when` の片腕分岐 (else 不要) |
+| **出力** | `display` 連鎖 + `newline` | `format` のプレースホルダ + `newline` |
+| **行数** | 約 9 行 | 約 5 行 |
+
+ポイント:
+
+- **`n = 1` を特別扱いするか否か** が一番の判断軸。バリアント A
+  は最小の移動 (`"Move disk 1 from ..."`) を明示するので、アル
+  ゴリズムを教えるときに読みやすい。バリアント B は全ての移動を
+  `format` の 1 呼出に統一し、`n = 0` で再帰がきれいに底打ちする
+  ように書く — 数学的には簡潔で短いが、最小の移動はソース上の
+  リテラルとして見えなくなる。
+- **`when` と `if`** — 「述語が真のときだけ一連の処理を走らせ、
+  そうでなければ NIL を返す」という意図には `when` が慣用的。
+  else 節を書かずに済む。
+- **Hha Lisp の `format` は意図的に minimal** — どんな文字でも
+  `~<char>` の形で次の引数に置き換えられる。つまり `~d` と `~a`
+  は実行時には等価。だが Common Lisp 流に「数値は `~d`、シンボル
+  は `~a`」と書き分けると、処理系が強制しなくとも意図がコードに
+  残る。
+- 2 つのバリアントは再帰の起動の仕方が同一で、引数名が違うだけ
+  (`from`/`via`/`to` vs `source`/`helper`/`dest`)。だから
+  `(hanoi 3 'A 'B 'C)` (バリアント A) と
+  `(hanoi 3 'A 'C 'B)` (バリアント B) で同じ移動列が出る。
 
 ---
 
