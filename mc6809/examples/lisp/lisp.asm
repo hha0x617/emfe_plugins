@@ -2360,12 +2360,25 @@ ev_append:  ldx     ev_expr_scratch
             pshs    x                   ; save args ptr on S ([S+0])
             ldx     ,x                  ; a form
             lbsr    eval
-            stx     ev_app_a            ; a value
-            ldx     ,s                  ; args
+            ; ev_app_a is GLOBAL scratch; if we store our `a` value
+            ; into it now, the SECOND eval below (which can recurse
+            ; into another ev_append, e.g. classic `(append (qsort
+            ; less) (cons pivot (qsort greater)))`) will overwrite
+            ; it with the inner call's `a` value.  By the time the
+            ; inner returns and we resume, ev_app_a no longer reflects
+            ; OUR `a` and the cmpx-#NIL_VAL test below mistakes our
+            ; non-empty `a` for NIL (or vice versa), giving outputs
+            ; like `(qsort '(5 3 8 1 9 4 2 7))` → `(5 7 8 9)` (less
+            ; branch dropped).  Park `a` on the S stack across the
+            ; second eval, then restore.
+            pshs    x                   ; [S+0] = a value, [S+2] = args
+            ldx     2,s                 ; args
             ldx     2,x                 ; (b)
             ldx     ,x                  ; b form
             lbsr    eval
             stx     ev_app_b
+            puls    x                   ; X = a value
+            stx     ev_app_a
             leas    2,s                 ; drop saved args
             ; If a is NIL, return b directly.
             ldx     ev_app_a

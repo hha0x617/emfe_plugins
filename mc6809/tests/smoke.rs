@@ -2197,6 +2197,91 @@ fn lisp_print_board_no_intermittent_errors() {
 }
 
 #[test]
+fn lisp_qsort_classic_two_recursive_appends() {
+    // Regression test for the user-reported qsort bug:
+    // `(qsort '(5 3 8 1 9 4 2 7))` returned `(5 7 8 9)` instead of
+    // `(1 2 3 4 5 7 8 9)` — the less branch was silently dropped.
+    //
+    // Root cause: ev_append uses GLOBAL ev_app_a / ev_app_b scratch.
+    // The classic qsort tail `(append (qsort less) (cons pivot
+    // (qsort greater)))` evaluates the FIRST arg into ev_app_a,
+    // then evaluates the SECOND arg.  That second eval recurses
+    // into another ev_append (the inner qsort's tail), which
+    // OVERWRITES the outer's ev_app_a with its own value.  When
+    // the inner returns and the outer resumes, ev_app_a no longer
+    // holds the outer's `a` — typically NIL — so the cmpx-#NIL
+    // dispatch returns ev_app_b directly.  Result: outer append
+    // drops its first argument entirely.
+    //
+    // Fix: stash the first eval result on the S stack across the
+    // second eval, then restore.
+    // Diagnostic for the user-reported qsort bug: setq inside dolist
+    // body apparently fails to mutate the outer let binding.  Minimum
+    // repro: bind a counter via let, increment it from dolist body
+    // via setq, observe the final value.  Expected: sum = 6 for
+    // (1 2 3).  If buggy: probably 0 (never updated) or wrong.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        // User's classic qsort.
+        send(b"(defun qsort (lst) (if (null lst) nil (let ((pivot (car lst)) (rest (cdr lst)) (less nil) (greater nil)) (dolist (x rest) (if (< x pivot) (setq less (cons x less)) (setq greater (cons x greater)))) (append (qsort less) (cons pivot (qsort greater))))))\r");
+        send(b"(qsort (list 5 3 8 1 9 4 2 7))\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(qsort (list 5 3 8 1 9 4 2 7))")
+                && s.matches("\r\n").count() >= 6
+                && (s.contains("\r\n(1 2 3 4 5 7 8 9)\r\n")
+                    || s.contains("ALLOC: pool exhausted")
+                    || s.contains("\r\n(5 7 8 9)\r\n"))
+            {
+                break;
+            }
+            if waited_ms >= 30_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        assert!(
+            !got.contains("ALLOC: pool exhausted"),
+            "qsort must not exhaust pool; got {:?}",
+            got
+        );
+        assert!(
+            got.contains("(1 2 3 4 5 7 8 9)"),
+            "qsort must return (1 2 3 4 5 7 8 9); got {:?}",
+            got
+        );
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_show_queens_self_tco_reentrant() {
     // Regression for the second 8-queens bug the user found after the
     // BUILTIN_POOL relocation (PR #17): `(show-queens 4)` returned 0
