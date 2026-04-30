@@ -2197,6 +2197,134 @@ fn lisp_print_board_no_intermittent_errors() {
 }
 
 #[test]
+#[ignore = "diagnostic — quick qsortF check"]
+fn lisp_qsortf_diag() {
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        send(b"(defun qsortF (lst) (if (null? lst) nil (let ((pivot (car lst)) (rest (cdr lst))) (append (qsortF (filter (lambda (x) (< x pivot)) rest)) (cons pivot (qsortF (filter (lambda (x) (>= x pivot)) rest)))))))\r");
+        send(b"(qsortF (list 5 3 8 1 9 4 2 7))\r");
+        send(b"(qsortF (list 42 17 23 4 99 1 67 38 12 55))\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.matches("\r\n").count() >= 8 {
+                break;
+            }
+            if waited_ms >= 60_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        eprintln!("---- qsortF transcript ----\n{}", got);
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
+#[ignore = "diagnostic — verify SHOWCASE.md sample code"]
+fn lisp_showcase_samples_diag() {
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        // -------- Tower of Hanoi (variant A: explicit n=1 base case + display chain) --------
+        send(b"(defun hanoi (n from via to) (if (= n 1) (progn (display \"Move disk 1 from \") (display from) (display \" to \") (display to) (newline)) (progn (hanoi (- n 1) from to via) (display \"Move disk \") (display n) (display \" from \") (display from) (display \" to \") (display to) (newline) (hanoi (- n 1) via from to))))\r");
+        send(b"(hanoi 3 'A 'B 'C)\r");
+        // -------- Tower of Hanoi (variant B: when + format) --------
+        send(b"(defun hanoi2 (n source dest helper) (when (> n 0) (hanoi2 (- n 1) source helper dest) (format \"Move disk ~d from ~a to ~a\" n source dest) (newline) (hanoi2 (- n 1) helper dest source)))\r");
+        send(b"(hanoi2 3 'A 'C 'B)\r");
+        // -------- 8 Queens (count, variant A: global setq) --------
+        send(b"(defvar qc 0)\r");
+        send(b"(defun safe? (row placed dist) (cond ((null? placed) t) ((= (car placed) row) nil) ((= (abs (- (car placed) row)) dist) nil) (t (safe? row (cdr placed) (+ dist 1)))))\r");
+        send(b"(defun place-col (n placed col) (if (> col n) (setq qc (+ qc 1)) (try-rows n placed col 1)))\r");
+        send(b"(defun try-rows (n placed col row) (if (<= row n) (progn (if (safe? row placed 1) (place-col n (cons row placed) (+ col 1))) (try-rows n placed col (+ row 1)))))\r");
+        send(b"(defun queens (n) (setq qc 0) (place-col n nil 1) qc)\r");
+        send(b"(queens 4)\r");
+        send(b"(queens 8)\r");
+        // -------- 8 Queens (count, variant B: pure-functional threaded count) --------
+        send(b"(defun count-rows (n placed col row) (if (> row n) 0 (+ (if (safe? row placed 1) (count-cols n (cons row placed) (+ col 1)) 0) (count-rows n placed col (+ row 1)))))\r");
+        send(b"(defun count-cols (n placed col) (if (> col n) 1 (count-rows n placed col 1)))\r");
+        send(b"(defun queensF (n) (count-cols n nil 1))\r");
+        send(b"(queensF 4)\r");
+        send(b"(queensF 5)\r");
+        send(b"(queensF 6)\r");
+        // -------- 8 Queens (visualize) --------
+        send(b"(defun print-row (queen-col n c) (cond ((> c n) (newline)) ((= c queen-col) (display \"Q\") (print-row queen-col n (+ c 1))) (t (display \".\") (print-row queen-col n (+ c 1)))))\r");
+        send(b"(defun print-board (rows n) (dolist (r rows) (print-row r n 1)) (newline))\r");
+        send(b"(defun try-rows-show (n placed col row count) (if (> row n) count (try-rows-show n placed col (+ row 1) (if (safe? row placed 1) (place-col-show n (cons row placed) (+ col 1) count) count))))\r");
+        send(b"(defun place-col-show (n placed col count) (cond ((> col n) (print-board (reverse placed) n) (+ count 1)) (t (try-rows-show n placed col 1 count))))\r");
+        send(b"(defun show-queens (n) (place-col-show n nil 1 0))\r");
+        send(b"(show-queens 4)\r");
+        // -------- Quicksort (variant B: filter, run early to verify) --------
+        send(b"(defun qsortF (lst) (if (null? lst) nil (let ((pivot (car lst)) (rest (cdr lst))) (append (qsortF (filter (lambda (x) (< x pivot)) rest)) (cons pivot (qsortF (filter (lambda (x) (>= x pivot)) rest)))))))\r");
+        send(b"(qsortF (list 5 3 8 1 9 4 2 7))\r");
+        send(b"(qsortF (list 42 17 23 4 99 1 67 38 12 55))\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            waited_ms += 500;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(qsortF (list 42") && s.contains("(1 4 12 17 23 38 42 55 67 99)") {
+                break;
+            }
+            if waited_ms >= 180_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        let _ = std::fs::write("target/showcase_diag.txt", &got);
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_qsort_classic_two_recursive_appends() {
     // Regression test for the user-reported qsort bug:
     // `(qsort '(5 3 8 1 9 4 2 7))` returned `(5 7 8 9)` instead of

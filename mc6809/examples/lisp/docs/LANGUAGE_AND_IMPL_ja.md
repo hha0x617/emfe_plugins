@@ -105,7 +105,7 @@ Lisp 値は常に 16-bit のタグ付き word。
 | `$0000` | NIL_VAL | NIL (偽 / 空リスト) |
 | `$0002` | T_VAL | T (真) |
 | `$0003..$2FFF` (**odd**) | fixnum | bit 0 = 1、`(x-1)/2` が符号付き整数 (-16384..16383) |
-| `$4CC0..$6FFF` (**even**) | pair | cons セル、4 バイト単位 (car 2B + cdr 2B) |
+| `$4D80..$6FFF` (**even**) | pair | cons セル、4 バイト単位 (car 2B + cdr 2B) |
 | `$7000..$7DFF` | symbol | 可変長エントリ (next 2B + len 1B + name bytes) |
 | `$7E00..$7E7F` | builtin | primitive 関数の識別子 (BI_* tag) |
 | `$8E00..$8FFF` | char | `CHAR_BASE + 2*code` (stride 2 で fixnum と衝突回避) |
@@ -120,23 +120,114 @@ Lisp 値は常に 16-bit のタグ付き word。
 ### 2.2 メモリマップ (64 KB 中)
 
 ```
-$0100..$4BFF  code + initialised data  (~19 KB)
-$4CC0..$6FFF  pair pool      (~9 KB = 2256 cells, GC 対象)
-$7000..$7DFF  symbol pool    (3.5 KB, 永続)
-$7E00..$7E7F  builtin tag range (no RAM, 64 値分予約)
-$8000..$8BFF  pair mark bitmap (3 KB)
-$8C00..$8C7F  int32 mark     (128 B, 現状未使用)
-$8C80..$8DFF  未使用
-$8E00..$8FFF  char tag range (no RAM)
-$9000..$9FFF  string pool    (4 KB, bump only)
-$A000..$A1FF  TIB            (512 B, REPL 行バッファ)
-$A200..$AFFF  vector pool    (3.5 KB, bump only)
-$B000..$BFFF  int32 pool     (4 KB, bump only)
-$C000..$FEFE  hardware stack (16 KB)
-$FF00/$FF01   ACIA SR/DR
-$FF02/$FF03   tick MMIO (CPU cycle low 16 bit, read-only)
+$0000..$00FF  reset stub / 未使用         (256 B)
+$0100..$4D7F  コード + 初期化済データ    (~19.5 KB)
+$4D80..$6FFF  pair pool                   (8.5 KB = 2208 cells、GC 対象)
+$7000..$7DFF  symbol pool                 (3.5 KB、永続)
+$7E00..$7E7F  builtin tag range           (RAM 不在 — 論理 ID 64 個)
+$7E80..$7FFF  予約
+$8000..$8BFF  pair mark bitmap            (3 KB — 1 cell につき 1 byte)
+$8C00..$8C7F  int32 mark                  (128 B、現状未使用)
+$8C80..$8DFF  予約
+$8E00..$8FFF  char tag range              (RAM 不在 — 論理 ID 256 個、stride 2)
+$9000..$9FFF  string pool                 (4 KB、bump only)
+$A000..$A1FF  TIB                         (512 B — REPL 行バッファ)
+$A200..$AFFF  vector pool                 (3.5 KB、bump only)
+$B000..$BFFF  int32 box pool              (4 KB、bump only)
+$C000..$FEFE  hardware stack              (~16 KB、$FEFE から下に伸びる)
+$FF00/$FF01   ACIA SR / DR                (host I/O)
+$FF02/$FF03   tick MMIO                   (CPU cycle 下位 16 bit、RO)
 $FFFE/$FFFF   reset vector → cold
 ```
+
+64 KB のアドレス空間は、**Lisp 値の bit パターンそのものが種別を
+一意に識別する**ように仕切られている。ポインタが落ちる位置がそのまま
+種別なので、別途のタグワードは不要。これにより `eval` のディス
+パッチは数個の定数比較だけで済み、各値は 16 bit に収まる。
+
+#### なぜこの配置か
+
+- **`$0000..$00FF`** は 6809 の direct page (DP) 領域。本実装は DP
+  最適化を使わないので空けてある — scratch 用の余裕。
+- **`$0100..$4D7F`** はアセンブル済の interpreter 本体: opcode、
+  ROM 埋込 stdlib (`sl_*` の文字列群)、事前確保された symbol
+  scratch、GC ルート — 起動時に `lisp.s19` から読み込まれる全て。
+  **最大の単一ブロック**で、interpreter ソースが ~6,800 行ある
+  ためここを占有する。`PAIR_POOL` の開始位置はコードが伸びる
+  ごとに上がる; 直近の修正 (PR #18 → #19 → #20) で `$4C80` から
+  `$4D80` まで上がった。
+- **`$4D80..$6FFF` (pair pool)** が稼働メモリの主役。あらゆる
+  cons セル・closure・環境バインディングがここに住む。各セルは
+  4 byte (car 2B + cdr 2B)、**4 byte 整列が必須** — これにより
+  「bit 0 = 1 は fixnum」が確実な判定になる (pair pointer は常に
+  偶数かつ `$4D80` 以上)。mark-sweep GC はこの pool だけが対象、
+  *他は GC されない*。
+- **`$7000..$7DFF` (symbol pool)** は **永続** — intern された
+  symbol は解放されない。各エントリは `[next 2B][len 1B][name…]`、
+  next リンクで `sym_list` を頭とした単方向リスト。sweep 時は
+  完全にスキップ。
+- **`$7E00..$7E7F` (builtin tag)** は **論理空間のみ** — RAM は
+  マップされない。`BI_*` 定数 (例: `BI_CONS = $7E00`) は固有の
+  16-bit パターンで、`eval` は範囲チェックで識別する。primitive
+  を一級値として扱う (Lisp-1) ので `(filter zero? xs)` が `#'`
+  なしで動く。
+- **`$8000..$8BFF` (pair mark bitmap)** は pair cell 1 つにつき
+  1 byte を持つ; `gc_mark` で立て、`gc_sweep` で消す。1 bit/cell
+  ではなく 1 byte/cell にしたのは 3 KB のコスト引き換えに mark
+  テストを `tst ,x` 1 命令で済ませるため (shift / mask 不要)。
+- **`$8E00..$8FFF` (char tag)** も論理のみ — 文字コード `c` は
+  `$8E00 + 2*c` で表現、stride 2 で偶数アドレスを保つ。256 文字
+  × 2 byte = 512 個の論理 ID。
+- **`$9000..$9FFF` (string pool)** / **`$A200..$AFFF` (vectors)**
+  / **`$B000..$BFFF` (int32 boxes)** は全て **bump only**。一度
+  確保された string / vector / int32 はリセットまで居座る。これは
+  意図的な簡略化 — string と vector は典型的に定数 (リテラル
+  リスト、`(string->vector ...)`) で、3 領域追加 sweep するコスト
+  が大きすぎる。トレードオフは、長時間セッションで string churn
+  が多いと最終的に bump 上限に当たることだが、実用上 pair pool
+  枯渇のほうが先に来る。
+- **`$A000..$A1FF` (TIB)** = Terminal Input Buffer。REPL は 1 行
+  ずつ TIB に読み込み、`read_expr` がそこから parse。512 B あれば
+  長い stdlib `defmacro` の本体や `>>` 継続入力で複数行になる
+  REPL 式も収まる。
+- **`$C000..$FEFE` (hardware stack)** は `$FEFE` から下へ伸びる。
+  6809 の S レジスタはこの範囲を指す。関数のネスト呼出、`eval`
+  の再帰中に scratch を保護する `pshs`/`puls` (これが in-flight
+  pair pointer を conservative に root する経路 — §4.4 GC 参照)、
+  `(error ...)` の longjmp 用 anchor `repl_init_s` などが全て
+  この 16 KB を共有する。
+- **`$FF00..$FF03`** は MMIO: `$FF00`/`$FF01` の ACIA (status /
+  data、ホストとのシリアル) と `$FF02`/`$FF03` の tick カウンタ
+  (CPU cycle 下位 16 bit) — ベンチマークや `(seed (tick))` 用。
+- **`$FFFE/$FFFF`** は 6809 の reset vector。`cold:` を指す。
+
+#### 数字で見る
+
+| 領域 | バイト数 | セル数 / 最大要素数 | ライフタイム |
+|---|---:|---:|---|
+| Code + データ | ~19.5 KB | — | Static (`lisp.s19` から起動時にロード) |
+| pair pool | 8.5 KB | **2208 cons セル** | GC 対象、mark-sweep |
+| symbol pool | 3.5 KB | ~280 symbol (可変長) | 永続 |
+| string pool | 4 KB | bump only | 永続 (リセットまで) |
+| vector pool | 3.5 KB | bump only | 永続 (リセットまで) |
+| int32 pool | 4 KB | 1024 box (4 B each) | overflow 時に free-list 経由で再利用 |
+| TIB | 512 B | 1 入力行 | 各 REPL prompt |
+| stack | ~16 KB | 関数呼出のフレーム | 各呼出 |
+
+**おおよそ 64 KB の半分は interpreter 自身** (コード + 永続 symbol
++ bump pool 群)、残り半分が稼働中に動的に回転する状態 (pair pool
++ stack + TIB)。
+
+#### 「2208 pairs に何が収まるか」の感覚
+
+数字を実感するには: 8 クイーン (count) を `n = 8` で走らせると
+探索木のノードを ≈ 1600 万回訪問する。各ノードで素朴な非 tail
+再帰なら ~5 個の binding pair を確保 (≈ 8000 万回の確保)。
+self-TCO は現フレームを mutate して再利用するので、この探索は
+**pair pool 使用量を一定に抑えて**完走する。これが
+[SHOWCASE_ja.md](SHOWCASE_ja.md) §2 「8 クイーン」で、Variant A
+(末尾再帰の `try-rows`) は完走、Variant B (`+` の中の非末尾再帰)
+は pool 枯渇、と分岐する根本理由。
 
 ---
 

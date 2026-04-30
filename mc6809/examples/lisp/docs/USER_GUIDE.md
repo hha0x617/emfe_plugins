@@ -259,6 +259,11 @@ GY
 43
 ```
 
+### Algorithm showcase
+
+Tower of Hanoi, eight queens (count + visualize), and quicksort —
+paste-ready transcripts in [SHOWCASE.md](SHOWCASE.md).
+
 ---
 
 ## 8. Multi-line input
