@@ -173,8 +173,20 @@ Lisp で `n = 8` まで耐えられるのは片方だけ。
 10
 > (queensF 6)
 4
+```
+
+> ⚠ **次の行は意図的に pair pool を枯渇させて失敗の挙動を
+> 観察させるためのもの。** `alloc_pair` が枯渇すると現在の
+> 実装は `ALLOC: pool exhausted` を出した後、`bra ap_hang` で
+> **無限ループ**に入り、REPL に longjmp で戻る経路は無い。
+> **続きを読むにはエミュレータを reset する必要がある**。
+> ハングを避けたければこの paste はスキップして構わない —
+> 下の解説はそれ単体で読める。
+
+```
 > (queensF 8)
 ALLOC: pool exhausted
+   (REPL は無限ループ状態。続けるには emulator を reset)
 ```
 
 ### バリアント B が `n = 8` で吹っ飛ぶ理由

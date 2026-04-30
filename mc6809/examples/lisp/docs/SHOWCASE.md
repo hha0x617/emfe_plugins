@@ -180,8 +180,21 @@ caller sums them.
 10
 > (queensF 6)
 4
+```
+
+> ⚠ **The next line deliberately exhausts the pair pool to
+> demonstrate the failure mode.** When `alloc_pair` runs out,
+> the current implementation emits `ALLOC: pool exhausted` and
+> then enters an infinite loop (`bra ap_hang`) — there is no
+> longjmp back to the REPL. **You will have to reset the
+> emulator to continue reading.** Skip this paste if you'd
+> rather not hang the VM; the explanation below stands on its
+> own.
+
+```
 > (queensF 8)
 ALLOC: pool exhausted
+   (REPL is now hung; reset the emulator to recover)
 ```
 
 ### Why does Variant B blow up at `n = 8`?
