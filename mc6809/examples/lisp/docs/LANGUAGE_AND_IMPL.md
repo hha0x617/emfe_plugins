@@ -107,7 +107,7 @@ Every Lisp value is a 16-bit tagged word.
 | `$0000` | NIL_VAL | NIL (false / empty list) |
 | `$0002` | T_VAL | T (true) |
 | `$0003..$2FFF` **odd** | fixnum | bit 0 = 1; `(x-1)/2` is a signed 15-bit integer (-16384..16383) |
-| `$4CC0..$6FFF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
+| `$4D80..$6FFF` **even** | pair | 4-byte cons cell (car 2B + cdr 2B) |
 | `$7000..$7DFF` | symbol | variable-length entry (next 2B + len 1B + name bytes) |
 | `$7E00..$7E7F` | builtin | primitive-function tag ID |
 | `$8E00..$8FFF` | char | `CHAR_BASE + 2*code` (stride 2 avoids colliding with fixnum tag) |
@@ -123,23 +123,119 @@ during allocation.
 ### 2.2 64 KB memory layout
 
 ```
-$0100..$4BFF  code + initialised data  (~19 KB)
-$4CC0..$6FFF  pair pool      (~9 KB = 2256 cells, GC-managed)
-$7000..$7DFF  symbol pool    (3.5 KB, permanent)
-$7E00..$7E7F  builtin tag range (no RAM, 64 tag values reserved)
-$8000..$8BFF  pair mark bitmap (3 KB)
-$8C00..$8C7F  int32 mark     (128 B, currently unused)
+$0000..$00FF  reset stub / unused        (256 B)
+$0100..$4D7F  code + initialised data    (~19.5 KB)
+$4D80..$6FFF  pair pool                  (8.5 KB = 2208 cells, GC-managed)
+$7000..$7DFF  symbol pool                (3.5 KB, permanent)
+$7E00..$7E7F  builtin tag range          (no RAM — 64 logical IDs)
+$7E80..$7FFF  reserved
+$8000..$8BFF  pair mark bitmap           (3 KB — one bit per cell)
+$8C00..$8C7F  int32 mark                 (128 B, currently unused)
 $8C80..$8DFF  reserved
-$8E00..$8FFF  char tag range (no RAM)
-$9000..$9FFF  string pool    (4 KB, bump only)
-$A000..$A1FF  TIB            (512 B, REPL line buffer)
-$A200..$AFFF  vector pool    (3.5 KB, bump only)
-$B000..$BFFF  int32 pool     (4 KB, bump only)
-$C000..$FEFE  hardware stack (16 KB)
-$FF00/$FF01   ACIA SR/DR
-$FF02/$FF03   tick MMIO (CPU cycle low 16 bits, read-only)
+$8E00..$8FFF  char tag range             (no RAM — 256 logical IDs, stride 2)
+$9000..$9FFF  string pool                (4 KB, bump-only)
+$A000..$A1FF  TIB                        (512 B — REPL line buffer)
+$A200..$AFFF  vector pool                (3.5 KB, bump-only)
+$B000..$BFFF  int32 box pool             (4 KB, bump-only)
+$C000..$FEFE  hardware stack             (~16 KB, grows down from $FEFE)
+$FF00/$FF01   ACIA SR / DR               (host I/O)
+$FF02/$FF03   tick MMIO                  (CPU cycle low 16 bits, RO)
 $FFFE/$FFFF   reset vector → cold
 ```
+
+The 64 KB address space is divided so that **every Lisp value's bit
+pattern uniquely identifies its kind**: where the pointer lands tells
+you what it points at, no separate type tag word required. That
+makes `eval`'s dispatch cheap (compare against a few constants) and
+keeps each value tight at 16 bits.
+
+#### Why the regions sit where they do
+
+- **`$0000..$00FF`** is the 6809's direct page (DP) area. We don't
+  use DP optimisations, so this slot is essentially unused — kept
+  free as scratch headroom.
+- **`$0100..$4D7F`** holds the assembled interpreter image: opcodes,
+  the ROM-embedded stdlib strings (`sl_*`), pre-allocated symbol
+  scratch, GC roots — everything that comes from `lisp.s19` at boot.
+  **It's the largest single chunk** because the interpreter is a
+  ~6,800-line assembly source. `pair_next`'s starting address
+  (`PAIR_POOL`) is bumped up whenever the code region grows; recent
+  fixes (PR #18 → #19 → #20) pushed it from `$4C80` to `$4D80`.
+- **`$4D80..$6FFF` (pair pool)** dominates working memory.
+  Every cons cell, every closure, every environment binding lives
+  here. Cells are 4 bytes (car 2 B + cdr 2 B) and **must** start at
+  a 4-byte-aligned address — that's what makes `bit 0 = 1` reliably
+  identify a fixnum (pair pointers are always even and at least
+  `$4D80`). Mark-sweep GC reclaims this pool; *nothing else* is
+  GC'd in this implementation.
+- **`$7000..$7DFF` (symbol pool)** is **permanent** — interned
+  symbols are never freed. Each entry is `[next 2B][len 1B][name…]`,
+  with the next-link forming a single linked list rooted at
+  `sym_list`. The sweep pass skips this pool entirely.
+- **`$7E00..$7E7F` (builtin tags)** is **logical only** — no RAM
+  is mapped here. Each `BI_*` constant (e.g. `BI_CONS = $7E00`) is
+  a unique 16-bit pattern that `eval` recognises by range check.
+  Treating builtins as first-class values (Lisp-1) means
+  `(filter zero? xs)` works without `#'`.
+- **`$8000..$8BFF` (pair mark bitmap)** carries one byte per pair
+  cell, set during `gc_mark` and cleared during `gc_sweep`. The
+  byte-per-cell layout (rather than one bit per cell) costs 3 KB
+  but makes mark-test code a single `tst ,x` — no shift / mask.
+- **`$8E00..$8FFF` (char tags)** is again logical only — character
+  code `c` is encoded as `$8E00 + 2*c`, stride 2 keeping it on
+  even addresses. 256 chars × 2 bytes = 512 logical IDs.
+- **`$9000..$9FFF` (string pool)**, **`$A200..$AFFF` (vectors)**,
+  and **`$B000..$BFFF` (int32 boxes)** are all **bump-only**.
+  Once a string / vector / int32 is allocated, it stays put until
+  reset. This is a deliberate simplification — strings and vectors
+  are typically constants (literal lists, `(string->vector ...)`),
+  and a separate sweep across three more regions would dominate
+  the GC cost. The trade-off is that long sessions with a lot of
+  string churn eventually hit the bump limit; in practice the REPL
+  reaches the pair-pool exhaustion first.
+- **`$A000..$A1FF` (TIB)** = Terminal Input Buffer. The REPL reads
+  one line at a time into TIB, then `read_expr` parses from it.
+  512 B is enough for a long stdlib `defmacro` body or a
+  multi-line REPL expression with `>>` continuation.
+- **`$C000..$FEFE` (hardware stack)** grows down from `$FEFE`. The
+  6809 S register lives in this range. Nested function calls,
+  `pshs`/`puls` of scratch state across `eval` recursion (this is
+  what conservatively roots in-flight pair pointers — see
+  §4.4 GC), and `repl_init_s` (a longjmp anchor for `(error ...)`)
+  all share this 16 KB.
+- **`$FF00..$FF03`** are MMIO: the ACIA at `$FF00`/`$FF01` (status
+  / data, host serial), and the tick counter at `$FF02`/`$FF03`
+  giving a low-16-bits view of the CPU cycle counter for
+  benchmarking and `(seed (tick))`.
+- **`$FFFE/$FFFF`** is the 6809 reset vector, pointed at `cold:`.
+
+#### Putting numbers on it
+
+| Region | Bytes | Cells / max items | Lifetime |
+|---|---:|---:|---|
+| Code + data | ~19.5 KB | — | Static (loaded from `lisp.s19`) |
+| Pair pool | 8.5 KB | **2208 cons cells** | GC-managed, mark-sweep |
+| Symbol pool | 3.5 KB | ~280 symbols (var-len) | Permanent |
+| String pool | 4 KB | bump only | Permanent (until reset) |
+| Vector pool | 3.5 KB | bump only | Permanent (until reset) |
+| int32 pool | 4 KB | 1024 boxes (4 B each) | Free-list reused on overflow |
+| TIB | 512 B | 1 input line | Per REPL prompt |
+| Stack | ~16 KB | nested call frames | Per call |
+
+Roughly half of the 64 KB is the interpreter itself (code +
+permanent symbols + bump pools); the other half is dynamic state
+(pair pool + stack + TIB) that turns over during execution.
+
+#### What "fits" in 2208 pairs
+
+A useful way to ground the figure: the 8-Queens count search at
+`n = 8` visits ≈ 16 million tree nodes, each of which would
+allocate ~5 binding pairs in a naive non-tail recursion (≈ 80
+million allocations). Self-TCO mutates the existing frame instead
+and the search runs in **constant pair-pool footprint**. This is
+why §2 "Eight Queens" in [SHOWCASE.md](SHOWCASE.md) shows
+Variant A (tail-recursive `try-rows`) finishing while Variant B
+(non-tail `+`-driven recursion) exhausts the pool.
 
 ---
 

@@ -223,6 +223,12 @@ tail position に座っているので self-TCO が利き、現フレームを
 教訓 — 固定 pool の Lisp では「再帰呼出が exactly どこに座って
 いるか」がスケールするか否かを左右する。
 
+> pool の数字 (なぜ 2208 cell なのか / 64 KB に他に何が同居して
+> いるか / interpreter が code / pair / symbol / string / vector
+> / int32 / stack をどう 16-bit アドレス空間に詰めているか) は
+> [LANGUAGE_AND_IMPL_ja.md §2.2](LANGUAGE_AND_IMPL_ja.md#22-メモリマップ-64-kb-中)
+> を参照。
+
 ---
 
 ## 3. 8 クイーン — 全解を盤面表示

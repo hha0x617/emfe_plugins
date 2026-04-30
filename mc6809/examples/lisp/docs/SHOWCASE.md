@@ -231,6 +231,12 @@ non-tail recursion exhausts the 2208-cell pair pool.
 The lesson — in a fixed-pool Lisp like this, "where exactly does
 the recursive call sit?" decides whether the code scales.
 
+> For the actual numbers behind the pool — why "2208 cells",
+> what else lives in the 64 KB, and how the interpreter packs
+> code / pair / symbol / string / vector / int32 / stack into a
+> single 16-bit address space — see
+> [LANGUAGE_AND_IMPL.md §2.2](LANGUAGE_AND_IMPL.md#22-64-kb-memory-layout).
+
 ---
 
 ## 3. Eight Queens — visualize every solution
