@@ -139,8 +139,21 @@ Forth は他のどの実装とも同じ数値を返す。
 
 ## 3. クイックソート
 
-Lomuto partition による in-place 配列クイックソート。`@` と `!` で
-直接 `ARR[lo..hi]` を操作し、リスト確保も GC も無し。完全な命令型。
+Lomuto partition による in-place 配列クイックソート。Forth で書ける
+QSort の **一つの選択肢** であって、後述するように他にも道はある。
+それでも in-place を採るのは、Forth に GC が無い以上これが **最も
+自然** だから。
+
+### 代替案 — なぜ in-place が勝つか
+
+| 方式 | Pros | Cons |
+|---|---|---|
+| **配列 in-place (採用)** | メモリ最小、追加確保不要、`CELLS @ !` の標準イディオム、GC 不在環境でも安全 | Lomuto は安定でない、スタック juggling、index 演算が in-bounds に収まる前提 |
+| **cons セル連結リスト** (手作りの `HERE 2! 4 ALLOT`) | Lisp に近い書き味、再帰 partition が短く綺麗 | Forth に GC が無いため、再帰 1 回ごとに dictionary が永久に伸びる。2 回目の呼出で領域が枯渇する可能性 |
+| **auxiliary buffer + マージソート** | 安定ソートにできる、partition logic が単純 | メモリ 2 倍、`CREATE` で事前に固定サイズを取る必要 |
+
+3 つのうち GC 不在の Forth で **繰返し** 走らせられる (free-list を
+手作りせずに) のは最初のものだけなので、本章は in-place 方式で進める。
 
 ### コード
 

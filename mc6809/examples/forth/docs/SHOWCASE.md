@@ -145,9 +145,22 @@ hits the same numbers as any other implementation.
 
 ## 3. Quicksort
 
-In-place array quicksort with Lomuto partition. Operates directly
-on `ARR[lo..hi]` using `@` and `!` — no list allocation, no GC,
-fully imperative.
+In-place array quicksort with Lomuto partition. This is **one** way
+to write quicksort in Forth — there are alternatives, summarised
+below — but in-place is the most natural fit because Forth has no
+garbage collector.
+
+### Alternatives — and why in-place wins
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **In-place array (chosen)** | Minimum memory, no allocation needed; standard `CELLS @ !` idiom; safe under no-GC | Lomuto is unstable; stack juggling; index arithmetic must stay in-bounds |
+| **Linked list of cons cells** (manually `HERE 2! 4 ALLOT`) | Reads close to Lisp; recursive partition is short and pretty | Forth has no GC — every recursive call permanently grows the dictionary, and a second invocation may exhaust RAM |
+| **Auxiliary buffer + merge sort** | Can be made stable; partition logic is simpler | Doubles memory; needs a sized `CREATE` buffer reserved up front |
+
+Of these three, only the first runs **repeatably** in a no-GC Forth
+without manual free-list machinery, so the rest of this section
+follows the in-place path.
 
 ### Code
 
