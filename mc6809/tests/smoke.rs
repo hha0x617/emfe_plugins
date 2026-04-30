@@ -892,6 +892,150 @@ fn breakpoint_condition_skips_when_false_via_run() {
 }
 
 #[test]
+#[ignore = "diagnostic — runs every SHOWCASE.md sample end-to-end"]
+fn forth_showcase_all_samples_diag() {
+    // Exercises all 5 chapters of examples/forth/docs/SHOWCASE.md
+    // through the actual emulator.  Marked #[ignore] so CI stays
+    // fast; run manually when SHOWCASE samples or interpreter
+    // change:  cargo test forth_showcase_all_samples_diag -- --ignored --nocapture
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/forth/forth.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("ready") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+        };
+        // ---- Chapter 1: Tower of Hanoi ----
+        send(b"VARIABLE FROM-PEG  VARIABLE DEST-PEG  VARIABLE VIA-PEG\r");
+        send(b": SHOW-MOVE  ( n -- )  .\" Move disk \" . .\" from \" FROM-PEG @ EMIT SPACE .\" to \" DEST-PEG @ EMIT CR ;\r");
+        send(b": SWAP-DV  DEST-PEG @ VIA-PEG @ DEST-PEG ! VIA-PEG ! ;\r");
+        send(b": SWAP-FV  FROM-PEG @ VIA-PEG @ FROM-PEG ! VIA-PEG ! ;\r");
+        send(b": HANOI  DUP 0> IF SWAP-DV DUP 1- RECURSE SWAP-DV DUP SHOW-MOVE SWAP-FV DUP 1- RECURSE SWAP-FV THEN DROP ;\r");
+        send(b"CHAR A FROM-PEG !  CHAR C DEST-PEG !  CHAR B VIA-PEG !\r");
+        send(b"3 HANOI\r");
+        // ---- Chapter 2: 8-Queens ----
+        send(b"VARIABLE NQ  VARIABLE QCNT\r");
+        send(b"CREATE QROW 16 CELLS ALLOT\r");
+        send(b"VARIABLE COL-V  VARIABLE ROW-V  VARIABLE CFL\r");
+        send(b": ABS_  DUP 0< IF NEGATE THEN ;\r");
+        send(b": GET-ROW  CELLS QROW + @ ;\r");
+        send(b": BAD-ROW?  GET-ROW ROW-V @ = ;\r");
+        send(b": BAD-DIAG?  DUP GET-ROW ROW-V @ - ABS_  SWAP COL-V @ - ABS_  = ;\r");
+        send(b": AT-CONFL?  DUP BAD-ROW? IF DROP TRUE EXIT THEN BAD-DIAG? ;\r");
+        send(b": SAFE?\r");
+        send(b"  COL-V @ 0= IF TRUE EXIT THEN  0 CFL !\r");
+        send(b"  COL-V @ 0 DO I AT-CONFL? IF TRUE CFL ! LEAVE THEN LOOP  CFL @ 0= ;\r");
+        send(b": PLACE-COL\r");
+        send(b"  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN\r");
+        send(b"  NQ @ 0 DO\r");
+        send(b"    DUP COL-V !  I ROW-V !\r");
+        send(b"    SAFE? IF DUP CELLS QROW + I SWAP !  DUP 1+ RECURSE THEN\r");
+        send(b"  LOOP  DROP ;\r");
+        send(b": QUEENS  NQ !  0 QCNT !  0 PLACE-COL  QCNT @ ;\r");
+        send(b"4 QUEENS .\r");
+        send(b"8 QUEENS .\r");
+        // ---- Chapter 3: Quicksort ----
+        send(b"16 CONSTANT NN\r");
+        send(b"CREATE ARR NN CELLS ALLOT\r");
+        send(b": ARR@  CELLS ARR + @ ;\r");
+        send(b": ARR!  CELLS ARR + ! ;\r");
+        send(b"VARIABLE QS-TMP  VARIABLE QS-PIV  VARIABLE QS-PI  VARIABLE QS-LO  VARIABLE QS-HI\r");
+        send(b": SWAP-CELLS  OVER ARR@ QS-TMP !  DUP ARR@ ROT ARR!  QS-TMP @ SWAP ARR! ;\r");
+        send(b": PARTITION\r");
+        send(b"  QS-HI !  QS-LO !\r");
+        send(b"  QS-HI @ ARR@ QS-PIV !  QS-LO @ 1- QS-PI !\r");
+        send(b"  QS-HI @ QS-LO @ DO\r");
+        send(b"    I ARR@ QS-PIV @ > 0= IF QS-PI @ 1+ QS-PI !  QS-PI @ I SWAP-CELLS THEN\r");
+        send(b"  LOOP\r");
+        send(b"  QS-PI @ 1+ DUP QS-HI @ SWAP-CELLS ;\r");
+        send(b": QSORT-R  BEGIN 2DUP < WHILE 2DUP PARTITION >R SWAP R@ 1- RECURSE R> 1+ SWAP REPEAT 2DROP ;\r");
+        send(b": LOAD-TEST  5 0 ARR! 3 1 ARR! 8 2 ARR! 1 3 ARR!  9 4 ARR! 4 5 ARR! 2 6 ARR! 7 7 ARR! ;\r");
+        send(b": SHOW-N  0 DO I ARR@ . LOOP ;\r");
+        send(b"LOAD-TEST  0 7 QSORT-R  8 SHOW-N CR\r");
+        // ---- Chapter 4: CREATE/DOES> ----
+        send(b": MYARRAY  CREATE CELLS ALLOT  DOES> SWAP CELLS + ;\r");
+        send(b"5 MYARRAY GRID\r");
+        send(b"42 0 GRID !  99 1 GRID !\r");
+        send(b"0 GRID @ .  1 GRID @ . CR\r");
+        // ---- Chapter 5: BASE ----
+        send(b"DECIMAL 255 .  255 HEX .  DECIMAL CR\r");
+        send(b"42 2 BASE ! .  DECIMAL CR\r");
+        // Wait for everything to flush.
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            waited_ms += 1000;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            // Last line will produce "101010" (42 in binary) followed by ok.
+            if s.contains("101010") {
+                break;
+            }
+            if waited_ms >= 240_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        let _ = std::fs::write("target/forth_showcase_diag.txt", &got);
+        // Spot-check key outputs from each chapter.
+        assert!(
+            got.contains("Move disk 1 from A to C"),
+            "Hanoi sample missing: {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n2  ok"),
+            "queens(4) should be 2: {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n92  ok"),
+            "queens(8) should be 92: {:?}",
+            got
+        );
+        assert!(
+            got.contains("1 2 3 4 5 7 8 9"),
+            "qsort sample missing: {:?}",
+            got
+        );
+        assert!(
+            got.contains("42 99"),
+            "CREATE/DOES> sample missing 42 99: {:?}",
+            got
+        );
+        assert!(
+            got.contains("FF"),
+            "BASE / HEX 255 = FF missing: {:?}",
+            got
+        );
+        assert!(
+            got.contains("101010"),
+            "BASE / binary 42 = 101010 missing: {:?}",
+            got
+        );
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+
+#[test]
 fn forth_colon_define_and_call() {
     // Define `: double dup + ;`, then evaluate `3 double .` — should print "6 ".
     let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());

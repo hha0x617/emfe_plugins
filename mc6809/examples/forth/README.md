@@ -35,6 +35,7 @@ Hha Forth for MC6809 ready.
 |---|---|
 | **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)** | Build & run, REPL behaviour, all built-in words, examples |
 | **[docs/LANGUAGE_AND_IMPL.md](docs/LANGUAGE_AND_IMPL.md)** | Language spec (ITC threading, dictionary layout, inner interpreter) and implementation notes, including code-size metrics |
+| **[docs/SHOWCASE.md](docs/SHOWCASE.md)** | Five algorithms — Tower of Hanoi, 8-Queens, Quicksort, plus Forth-specific `CREATE`/`DOES>` and `BASE` switching — as paste-ready REPL transcripts with idiom commentary |
 
 ## 日本語
 
