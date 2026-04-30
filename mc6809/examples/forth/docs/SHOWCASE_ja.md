@@ -106,6 +106,10 @@ VARIABLE COL-V  VARIABLE ROW-V  VARIABLE CFL
 2  ok
 > 5 QUEENS .
 10  ok
+> 6 QUEENS .
+4  ok
+> 7 QUEENS .
+40  ok
 > 8 QUEENS .
 92  ok
 ```

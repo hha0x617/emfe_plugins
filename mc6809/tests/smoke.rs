@@ -947,6 +947,9 @@ fn forth_showcase_all_samples_diag() {
         send(b"  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN  NQ @ 0 DO  DUP COL-V !  I ROW-V !  SAFE? IF DUP CELLS QROW + I SWAP !  DUP 1+ RECURSE THEN  LOOP  DROP ;\r");
         send(b": QUEENS  NQ !  0 QCNT !  0 PLACE-COL  QCNT @ ;\r");
         send(b"4 QUEENS .\r");
+        send(b"5 QUEENS .\r");
+        send(b"6 QUEENS .\r");
+        send(b"7 QUEENS .\r");
         send(b"8 QUEENS .\r");
         // ---- Chapter 3: Quicksort ----
         send(b"16 CONSTANT NN\r");
@@ -998,6 +1001,21 @@ fn forth_showcase_all_samples_diag() {
         assert!(
             got.contains("\r\n2  ok"),
             "queens(4) should be 2: {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n10  ok"),
+            "queens(5) should be 10: {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n4  ok"),
+            "queens(6) should be 4 (the canonical dip): {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n40  ok"),
+            "queens(7) should be 40: {:?}",
             got
         );
         assert!(
