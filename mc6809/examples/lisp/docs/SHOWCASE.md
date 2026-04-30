@@ -110,7 +110,13 @@ A few notes worth flagging:
 Backtracking search: place a queen on each column `1..n` such that
 no two queens share a row or a diagonal. Count all valid placements.
 
-### Code
+This algorithm gives a particularly clear demonstration of how the
+**shape of the recursion** interacts with the interpreter's TCO
+support — the same answer can be computed with either a global
+counter or a pure functional return chain, but only one of those
+scales to `n = 8` in this small-pool Lisp.
+
+### Variant A — global counter via `setq`
 
 ```lisp
 (defvar qc 0)
@@ -136,8 +142,6 @@ no two queens share a row or a diagonal. Count all valid placements.
 (defun queens (n) (setq qc 0) (place-col n nil 1) qc)
 ```
 
-### REPL transcript
-
 ```
 > (queens 4)
 2
@@ -147,15 +151,85 @@ no two queens share a row or a diagonal. Count all valid placements.
 92
 ```
 
-### Points
+### Variant B — pure functional, count threaded through `+`
 
-- **`cond` with multi-body clauses** — `safe?` walks back through
-  the placed columns, checking same-row and diagonal collisions in
-  one tail-recursive sweep.
-- **Mutual recursion** — `place-col` and `try-rows` call each
-  other; `try-rows` is also self-tail-recursive.
-- **Global counter** via `defvar` + `setq`. Easy to reason about,
-  and the recursion preserves it across all branches.
+No global mutation — each recursive call returns a count and the
+caller sums them.
+
+```lisp
+;; reuse safe? from variant A
+
+(defun count-rows (n placed col row)
+  (if (> row n) 0
+      (+ (if (safe? row placed 1)
+             (count-cols n (cons row placed) (+ col 1))
+             0)
+         (count-rows n placed col (+ row 1)))))
+
+(defun count-cols (n placed col)
+  (if (> col n) 1
+      (count-rows n placed col 1)))
+
+(defun queensF (n) (count-cols n nil 1))
+```
+
+```
+> (queensF 4)
+2
+> (queensF 5)
+10
+> (queensF 6)
+4
+> (queensF 8)
+ALLOC: pool exhausted
+```
+
+### Why does Variant B blow up at `n = 8`?
+
+Look at where the recursive call sits in `count-rows`:
+
+```lisp
+(+ (if ... (count-cols ...) 0)         ; recurse #1
+   (count-rows n placed col (+ row 1)))  ; recurse #2
+```
+
+Both recursive calls are **inside** `+`. Neither is in tail
+position — the result has to come back so `+` can sum it. The
+interpreter's self-TCO can therefore not collapse the call into a
+mutation of the current frame, so every call allocates fresh
+binding pairs in the pair pool.
+
+Now contrast with Variant A's `try-rows`:
+
+```lisp
+(progn
+  (if (safe? row placed 1)
+      (place-col n (cons row placed) (+ col 1)))
+  (try-rows n placed col (+ row 1)))   ; ← LAST form in body, tail
+```
+
+The recursive `(try-rows ...)` call is the **last form** in the
+`progn` body. It is in tail position; self-TCO mutates the frame
+in place and the loop allocates nothing per iteration. The
+backtracking through `place-col` does allocate (mutual recursion,
+non-tail), but the *sweep across rows* doesn't.
+
+For small `n` this difference is invisible — the extra allocations
+fit. At `n = 8` the search tree explodes (≈ 16 million nodes
+visited overall, even though only 92 succeed) and Variant B's
+non-tail recursion exhausts the 2208-cell pair pool.
+
+### Style comparison
+
+| Aspect | Variant A | Variant B |
+|---|---|---|
+| **State** | Global `qc` mutated via `setq` | Threaded count, no globals |
+| **Recursion shape** | `try-rows` last form is tail call → self-TCO applies | Both recursions sit inside `+` → no TCO |
+| **Memory at `n = 8`** | Bounded — TCO reuses frame | Linear in search-tree depth — exhausts pool |
+| **Reads as** | "Imperative loop + counter" | "Mathematical recurrence" |
+
+The lesson — in a fixed-pool Lisp like this, "where exactly does
+the recursive call sit?" decides whether the code scales.
 
 ---
 
@@ -231,11 +305,13 @@ Q...
 
 ## 4. Quicksort
 
-Classic divide-and-conquer using `let` for multiple bindings,
-`dolist` + `setq` accumulators for the partition step, and `append`
-to join the two recursive sorts.
+Classic divide-and-conquer. Same axis as queens above — imperative
+partition vs. functional partition.
 
-### Code
+### Variant A — `dolist` + `setq` accumulators
+
+The partition step walks the rest of the list once, pushing each
+element onto either `less` or `greater` via `setq`.
 
 ```lisp
 (defun qsort (lst)
@@ -251,8 +327,6 @@ to join the two recursive sorts.
       (append (qsort less) (cons pivot (qsort greater))))))
 ```
 
-### REPL transcript
-
 ```
 > (qsort (list 5 3 8 1 9 4 2 7))
 (1 2 3 4 5 7 8 9)
@@ -260,16 +334,74 @@ to join the two recursive sorts.
 (1 4 12 17 23 38 42 55 67 99)
 ```
 
-### Points
+### Variant B — `filter` + `lambda`
 
-- **`let` with multiple parallel bindings** — all four are
-  evaluated against the outer environment, then bound at once.
-- **Dolist + setq accumulation** — the partition step uses two
-  list accumulators (`less`, `greater`) updated in-place by `setq`.
-- **Two recursive calls flanking `append`** — the canonical
-  divide-and-conquer shape. This is exactly the pattern that
-  previously hit interpreter bugs around builtin reentrancy and
-  GC root coverage; it now runs cleanly.
+Two filters with predicate lambdas that close over `pivot`. No
+mutation, but each `filter` call traverses `rest` independently.
+
+```lisp
+(defun qsortF (lst)
+  (if (null? lst) nil
+    (let ((pivot (car lst))
+          (rest (cdr lst)))
+      (append (qsortF (filter (lambda (x) (< x pivot)) rest))
+              (cons pivot
+                    (qsortF (filter (lambda (x) (>= x pivot)) rest)))))))
+```
+
+```
+> (qsortF (list 5 3 8 1 9 4 2 7))
+(1 2 3 4 5 7 8 9)
+> (qsortF (list 42 17 23 4 99 1 67 38 12 55))
+(1 4 12 17 23 38 42 55 67 99)
+```
+
+### Style comparison
+
+| Aspect | Variant A | Variant B |
+|---|---|---|
+| **Partition** | One pass via `dolist` + `setq` | Two `filter` passes (one per side) |
+| **State** | Local mutation (`setq`) | Pure functional |
+| **Closures** | None | Two `lambda`s per call (capture `pivot`) |
+| **Reads as** | "Loop and bucket" | "Definition by predicate" |
+
+### Why both work — and where the trap lurks
+
+Both variants run cleanly on the lists you'd realistically sort by
+hand at the REPL. They look like they should hit the same
+non-TCO trap that queens Variant B did — `(append (qsort ...)
+(cons pivot (qsort ...)))` is *not* in tail position either!
+
+So why do they survive? Because:
+
+- The partition splits the input in half at each level (assuming
+  reasonable pivots), so the recursion depth is **O(log n)**, not
+  the full search-tree depth that queens has.
+- Each `qsort` call returns a list that is immediately consumed by
+  `append` / `cons` and becomes garbage. The pool gets reclaimed
+  between recursive returns.
+- The dramatic case for queens was a 16-million-node search; even
+  a 30-element list here barely scratches the pool.
+
+In other words, the same "non-tail recursion" structural risk is
+present here — it just doesn't get triggered by realistic input.
+On a worst-case sorted-or-reversed list (where every call peels
+off only one element, making the recursion depth linear in the
+list length), Variant B would degrade much faster than Variant A
+because each level allocates two extra closures and walks `rest`
+twice.
+
+This pair is also where the interpreter previously had two
+serious bugs:
+
+- `ev_append` non-reentrancy: the canonical
+  `(append (qsort less) (cons pivot (qsort greater)))` form
+  silently dropped the first argument before [PR #20].
+- Several scratch globals used by `let` / `dolist` / `append` /
+  `apply` were not in the GC root set, leading to corrupted
+  expansions under heavy macro load before [PR #19].
+
+Both are fixed; this section runs as a small canary.
 
 ---
 

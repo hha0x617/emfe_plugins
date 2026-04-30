@@ -105,7 +105,12 @@ NIL
 バックトラッキング探索で、`1..n` の各列に互いに脅かし合わない位置
 へクイーンを置き、その解の数を数える。
 
-### コード
+このアルゴリズムは、**再帰呼出の置き場所が処理系の TCO とどう絡む
+か**を非常に分かりやすく見せてくれる例。同じ答えを大域カウンタの
+変更でも、純関数的な戻り値の連鎖でも書けるが、この小規模 pool の
+Lisp で `n = 8` まで耐えられるのは片方だけ。
+
+### バリアント A — `setq` による大域カウンタ
 
 ```lisp
 (defvar qc 0)
@@ -131,8 +136,6 @@ NIL
 (defun queens (n) (setq qc 0) (place-col n nil 1) qc)
 ```
 
-### REPL トランスクリプト
-
 ```
 > (queens 4)
 2
@@ -142,14 +145,83 @@ NIL
 92
 ```
 
-### 解説ポイント
+### バリアント B — 純関数的、`+` でカウントを持ち回す
 
-- **`cond` の multi-body 節** — `safe?` は配置済の列を逆順に辿り、
-  同一行・斜めの衝突を一つの末尾再帰スイープで判定。
-- **相互再帰** — `place-col` と `try-rows` がお互いを呼び合う。
-  `try-rows` 自体も自己末尾再帰。
-- **大域カウンタ** を `defvar` + `setq` で持つ。シンプルで分かり
-  やすく、再帰の全分岐で値が保たれる。
+大域変更なし — 各再帰呼出がカウントを返し、呼出元が合算する。
+
+```lisp
+;; safe? はバリアント A のまま再利用
+
+(defun count-rows (n placed col row)
+  (if (> row n) 0
+      (+ (if (safe? row placed 1)
+             (count-cols n (cons row placed) (+ col 1))
+             0)
+         (count-rows n placed col (+ row 1)))))
+
+(defun count-cols (n placed col)
+  (if (> col n) 1
+      (count-rows n placed col 1)))
+
+(defun queensF (n) (count-cols n nil 1))
+```
+
+```
+> (queensF 4)
+2
+> (queensF 5)
+10
+> (queensF 6)
+4
+> (queensF 8)
+ALLOC: pool exhausted
+```
+
+### バリアント B が `n = 8` で吹っ飛ぶ理由
+
+`count-rows` の再帰呼出がどこに座っているか見てみる:
+
+```lisp
+(+ (if ... (count-cols ...) 0)         ; 再帰 #1
+   (count-rows n placed col (+ row 1)))  ; 再帰 #2
+```
+
+両方の再帰呼出が `+` の **内側** にある。どちらも tail position
+ではない — 結果が戻ってきて `+` で合算される必要があるため。
+処理系の self-TCO は呼出を現フレームの mutate に潰せず、毎回の
+呼出で binding pair を pair pool に新規確保する。
+
+バリアント A の `try-rows` と対比してみる:
+
+```lisp
+(progn
+  (if (safe? row placed 1)
+      (place-col n (cons row placed) (+ col 1)))
+  (try-rows n placed col (+ row 1)))   ; ← progn の最後の form、tail
+```
+
+再帰呼出 `(try-rows ...)` は `progn` 本体の **最後の form**。
+tail position に座っているので self-TCO が利き、現フレームを
+書き換えて再利用するため、行を走査するループは何も確保しない。
+`place-col` 経由のバックトラッキング自体は確保するが、ともあれ
+*行スイープ* は確保しない。
+
+小さな `n` ではこの差は見えない — 余分な確保が pool に収まるから。
+`n = 8` では探索木が爆発的に広がり (成功は 92 だが訪問ノードは
+1600 万近く)、バリアント B の非 tail 再帰は 2208 セル pool を
+枯らす。
+
+### スタイル比較
+
+| 観点 | バリアント A | バリアント B |
+|---|---|---|
+| **状態管理** | 大域 `qc` を `setq` で書換 | カウントを持ち回し、大域なし |
+| **再帰の形** | `try-rows` の最後の form は tail call → self-TCO 可 | 再帰が `+` の中 → TCO 不可 |
+| **`n = 8` のメモリ** | 一定 — TCO がフレーム再利用 | 探索木深さに比例 — pool 枯渇 |
+| **読み筋** | 「命令的ループ + カウンタ」 | 「数学的再帰式」 |
+
+教訓 — 固定 pool の Lisp では「再帰呼出が exactly どこに座って
+いるか」がスケールするか否かを左右する。
 
 ---
 
@@ -222,10 +294,13 @@ Q...
 
 ## 4. クイックソート
 
-古典的 divide-and-conquer。`let` で複数バインディング、`dolist` +
-`setq` で分割相のアキュムレータ、`append` で 2 つの再帰結果を連結。
+古典的 divide-and-conquer。queens と同じ軸 — 命令的な分割 vs.
+関数的な分割。
 
-### コード
+### バリアント A — `dolist` + `setq` アキュムレータ
+
+分割相は残りリストを 1 回走査し、`setq` で各要素を `less` か
+`greater` に振り分ける。
 
 ```lisp
 (defun qsort (lst)
@@ -241,8 +316,6 @@ Q...
       (append (qsort less) (cons pivot (qsort greater))))))
 ```
 
-### REPL トランスクリプト
-
 ```
 > (qsort (list 5 3 8 1 9 4 2 7))
 (1 2 3 4 5 7 8 9)
@@ -250,15 +323,68 @@ Q...
 (1 4 12 17 23 38 42 55 67 99)
 ```
 
-### 解説ポイント
+### バリアント B — `filter` + `lambda`
 
-- **`let` の並列バインディング** — 4 つの初期化式は全て外側の環境
-  で評価され、まとめて束縛される。
-- **dolist + setq による蓄積** — 分割相は 2 本のリストアキュムレ
-  ータ (`less` / `greater`) を `setq` でその場更新。
-- **append を挟んだ 2 つの再帰呼出** — divide-and-conquer の正準形。
-  この形は以前 builtin reentrancy と GC ルート不足のバグを踏んで
-  いたが、今は健全に動作する。
+`pivot` をクロージャで束縛した 2 本の述語ラムダで `filter`。
+mutation 無し。但し各 `filter` 呼出は `rest` を独立に走査する。
+
+```lisp
+(defun qsortF (lst)
+  (if (null? lst) nil
+    (let ((pivot (car lst))
+          (rest (cdr lst)))
+      (append (qsortF (filter (lambda (x) (< x pivot)) rest))
+              (cons pivot
+                    (qsortF (filter (lambda (x) (>= x pivot)) rest)))))))
+```
+
+```
+> (qsortF (list 5 3 8 1 9 4 2 7))
+(1 2 3 4 5 7 8 9)
+> (qsortF (list 42 17 23 4 99 1 67 38 12 55))
+(1 4 12 17 23 38 42 55 67 99)
+```
+
+### スタイル比較
+
+| 観点 | バリアント A | バリアント B |
+|---|---|---|
+| **分割の仕方** | `dolist` + `setq` で 1 パス | `filter` 2 本 (片側ずつ) |
+| **状態管理** | 局所的 mutation (`setq`) | 純関数 |
+| **クロージャ** | 無し | 呼出毎にラムダ 2 本 (pivot を捕捉) |
+| **読み筋** | 「ループ + バケツ」 | 「述語による定義」 |
+
+### 両方が動く理由 — そして罠の所在
+
+両者とも REPL で人手で流すサイズのリストならクリーンに動く。
+`(append (qsort ...) (cons pivot (qsort ...)))` も実は queens
+バリアント B と同じ非 tail 構造である — 落ちてもおかしくない。
+
+それでも生き残る理由:
+
+- 良い pivot なら分割は半分・半分に近く、再帰深度は **O(log n)**。
+  queens の探索木深度のような爆発はしない。
+- 各 `qsort` 呼出が返すリストはすぐ `append` / `cons` に消費されて
+  ガベージになり、再帰の戻りで pool が回収される。
+- queens で問題が出たのは 1600 万ノードの探索があるから。30
+  要素のソートではほぼ pool を擦りもしない。
+
+つまり「非 tail 再帰のリスク」という構造的な脆弱性は同じく
+存在しているが、現実的な入力では発火しない。最悪ケース (既に
+ソート済 / 逆順、つまり毎回 1 要素しか剥がせず再帰深度が線形)
+では、バリアント B の方が早く劣化する — 各レベルでクロージャ
+2 つ余分に確保し、`rest` を 2 回ずつ走査するから。
+
+このペアは処理系の 2 つの重要バグの canary でもあった:
+
+- `ev_append` の non-reentrancy: `(append (qsort less) (cons pivot
+  (qsort greater)))` の正準形が第 1 引数を黙って捨てていた問題
+  ([PR #20] 以前)。
+- `let` / `dolist` / `append` / `apply` の scratch グローバルが
+  GC ルートに漏れており、マクロ大量展開下で expansion が壊れて
+  いた問題 ([PR #19] 以前)。
+
+両方修正済。このセクションは小さなカナリアとして機能している。
 
 ---
 
