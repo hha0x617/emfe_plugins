@@ -24,7 +24,7 @@ ACIA_DATA   equ     $FF01
 TIB_ADDR    equ     $A000
 TIB_SIZE    equ     512             ; enlarged to fit long stdlib macro bodies
 
-PAIR_POOL   equ     $4D60           ; pair pool start (after code+data).
+PAIR_POOL   equ     $4D80           ; pair pool start (after code+data).
                                     ; Originally $4C80; bumped to $4CC0
                                     ; for self-TCO save/restore (PR #18);
                                     ; bumped again to $4D40 to absorb the
@@ -6705,16 +6705,27 @@ grs_clr:    std     ,x++
             lbsr    gc_mark
             ldx     qq_tail
             lbsr    gc_mark
-            ;   let new-env construction:
+            ;   let / let* / letrec scratch (incl. wrap_progn-built
+            ;   (PROGN . body) pair held in *_body across alloc_pair
+            ;   calls in the binding loop):
             ldx     ev_lt_newenv
             lbsr    gc_mark
             ldx     ev_lt_val
+            lbsr    gc_mark
+            ldx     ev_lt_body
             lbsr    gc_mark
             ldx     ev_lts_val
             lbsr    gc_mark
             ldx     ev_lts_result
             lbsr    gc_mark
+            ldx     ev_lts_body
+            lbsr    gc_mark
             ldx     ev_ltr_val
+            lbsr    gc_mark
+            ldx     ev_ltr_body
+            lbsr    gc_mark
+            ;   lambda/macro builders also wrap_progn; same hazard:
+            ldx     ev_lm_body
             lbsr    gc_mark
             ;   append: source list cursors AND output builder.
             ldx     ev_app_a

@@ -2035,12 +2035,17 @@ fn lisp_queens_then_extend_repro() {
 }
 
 #[test]
-#[ignore = "diagnostic — measures error count, used while characterising fix"]
-fn lisp_print_board_diag_n8() {
-    // Diagnostic: counts UNBOUND / APPLY occurrences for show-queens(8)
-    // (the user's actual reported repro). Used to verify the GC root
-    // expansion truly closes the bug at the depth the user hit, not
-    // just at n=4.
+fn lisp_show_queens_8_no_print_board_errors() {
+    // Regression test at the user's actual reported depth: n=8.
+    // Earlier iteration of this PR fixed n=4 but left ~26 sporadic
+    // APPLY errors at n=8.  Adding wrap_progn-built body scratches
+    // (ev_lt_body / ev_lts_body / ev_ltr_body / ev_lm_body) to
+    // gc_run_safe's roots closed the residual.  Now consistently
+    // 0 errors / count==92 across multiple runs.
+    //
+    // ~25-30 second runtime — slower than typical lisp_* tests but
+    // necessary to lock in the actual repro depth, not a watered
+    // down proxy.
     let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut h: EmfeInstance = ptr::null_mut();
     assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
@@ -2087,14 +2092,22 @@ fn lisp_print_board_diag_n8() {
         assert_eq!(emfe_stop(h), EmfeResult::Ok);
 
         let got = String::from_utf8_lossy(&UART_BUF).into_owned();
-        let unbound_r = got.matches("UNBOUND: R").count();
-        let apply_err = got.matches("APPLY: not a function").count();
-        let count_92 = got.contains("\r\n92\r\n");
-        let _ = std::fs::write("target/print_board_n8_diag.txt", &got);
-        eprintln!(
-            "[show-queens(8)] UNBOUND: R = {}, APPLY: not a function = {}, count==92: {}",
-            unbound_r, apply_err, count_92
+        assert!(
+            !got.contains("UNBOUND: R"),
+            "must not see UNBOUND: R during show-queens(8); got {:?}",
+            got
         );
+        assert!(
+            !got.contains("APPLY: not a function"),
+            "must not see APPLY: not a function during show-queens(8); got {:?}",
+            got
+        );
+        assert!(
+            got.contains("\r\n92\r\n"),
+            "show-queens(8) must equal 92; got {:?}",
+            got
+        );
+
         assert_eq!(emfe_destroy(h), EmfeResult::Ok);
     }
 }
