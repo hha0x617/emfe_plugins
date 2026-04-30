@@ -2035,6 +2035,71 @@ fn lisp_queens_then_extend_repro() {
 }
 
 #[test]
+#[ignore = "diagnostic — measures error count, used while characterising fix"]
+fn lisp_print_board_diag_n8() {
+    // Diagnostic: counts UNBOUND / APPLY occurrences for show-queens(8)
+    // (the user's actual reported repro). Used to verify the GC root
+    // expansion truly closes the bug at the depth the user hit, not
+    // just at n=4.
+    let _guard = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h: EmfeInstance = ptr::null_mut();
+    assert_eq!(emfe_create(&mut h), EmfeResult::Ok);
+    unsafe {
+        UART_BUF.clear();
+        assert_eq!(
+            emfe_set_console_char_callback(h, Some(tx_cb), ptr::null_mut()),
+            EmfeResult::Ok
+        );
+        let path = std::ffi::CString::new("examples/lisp/lisp.s19").unwrap();
+        assert_eq!(emfe_load_srec(h, path.as_ptr()), EmfeResult::Ok);
+        assert_eq!(emfe_run(h), EmfeResult::Ok);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if String::from_utf8_lossy(&UART_BUF).contains("> ") {
+                break;
+            }
+        }
+        let send = |line: &[u8]| {
+            for ch in line {
+                assert_eq!(emfe_send_char(h, *ch as c_char), EmfeResult::Ok);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        send(b"(defun safe? (row placed dist) (if (null? placed) t (if (= (car placed) row) nil (if (= (abs (- (car placed) row)) dist) nil (safe? row (cdr placed) (+ dist 1))))))\r");
+        send(b"(defun print-row (queen-col n c) (cond ((> c n) (newline)) ((= c queen-col) (display \"Q\") (print-row queen-col n (+ c 1))) (t (display \".\") (print-row queen-col n (+ c 1)))))\r");
+        send(b"(defun print-board (rows n) (dolist (r rows) (print-row r n 1)) (newline))\r");
+        send(b"(defun try-rows-show (n placed col row count) (if (> row n) count (try-rows-show n placed col (+ row 1) (if (safe? row placed 1) (place-col-show n (cons row placed) (+ col 1) count) count))))\r");
+        send(b"(defun place-col-show (n placed col count) (cond ((> col n) (print-board (reverse placed) n) (+ count 1)) (t (try-rows-show n placed col 1 count))))\r");
+        send(b"(defun show-queens (n) (place-col-show n nil 1 0))\r");
+        send(b"(show-queens 8)\r");
+        let mut waited_ms = 0u64;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            waited_ms += 1000;
+            let s = String::from_utf8_lossy(&UART_BUF);
+            if s.contains("(show-queens 8)") && s.contains("\r\n92\r\n") {
+                break;
+            }
+            if waited_ms >= 600_000 {
+                break;
+            }
+        }
+        assert_eq!(emfe_stop(h), EmfeResult::Ok);
+
+        let got = String::from_utf8_lossy(&UART_BUF).into_owned();
+        let unbound_r = got.matches("UNBOUND: R").count();
+        let apply_err = got.matches("APPLY: not a function").count();
+        let count_92 = got.contains("\r\n92\r\n");
+        let _ = std::fs::write("target/print_board_n8_diag.txt", &got);
+        eprintln!(
+            "[show-queens(8)] UNBOUND: R = {}, APPLY: not a function = {}, count==92: {}",
+            unbound_r, apply_err, count_92
+        );
+        assert_eq!(emfe_destroy(h), EmfeResult::Ok);
+    }
+}
+
+#[test]
 fn lisp_print_board_no_intermittent_errors() {
     // Regression test for the long-standing intermittent print-board
     // bug: under deep recursion (`(show-queens N)` etc.), `dolist` /
