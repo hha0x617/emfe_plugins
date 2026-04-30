@@ -927,7 +927,7 @@ fn forth_showcase_all_samples_diag() {
         send(b": SHOW-MOVE  ( n -- )  .\" Move disk \" . .\" from \" FROM-PEG @ EMIT SPACE .\" to \" DEST-PEG @ EMIT CR ;\r");
         send(b": SWAP-DV  DEST-PEG @ VIA-PEG @ DEST-PEG ! VIA-PEG ! ;\r");
         send(b": SWAP-FV  FROM-PEG @ VIA-PEG @ FROM-PEG ! VIA-PEG ! ;\r");
-        send(b": HANOI  DUP 0> IF SWAP-DV DUP 1- RECURSE SWAP-DV DUP SHOW-MOVE SWAP-FV DUP 1- RECURSE SWAP-FV THEN DROP ;\r");
+        send(b": HANOI  ( n -- )  DUP 0> IF  SWAP-DV  DUP 1- RECURSE  SWAP-DV  DUP SHOW-MOVE  SWAP-FV  DUP 1- RECURSE  SWAP-FV  THEN  DROP ;\r");
         send(b"CHAR A FROM-PEG !  CHAR C DEST-PEG !  CHAR B VIA-PEG !\r");
         send(b"3 HANOI\r");
         // ---- Chapter 2: 8-Queens ----
@@ -939,15 +939,12 @@ fn forth_showcase_all_samples_diag() {
         send(b": BAD-ROW?  GET-ROW ROW-V @ = ;\r");
         send(b": BAD-DIAG?  DUP GET-ROW ROW-V @ - ABS_  SWAP COL-V @ - ABS_  = ;\r");
         send(b": AT-CONFL?  DUP BAD-ROW? IF DROP TRUE EXIT THEN BAD-DIAG? ;\r");
-        send(b": SAFE?\r");
-        send(b"  COL-V @ 0= IF TRUE EXIT THEN  0 CFL !\r");
-        send(b"  COL-V @ 0 DO I AT-CONFL? IF TRUE CFL ! LEAVE THEN LOOP  CFL @ 0= ;\r");
-        send(b": PLACE-COL\r");
-        send(b"  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN\r");
-        send(b"  NQ @ 0 DO\r");
-        send(b"    DUP COL-V !  I ROW-V !\r");
-        send(b"    SAFE? IF DUP CELLS QROW + I SWAP !  DUP 1+ RECURSE THEN\r");
-        send(b"  LOOP  DROP ;\r");
+        // SAFE? — collapsed onto one body line (was 3 fragments under 128-byte TIB).
+        send(b": SAFE?  ( -- flag )\r");
+        send(b"  COL-V @ 0= IF TRUE EXIT THEN  0 CFL !  COL-V @ 0 DO I AT-CONFL? IF TRUE CFL ! LEAVE THEN LOOP  CFL @ 0= ;\r");
+        // PLACE-COL — collapsed from 6 lines into header + 1 dense body line.
+        send(b": PLACE-COL  ( c -- )\r");
+        send(b"  DUP NQ @ = IF DROP 1 QCNT +! EXIT THEN  NQ @ 0 DO  DUP COL-V !  I ROW-V !  SAFE? IF DUP CELLS QROW + I SWAP !  DUP 1+ RECURSE THEN  LOOP  DROP ;\r");
         send(b": QUEENS  NQ !  0 QCNT !  0 PLACE-COL  QCNT @ ;\r");
         send(b"4 QUEENS .\r");
         send(b"8 QUEENS .\r");
@@ -957,15 +954,13 @@ fn forth_showcase_all_samples_diag() {
         send(b": ARR@  CELLS ARR + @ ;\r");
         send(b": ARR!  CELLS ARR + ! ;\r");
         send(b"VARIABLE QS-TMP  VARIABLE QS-PIV  VARIABLE QS-PI  VARIABLE QS-LO  VARIABLE QS-HI\r");
-        send(b": SWAP-CELLS  OVER ARR@ QS-TMP !  DUP ARR@ ROT ARR!  QS-TMP @ SWAP ARR! ;\r");
-        send(b": PARTITION\r");
-        send(b"  QS-HI !  QS-LO !\r");
-        send(b"  QS-HI @ ARR@ QS-PIV !  QS-LO @ 1- QS-PI !\r");
-        send(b"  QS-HI @ QS-LO @ DO\r");
-        send(b"    I ARR@ QS-PIV @ > 0= IF QS-PI @ 1+ QS-PI !  QS-PI @ I SWAP-CELLS THEN\r");
-        send(b"  LOOP\r");
+        send(b": SWAP-CELLS  ( i j -- )  OVER ARR@ QS-TMP !  DUP ARR@ ROT ARR!  QS-TMP @ SWAP ARR! ;\r");
+        // PARTITION — collapsed from 7 lines to header + setup + loop + finalize.
+        send(b": PARTITION  ( lo hi -- p )\r");
+        send(b"  QS-HI !  QS-LO !  QS-HI @ ARR@ QS-PIV !  QS-LO @ 1- QS-PI !\r");
+        send(b"  QS-HI @ QS-LO @ DO I ARR@ QS-PIV @ > 0= IF QS-PI @ 1+ QS-PI !  QS-PI @ I SWAP-CELLS THEN LOOP\r");
         send(b"  QS-PI @ 1+ DUP QS-HI @ SWAP-CELLS ;\r");
-        send(b": QSORT-R  BEGIN 2DUP < WHILE 2DUP PARTITION >R SWAP R@ 1- RECURSE R> 1+ SWAP REPEAT 2DROP ;\r");
+        send(b": QSORT-R  ( lo hi -- )  BEGIN 2DUP < WHILE 2DUP PARTITION >R SWAP R@ 1- RECURSE R> 1+ SWAP REPEAT 2DROP ;\r");
         send(b": LOAD-TEST  5 0 ARR! 3 1 ARR! 8 2 ARR! 1 3 ARR!  9 4 ARR! 4 5 ARR! 2 6 ARR! 7 7 ARR! ;\r");
         send(b": SHOW-N  0 DO I ARR@ . LOOP ;\r");
         send(b"LOAD-TEST  0 7 QSORT-R  8 SHOW-N CR\r");

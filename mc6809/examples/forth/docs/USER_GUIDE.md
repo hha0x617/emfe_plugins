@@ -62,7 +62,7 @@ Hha Forth for MC6809 ready.
 |------|------|
 | `$0100..$27FF` | Kernel code + built-in dictionary |
 | `$2800..$9FFF` | User dictionary (`HERE` grows upward into this region) |
-| `$A000..$A07F` | TIB (terminal input buffer, 128 bytes) |
+| `$A000..$A1FF` | TIB (terminal input buffer, 512 bytes) |
 | `$B000..$BFFE` | Data stack (U, grows downward; TOS at the lower address) |
 | `$C000..$FEFE` | Return stack (S) |
 | `$FF00/$FF01` | ACIA SR/CR, RDR/TDR |
@@ -76,7 +76,7 @@ Hha Forth for MC6809 ready.
 
 ## 3. How the REPL Works
 
-1. `ACCEPT` reads one line into the TIB (up to 128 bytes).
+1. `ACCEPT` reads one line into the TIB (up to 512 bytes).
    - Each character is echoed as it arrives.
    - `BS` (0x08) and `DEL` (0x7F) delete the previous character and emit
      `BS SPACE BS`.
