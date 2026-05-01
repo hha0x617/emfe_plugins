@@ -40,9 +40,10 @@ Only Windows OS libraries (`KERNEL32.dll`, `api-ms-win-core-synch-l1-2-0.dll`,
 See [examples/README.md](examples/README.md). The plugin ships two ready-to-
 load S-records (`hello.s19`, `echo.s19`) that exercise the MC6850 ACIA.
 
-Note: the [upstream em6809 project's samples](https://github.com/hha0x617/em6809/tree/main/samples)
-target em6809's custom `ConsoleDev`, which is **not** binary-compatible with
-our MC6850 ACIA — see `docs/mc6809_reference.md` § "Upstream em6809 samples".
+The [upstream em6809 project's samples](https://github.com/hha0x617/em6809/tree/main/samples)
+also work directly: as of em6809 PR #25 the upstream console device shares
+the same MC6850 ACIA register layout — see `docs/mc6809_reference.md`
+§ "Upstream em6809 samples" for the historical Simple-layout note.
 
 ## Documentation
 
