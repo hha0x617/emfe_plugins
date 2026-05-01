@@ -23,17 +23,20 @@ interpreter, code-size metrics) see
 
 If you just want to **try Forth** without building anything from source:
 
-1. Grab the latest `emfe.exe` from one of the GUI host releases
+1. Install one of the GUI host frontends
    ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
-   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))
-   plus the matching `emfe_plugin_mc6809.dll` from the
-   [emfe_plugins release page](https://github.com/hha0x617/emfe_plugins/releases).
-   Drop the DLL into the `plugins\` folder next to `emfe.exe`.
-2. Launch `emfe.exe`, then **File → Switch Plugin…** and pick
+   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases)).
+2. From the
+   [emfe_plugins releases page](https://github.com/hha0x617/emfe_plugins/releases),
+   install the plugin DLLs — the release notes there walk through both
+   the installer (`emfe_plugins-*-setup.exe`, recommended) and the
+   manual `.zip` extraction. Both routes deploy the DLLs to the
+   `%LOCALAPPDATA%\emfe_*\plugins\` directory the host scans.
+3. Launch `emfe.exe`, then **File → Switch Plugin…** and pick
    **MC6809**.
-3. **File → Open S-Record…** (Ctrl+S) and select the shipped
+4. **File → Open S-Record…** (Ctrl+S) and select the shipped
    `examples/forth/forth.s19` (also bundled with each release).
-4. Press **F5** (Run). The Console window shows
+5. Press **F5** (Run). The Console window shows
    `Hha Forth for MC6809 ready.` — start typing.
 
 `forth.s19` is committed to this repository and re-published with

@@ -49,16 +49,19 @@ aliases of Scheme equivalents), see
 
 If you just want to **try Hha Lisp** without building anything from source:
 
-1. Grab the latest `emfe.exe` from one of the GUI host releases
+1. Install one of the GUI host frontends
    ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
-   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))
-   plus the matching `emfe_plugin_mc6809.dll` from the
-   [emfe_plugins release page](https://github.com/hha0x617/emfe_plugins/releases).
-   Drop the DLL into the `plugins\` folder next to `emfe.exe`.
-2. Launch `emfe.exe`, then **File → Switch Plugin…** and pick **MC6809**.
-3. **File → Open S-Record…** (Ctrl+S) and select the shipped
+   or [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases)).
+2. From the
+   [emfe_plugins releases page](https://github.com/hha0x617/emfe_plugins/releases),
+   install the plugin DLLs — the release notes there walk through both
+   the installer (`emfe_plugins-*-setup.exe`, recommended) and the
+   manual `.zip` extraction. Both routes deploy the DLLs to the
+   `%LOCALAPPDATA%\emfe_*\plugins\` directory the host scans.
+3. Launch `emfe.exe`, then **File → Switch Plugin…** and pick **MC6809**.
+4. **File → Open S-Record…** (Ctrl+S) and select the shipped
    `examples/lisp/lisp.s19` (also bundled with each release).
-4. Press **F5** (Run). The Console window shows the boot banner and the
+5. Press **F5** (Run). The Console window shows the boot banner and the
    `> ` prompt — start typing.
 
 `lisp.s19` is committed to this repository and re-published with every
