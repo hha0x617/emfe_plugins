@@ -184,29 +184,23 @@ Loads the file at the given address. PC is set from the reset vector at
 ## 8. Upstream em6809 samples
 
 The upstream [em6809](../../../em6809) project ships its own sample programs
-under `samples/` (hello, echo, vt100). **They target em6809's custom
-`ConsoleDev` at `$FF00`, which is NOT binary-compatible with our MC6850
-ACIA emulation.**
+under `samples/` (hello, echo, vt100). As of em6809 PR #25 the upstream
+console device is the same Motorola MC6850 ACIA layout this plugin
+emulates, so the samples now run on the plugin without modification:
 
-| | em6809 `ConsoleDev` | Plugin's MC6850 ACIA |
+| | em6809 console (MC6850 ACIA) | Plugin's MC6850 ACIA |
 |---|---|---|
-| base+0 read  | **RX FIFO pop** | **Status Register** |
-| base+0 write | **TX byte**     | **Control Register** |
-| base+1 read  | Status (custom) | **RDR** |
-| base+1 write | Control (custom)| **TDR** |
+| base+0 read  | Status Register | Status Register |
+| base+0 write | Control Register | Control Register |
+| base+1 read  | RDR | RDR |
+| base+1 write | TDR | TDR |
 
-Running em6809's `samples/hello/hello.s19` on this plugin will:
-- Interpret `STA $FF00` as "write to CR" (likely corrupting the ACIA state)
-- Interpret `LDA $FF00` as "read SR" (getting flag bits, not an RX byte)
-
-**Workarounds (choose one)**:
-
-1. Use the plugin's own samples under `examples/` — these correctly drive
-   the MC6850.
-2. Rebuild em6809's samples using MC6850 register layout (master reset,
-   CR / SR polling). Templates are in this plugin's `examples/*.py`.
-3. (Future Phase 2) add an optional `UartModel=EmConsoleDev` setting that
-   switches the plugin's UART to em6809's custom layout for sample compat.
+Earlier em6809 builds shipped a separate "Simple" device (`ConsoleDev`)
+with an inverted register map (data@+0, status@+1).  That device was
+removed in PR #25; if you have an old `.s19` that targeted the Simple
+layout, rebuild it against MC6850 (master reset, CR / SR polling) — the
+plugin's `examples/*.py` and the upstream `samples/{hello,echo}/*.asm`
+serve as templates.
 
 ## 9. References
 

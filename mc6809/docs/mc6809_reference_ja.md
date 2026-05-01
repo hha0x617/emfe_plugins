@@ -175,31 +175,26 @@ emfe_load_binary(inst, "program.bin", 0x0100);
 - `run` のワーカースレッドは生ポインタを `usize` キャストで渡すことで
   ホットパスに `Arc<Mutex<..>>` を持ち込まない。
 
-## 8. em6809 本体のサンプルとの非互換性
+## 8. em6809 本体のサンプル
 
 em6809 本体のリポジトリ ([hha0x617/em6809](https://github.com/hha0x617/em6809)) は
 `samples/` 配下に独自のサンプルプログラム (hello / echo / vt100) を同梱して
-いるが、これらは **em6809 独自の `ConsoleDev` ($FF00 固定)** を前提にしており、
-**本プラグインの MC6850 ACIA とは互換性がない**。
+いる。**em6809 PR #25 以降、本体のコンソールデバイスは本プラグインと同じ
+Motorola MC6850 ACIA 配置に統一されたため、これらのサンプルは本プラグインで
+そのまま動作する**。
 
-| | em6809 `ConsoleDev` | プラグインの MC6850 ACIA |
+| | em6809 本体 (MC6850 ACIA) | プラグインの MC6850 ACIA |
 |---|---|---|
-| base+0 read  | **RX FIFO pop** | **Status Register** |
-| base+0 write | **TX byte**     | **Control Register** |
-| base+1 read  | Status (独自)    | **RDR** |
-| base+1 write | Control (独自)   | **TDR** |
+| base+0 read  | Status Register | Status Register |
+| base+0 write | Control Register | Control Register |
+| base+1 read  | RDR | RDR |
+| base+1 write | TDR | TDR |
 
-em6809 の `samples/hello/hello.s19` を本プラグインにロードすると:
-- `STA $FF00` は "Control Register 書き込み" として解釈され ACIA 状態を破壊
-- `LDA $FF00` は "Status Register 読み" になり RX バイトではなくフラグが返る
-
-**回避策** (いずれか):
-
-1. 本プラグイン付属の `examples/` を使う (MC6850 準拠で動く)
-2. em6809 サンプルを MC6850 レジスタレイアウト用に書き直す
-   (本プラグインの `examples/*.py` がテンプレート)
-3. (将来 Phase 2 候補) プラグインに `UartModel=EmConsoleDev` 設定を追加し、
-   em6809 独自レイアウトに切り替えるモードを提供
+それ以前の em6809 では別途「Simple」コンソール (`ConsoleDev`、レジスタ反転:
+data@+0, status@+1) も併存していたが、PR #25 で削除済。古い Simple 配置で
+書かれた `.s19` を持っている場合は MC6850 配置 (master reset → CR/SR ポーリング)
+で書き直す必要がある。本プラグインの `examples/*.py` および本体の
+`samples/{hello,echo}/*.asm` が雛形になる。
 
 ## 9. 参考資料
 
