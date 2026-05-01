@@ -24,17 +24,19 @@ English: [USER_GUIDE.md](USER_GUIDE.md)
 
 何もビルドせずに **すぐ Forth を試したい** 場合の最短経路:
 
-1. GUI ホストの最新リリースから `emfe.exe` を入手
+1. GUI ホストの最新リリースを入手・インストール
    ([emfe_WinUI3Cpp](https://github.com/hha0x617/emfe_WinUI3Cpp/releases)
    または [emfe_CsWPF](https://github.com/hha0x617/emfe_CsWPF/releases))。
-   合わせて [emfe_plugins リリース](https://github.com/hha0x617/emfe_plugins/releases)
-   から `emfe_plugin_mc6809.dll` を入手し、`emfe.exe` 隣の
-   `plugins\` フォルダに配置する。
-2. `emfe.exe` を起動し、**File → Switch Plugin…** で **MC6809**
+2. [emfe_plugins リリースページ](https://github.com/hha0x617/emfe_plugins/releases)
+   からプラグイン DLL をインストール — リリースノートにインストーラ
+   (`emfe_plugins-*-setup.exe`、推奨) と手動 zip 展開の両方の手順が
+   案内されています。いずれの方法でも DLL がホストの参照先である
+   `%LOCALAPPDATA%\emfe_*\plugins\` に配置されます。
+3. `emfe.exe` を起動し、**File → Switch Plugin…** で **MC6809**
    を選択。
-3. **File → Open S-Record…** (Ctrl+S) で同梱の
+4. **File → Open S-Record…** (Ctrl+S) で同梱の
    `examples/forth/forth.s19` を開く (リリースにも同梱されている)。
-4. **F5** (Run) を押す。Console ウィンドウに
+5. **F5** (Run) を押す。Console ウィンドウに
    `Hha Forth for MC6809 ready.` が表示されたら入力開始。
 
 `forth.s19` は本リポジトリにコミット済みかつリリース毎にも同梱
