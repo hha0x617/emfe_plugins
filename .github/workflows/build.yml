@@ -23,19 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch submodules (em6809, Em68030_WinUI3Cpp)
-        env:
-          SUBMODULE_READ_TOKEN: ${{ secrets.SUBMODULE_READ_TOKEN }}
+      - name: Fetch submodules (em6809-core, Em68030_WinUI3Cpp)
         shell: bash
-        run: |
-          # Use a PAT for github.com clones so private upstream repos
-          # (em6809, Em68030_WinUI3Cpp) are reachable.  Remove the
-          # secret once both upstream repos are public — falls through
-          # to ambient credentials.
-          if [[ -n "${SUBMODULE_READ_TOKEN}" ]]; then
-            git config --global url."https://x-access-token:${SUBMODULE_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
-          git submodule update --init --recursive
+        run: git submodule update --init --recursive
 
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
