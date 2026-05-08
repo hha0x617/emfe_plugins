@@ -3,7 +3,7 @@ name = "emfe_plugin_mc6809"
 version = "0.1.0"
 edition = "2021"
 authors = ["hha0x617 <hha0x617@gmail.com>"]
-description = "MC6809 emfe plugin DLL (wraps em6809)"
+description = "MC6809 emfe plugin DLL (wraps em6809-core)"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -12,9 +12,12 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
-# Wrap the em6809 CPU core. default-features=false keeps GUI/i18n/serde out of
-# the compile graph.
-em6809 = { path = "../external/em6809", default-features = false }
+# Wrap the em6809-core headless emulator crate (extracted out of the em6809
+# GUI app — see
+# https://github.com/hha0x617/em6809/blob/main/docs/extract_em6809_core_plan.md
+# for the rationale).  The submodule at `external/em6809-core` is the same
+# git repo used by Cargo via the path dep below.
+em6809-core = { path = "../external/em6809-core" }
 
 [profile.release]
 opt-level = 3

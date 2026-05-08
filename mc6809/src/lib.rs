@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-use em6809::bus::Bus;
-use em6809::cpu::Cpu;
+use em6809_core::bus::Bus;
+use em6809_core::cpu::Cpu;
 
 // ===========================================================================
 // FFI panic-safety wrapper
@@ -645,7 +645,7 @@ impl Bus for PluginBus {
 // Plugin instance
 // ===========================================================================
 
-// Plugin-side Breakpoint type was removed; em6809::Cpu::breakpoints
+// Plugin-side Breakpoint type was removed; em6809_core::Cpu::breakpoints
 // is the single source of truth now (id / enabled / condition /
 // hit_count / ignore_count). The emfe ABI still indexes by address,
 // so the wrappers above translate addr ↔ BreakpointId on each call.
@@ -657,7 +657,7 @@ struct Watchpoint {
     condition: String,
 }
 
-// Plugin-side ShadowFrame was removed; em6809::Cpu::shadow_stack
+// Plugin-side ShadowFrame was removed; em6809_core::Cpu::shadow_stack
 // holds CallFrame entries (with call_site / target / return_addr /
 // sp_at_call / CallKind) which emfe_get_call_stack maps onto the ABI.
 
@@ -706,7 +706,7 @@ struct PluginInstance {
     program_start: u16,
     program_end: u16,
 
-    // Shadow call stack moved to em6809::Cpu::shadow_stack — the
+    // Shadow call stack moved to em6809_core::Cpu::shadow_stack — the
     // core's hooks catch BSR/LBSR/JSR/SWI/IRQ/FIRQ/NMI consistently
     // (the old plugin-side opcode-intercept missed interrupt frames).
     last_error: CString,
@@ -773,9 +773,7 @@ impl PluginInstance {
             stop_address: AtomicU64::new(0),
             instructions: AtomicI64::new(0),
             cycles_counter: AtomicI64::new(0),
-            host_rx_pending: Mutex::new(std::collections::VecDeque::with_capacity(
-                HOST_RX_CAP,
-            )),
+            host_rx_pending: Mutex::new(std::collections::VecDeque::with_capacity(HOST_RX_CAP)),
         };
         inst.build_reg_defs();
         inst.build_setting_defs();
@@ -1454,7 +1452,7 @@ pub extern "C" fn emfe_get_memory_size(_instance: EmfeInstance) -> u64 {
 // ===========================================================================
 
 fn disassemble_one_at(inst: &PluginInstance, addr: u16) -> (String, String, String, u32) {
-    // Reuse em6809::disasm::disasm_one via a read-only shadow bus so the
+    // Reuse em6809_core::disasm::disasm_one via a read-only shadow bus so the
     // disassembly doesn't perturb CPU/bus state.
     struct PeekBus<'a> {
         mem: &'a [u8; 0x10000],
@@ -1471,7 +1469,7 @@ fn disassemble_one_at(inst: &PluginInstance, addr: u16) -> (String, String, Stri
     let mut peek = PeekBus {
         mem: &inst.bus.memory,
     };
-    let (len, text) = em6809::disasm::disasm_one(&mut peek, addr);
+    let (len, text) = em6809_core::disasm::disasm_one(&mut peek, addr);
 
     // Raw bytes string: "AB CD EF" from the memory slice.
     let raw = (0..len)
@@ -1656,7 +1654,7 @@ pub unsafe extern "C" fn emfe_step(instance: EmfeInstance) -> EmfeResult {
 
 // Bound the step loop so a runaway never hangs the worker thread (e.g. a
 // call target that never returns within the expected window). Same value
-// as `em6809::main::STEP_OVER_LIMIT` so the plugin and the standalone GUI
+// as `em6809_core::main::STEP_OVER_LIMIT` so the plugin and the standalone GUI
 // give up at the same instruction budget.
 const STEP_LIMIT: u32 = 2_000_000;
 
@@ -1668,7 +1666,7 @@ const STEP_LIMIT: u32 = 2_000_000;
 /// calls would.
 ///
 /// Note: the plugin's `instr_count` / `instructions` counters are not
-/// updated here — em6809::Cpu doesn't expose a per-step instruction
+/// updated here — em6809_core::Cpu doesn't expose a per-step instruction
 /// counter, so we'd have to wrap each `cpu.step` call manually
 /// (defeating the point of delegating to `cpu.step_over` /
 /// `cpu.step_out`). The MIPS display will undercount by the number
@@ -1702,7 +1700,7 @@ pub unsafe extern "C" fn emfe_step_over(instance: EmfeInstance) -> EmfeResult {
         // for why this matches the worker-loop drain.
         drain_host_rx(inst);
 
-        // Delegate to em6809::Cpu::step_over — it handles the
+        // Delegate to em6809_core::Cpu::step_over — it handles the
         // is-CALL check (BSR / LBSR / JSR / SWI / SWI2 / SWI3),
         // computes the return target via the disassembler, runs the
         // call, and stops on either the return target or a
@@ -1741,7 +1739,7 @@ pub unsafe extern "C" fn emfe_step_out(instance: EmfeInstance) -> EmfeResult {
         // for why this matches the worker-loop drain.
         drain_host_rx(inst);
 
-        // Delegate to em6809::Cpu::step_out, which uses the topmost
+        // Delegate to em6809_core::Cpu::step_out, which uses the topmost
         // shadow-frame's `return_addr` instead of reading 2 bytes
         // off the S stack. This is correct for both RTS-style
         // returns *and* SWI/IRQ/FIRQ/NMI handler returns — the
@@ -2284,13 +2282,13 @@ pub unsafe extern "C" fn emfe_get_call_stack(
         let slice = std::slice::from_raw_parts_mut(out, n);
         for (i, frame) in frames.iter().rev().take(n).enumerate() {
             let kind = match frame.kind {
-                em6809::debug::CallKind::Bsr | em6809::debug::CallKind::Jsr => {
+                em6809_core::debug::CallKind::Bsr | em6809_core::debug::CallKind::Jsr => {
                     EmfeCallStackKind::Call
                 }
-                em6809::debug::CallKind::Swi(_) => EmfeCallStackKind::Exception,
-                em6809::debug::CallKind::Irq
-                | em6809::debug::CallKind::Firq
-                | em6809::debug::CallKind::Nmi => EmfeCallStackKind::Interrupt,
+                em6809_core::debug::CallKind::Swi(_) => EmfeCallStackKind::Exception,
+                em6809_core::debug::CallKind::Irq
+                | em6809_core::debug::CallKind::Firq
+                | em6809_core::debug::CallKind::Nmi => EmfeCallStackKind::Interrupt,
             };
             slice[i] = EmfeCallStackEntry {
                 call_pc: frame.call_site as u64,
