@@ -55,6 +55,12 @@ GitHub Actions runs the same steps on every push; tagged commits (`v*`)
 publish the built DLLs as a GitHub Release. See
 [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
+## Contributing and Policies
+
+- Contribution workflow: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1)
+- Security: [`SECURITY.md`](SECURITY.md)
+
 ## License
 
 Licensed under either of
