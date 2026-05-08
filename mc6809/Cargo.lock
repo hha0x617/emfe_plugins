@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "em6809"
+name = "em6809-core"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -14,7 +14,7 @@ dependencies = [
 name = "emfe_plugin_mc6809"
 version = "0.1.0"
 dependencies = [
- "em6809",
+ "em6809-core",
 ]
 
 [[package]]

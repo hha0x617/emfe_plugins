@@ -679,7 +679,7 @@ fn step_over_skips_bsr_subroutine() {
 
 #[test]
 fn step_out_returns_to_caller() {
-    // The plugin's step_out delegates to em6809::Cpu::step_out, which
+    // The plugin's step_out delegates to em6809_core::Cpu::step_out, which
     // uses the topmost shadow-frame's recorded return_addr as the
     // target. So the test has to actually *make* a call (BSR) to
     // populate the shadow stack — a synthetic "fake return address
@@ -1033,11 +1033,7 @@ fn forth_showcase_all_samples_diag() {
             "CREATE/DOES> sample missing 42 99: {:?}",
             got
         );
-        assert!(
-            got.contains("FF"),
-            "BASE / HEX 255 = FF missing: {:?}",
-            got
-        );
+        assert!(got.contains("FF"), "BASE / HEX 255 = FF missing: {:?}", got);
         assert!(
             got.contains("101010"),
             "BASE / binary 42 = 101010 missing: {:?}",
@@ -1046,7 +1042,6 @@ fn forth_showcase_all_samples_diag() {
         assert_eq!(emfe_destroy(h), EmfeResult::Ok);
     }
 }
-
 
 #[test]
 fn forth_colon_define_and_call() {
@@ -2766,19 +2761,19 @@ fn lisp_print_case_toggle() {
         send(b"(defun foo () 42)\r"); // FOO
         send(b"t\r"); // T
         send(b"car\r"); // #<BUILTIN>
-        // Switch to lower.
+                        // Switch to lower.
         send(b"(set-print-case! 1)\r"); // 1
         send(b"(print-case)\r"); // 1
         send(b"(defun bar () 99)\r"); // bar
         send(b"t\r"); // t
         send(b"car\r"); // #<builtin>
-        // Numbers + punctuation must NOT be folded — only ASCII letters.
+                        // Numbers + punctuation must NOT be folded — only ASCII letters.
         send(b"42\r"); // 42
         send(b"'(1 2 3)\r"); // (1 2 3)
-        // Switch back to upper.
+                             // Switch back to upper.
         send(b"(set-print-case! 0)\r"); // 0
         send(b"t\r"); // T
-        // Bad argument prints an error message and returns NIL.
+                      // Bad argument prints an error message and returns NIL.
         send(b"(set-print-case! 'foo)\r");
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert_eq!(emfe_stop(h), EmfeResult::Ok);
@@ -2897,11 +2892,11 @@ fn lisp_set_bang_alias() {
         send(b"(defvar x 10)\r"); // X
         send(b"(set! x 99)\r"); // 99
         send(b"x\r"); // 99
-        // Mutation inside a let — should affect the let-bound binding.
+                      // Mutation inside a let — should affect the let-bound binding.
         send(b"(let ((y 1)) (set! y 7) y)\r"); // 7
-        // SET! and SETQ on the same global agree.
+                                               // SET! and SETQ on the same global agree.
         send(b"(setq x 1) (set! x 2) x\r"); // 2
-        // SET! works inside dolist (which uses gensym + setq internally).
+                                            // SET! works inside dolist (which uses gensym + setq internally).
         send(b"(defvar tot 0)\r");
         send(b"(dolist (n '(1 2 3 4)) (set! tot (+ tot n)))\r");
         send(b"tot\r"); // 10
@@ -2978,8 +2973,8 @@ fn lisp_predicate_aliases() {
         send(b"(eq? 'a 'b)\r"); // NIL
         send(b"(zero? 0)\r"); // T
         send(b"(zero? 5)\r"); // NIL
-        // Higher-order use confirms the alias is a callable value, not just
-        // a special-form keyword.
+                              // Higher-order use confirms the alias is a callable value, not just
+                              // a special-form keyword.
         send(b"(filter zero? '(0 1 0 2 0))\r"); // (0 0 0)
         send(b"(any null? '(1 nil 2))\r"); // T
         std::thread::sleep(std::time::Duration::from_millis(1000));
