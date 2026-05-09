@@ -1,5 +1,22 @@
 # Hha Lisp for MC6809
 
+## Origin
+
+Hha Lisp — together with its sibling [Hha Forth](../forth/) — was
+originally written as a deliberate stress test for the **`mc6809`
+plugin's ISA implementation**.  We needed a program large enough to
+exercise a broad range of instructions and addressing modes,
+looking for bugs that the unit-test grid was likely to miss.  It
+worked: writing these two languages surfaced a number of real bugs
+in the underlying CPU emulator and contributed materially to
+maturing the ISA.
+
+The sample is kept here in the `mc6809` plugin's `examples/`
+directory so future ISA-touching changes can keep using it as the
+end-to-end regression target it has become.
+
+## Overview
+
 A compact Lisp interpreter for the MC6809, running on the `em6809` +
 `emfe_plugin_mc6809` environment (MC6850 ACIA at `$FF00/$FF01`, 64 KB RAM).
 
