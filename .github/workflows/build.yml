@@ -177,7 +177,7 @@ jobs:
           - **${ZIP_NAME}** — zip of the four plugin DLLs for manual install.
 
           ### DLLs (in either asset)
-          - \`emfe_plugin_mc6809.dll\` — Motorola 6809 (wraps em6809 Rust crate)
+          - \`emfe_plugin_mc6809.dll\` — Motorola 6809 (wraps em6809-core Rust crate)
           - \`emfe_plugin_mc68030.dll\` — Motorola 68030 (reuses em68030_WinUI3Cpp core)
           - \`emfe_plugin_z8000.dll\` — Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004)
           - \`emfe_plugin_em8.dll\` — em8 minimal 8-bit CPU (ABI validation target)
