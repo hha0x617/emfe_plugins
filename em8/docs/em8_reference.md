@@ -18,6 +18,15 @@ assemble and run unchanged.  The plugin is built primarily as the
 small, well-understood reference target for validating the
 `emfe` C ABI.
 
+The name **`em8`** reflects this *incomplete-on-purpose* state: it
+is the small subset that was useful as an ABI-validation target,
+not a full 6502.  If the gap is closed in the future — adding the
+`(zp,X)` / `(zp),Y` / `LDX $nn,Y` addressing modes and decimal
+mode (`D` flag, `CLD` / `SED`) — the plugin could plausibly be
+renamed to **`mos6502`** to advertise the full match.  Until then
+the `em8` name is a deliberate signal that the plugin is a
+6502-derived subset rather than the full chip.
+
 Key characteristics:
 
 - 8-bit data bus, 16-bit address bus
