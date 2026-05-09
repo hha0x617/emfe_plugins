@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch submodules (em6809-core, Em68030_WinUI3Cpp)
+      - name: Fetch submodules (Em68030_WinUI3Cpp)
         shell: bash
         run: git submodule update --init --recursive
 
@@ -211,8 +211,8 @@ jobs:
           - **Repository**: [emfe_plugins](https://github.com/${{ github.repository }})
           - **Build workflow**: [.github/workflows/build.yml](https://github.com/${{ github.repository }}/blob/${TAG}/.github/workflows/build.yml)
 
-          Upstream CPU cores pinned via submodule:
-          - [em6809](https://github.com/hha0x617/em6809) (MIT OR Apache-2.0)
-          - [Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp) (Apache-2.0)
+          Upstream CPU cores:
+          - [em6809-core](https://github.com/hha0x617/em6809-core) (MIT OR Apache-2.0) — pinned via Cargo \`git\` rev (see \`mc6809/Cargo.toml\`)
+          - [Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp) (Apache-2.0) — pinned via submodule (\`external/em68030_WinUI3Cpp\`)
           EOF
           )"

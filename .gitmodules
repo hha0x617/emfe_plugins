@@ -1,6 +1,3 @@
 [submodule "external/em68030_WinUI3Cpp"]
 	path = external/em68030_WinUI3Cpp
 	url = https://github.com/hha0x617/Em68030_WinUI3Cpp.git
-[submodule "external/em6809-core"]
-	path = external/em6809-core
-	url = https://github.com/hha0x617/em6809-core

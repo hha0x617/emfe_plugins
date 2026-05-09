@@ -23,12 +23,10 @@
 
 ## クローン
 
-本リポジトリは 2 つのアップストリームソースツリーを git submodule として取り込んでいます:
+本リポジトリは **1 つ** のアップストリームソースツリーを git submodule として取り込んでいます:
 
-- `external/em6809` — [hha0x617/em6809](https://github.com/hha0x617/em6809)
-  (`mc6809` プラグインに必要)
 - `external/em68030_WinUI3Cpp` — [hha0x617/Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp)
-  (`mc68030` プラグインに必要)
+  (`mc68030` C++ プラグインに必要 — ビルドはこのツリーから直接ヘッダと Core/IO ソースを取り込みます)
 
 再帰クローン:
 
@@ -41,6 +39,10 @@ git clone --recurse-submodules https://github.com/hha0x617/emfe_plugins.git
 ```bash
 git submodule update --init --recursive
 ```
+
+`mc6809` Rust プラグインは [em6809-core](https://github.com/hha0x617/em6809-core)
+を Cargo の `git`-with-pinned-rev 依存として参照するため、`cargo build` 時に
+自動取得されます — submodule 設定は不要です。
 
 ## ビルド
 

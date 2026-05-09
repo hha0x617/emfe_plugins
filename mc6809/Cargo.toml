@@ -15,9 +15,12 @@ path = "src/lib.rs"
 # Wrap the em6809-core headless emulator crate (extracted out of the em6809
 # GUI app — see
 # https://github.com/hha0x617/em6809/blob/main/docs/extract_em6809_core_plan.md
-# for the rationale).  The submodule at `external/em6809-core` is the same
-# git repo used by Cargo via the path dep below.
-em6809-core = { path = "../external/em6809-core" }
+# for the rationale).  Pinned to the same git rev as em6809's GUI app so
+# that the plugin DLL and the standalone GUI run identical CPU-core code.
+# Bump in lockstep with em6809's pin when the upstream API moves.  When
+# em6809-core is published on crates.io we switch this to a normal semver
+# pin.
+em6809-core = { git = "https://github.com/hha0x617/em6809-core", rev = "185a39f439b72791cf121dc68c83f1e764c8a6d5" }
 
 [profile.release]
 opt-level = 3
