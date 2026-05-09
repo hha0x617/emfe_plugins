@@ -12,14 +12,20 @@ self-contained plugin that exposes the `emfe` C ABI.
 *Developed through vibe coding with
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code).*
 
-| Plugin | Target |
-|--------|--------|
-| `mc6809` | Motorola 6809 (wraps the `em6809` Rust crate) |
-| `mc68030` | Motorola 68030 |
-| `z8000` | Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) |
-| `em8` | Small educational CPU |
-| `rv32ima` | RISC-V RV32IMA |
-| `api` | Shared C ABI headers |
+| Plugin | Target | Status |
+|--------|--------|--------|
+| `mc6809` | Motorola 6809 (wraps the `em6809-core` Rust crate) | **Shipped** — DLL built and packaged in releases |
+| `mc68030` | Motorola 68030 | **Shipped** — DLL built and packaged in releases |
+| `z8000` | Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) | **Shipped** — DLL built and packaged in releases |
+| `em8` | Small educational CPU | **Shipped** — ABI-validation target; DLL built and packaged in releases |
+| `rv32ima` | RISC-V RV32IMA | **Design notes only** — `docs/` exists, no source yet |
+| `api` | Shared C ABI headers (`emfe_plugin.h`) | **Header-only** — not a plugin DLL; consumed by all real plugins |
+
+Plugins listed as *Shipped* are built by CI on every push and bundled
+in the GitHub Release zip / installer for tagged commits.  *Design
+notes only* and *Header-only* rows are documented for completeness so
+the directory layout doesn't surprise anyone — the GitHub Release
+will not contain a DLL for them.
 
 Sample guest programs (e.g. Hha Forth / Hha Lisp for MC6809) live under each
 plugin's `examples/` directory.
