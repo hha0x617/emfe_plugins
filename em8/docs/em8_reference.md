@@ -2,7 +2,21 @@
 
 ## 1. Overview
 
-The EM8 is a custom 8-bit CPU designed for embedded systems education and emulation. It features a simple yet capable instruction set inspired by classic 8-bit architectures, with a 64KB address space, three general-purpose registers, hardware stack, and memory-mapped I/O peripherals.
+The EM8 is a custom 8-bit CPU **modelled directly on the MOS 6502
+instruction set**: the registers (`A`, `X`, `Y`), the flag layout,
+the `$0100-$01FF` stack page, the reset / NMI / IRQ vectors at
+`$FFFC-$FFFD` / `$FFFA-$FFFB` / `$FFFE-$FFFF`, and the instruction
+encodings (e.g. `$A9` `LDA #imm`, `$20` `JSR`, `$60` `RTS`,
+`$EA` `NOP`) all match the NMOS 6502 byte-for-byte.
+
+EM8 omits **decimal (BCD) mode** (no `D` flag, no `CLD` / `SED`)
+and the **indirect-indexed addressing modes** (`(zp,X)` / `(zp),Y`
+/ `LDX $nn,Y`); it adds the 65C02-style `BRA` (branch-always) for
+convenience and an `HLT` instruction for emulator control.
+Programs and toolchains that target the matching 6502 subset will
+assemble and run unchanged.  The plugin is built primarily as the
+small, well-understood reference target for validating the
+`emfe` C ABI.
 
 Key characteristics:
 
