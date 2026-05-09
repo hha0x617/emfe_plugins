@@ -16,16 +16,19 @@ self-contained plugin that exposes the `emfe` C ABI.
 |--------|--------|--------|
 | `mc6809` | Motorola 6809 (wraps the `em6809-core` Rust crate) | **Shipped** — DLL built and packaged in releases |
 | `mc68030` | Motorola 68030 | **Shipped** — DLL built and packaged in releases |
-| `z8000` | Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) | **Shipped** — DLL built and packaged in releases |
+| `z8000` | Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) | **Partial — Z8002 only** — DLL built and packaged in releases.  Z8002 (non-segmented, no VM) is fully functional.  Z8001 / Z8003 / Z8004 are selectable in Settings but currently fall back to Z8002 behaviour; segmented addressing lands in Phase 2 and VM/abort support in Phase 3. |
 | `em8` | Small educational CPU | **Shipped** — ABI-validation target; DLL built and packaged in releases |
 | `rv32ima` | RISC-V RV32IMA | **Design notes only** — `docs/` exists, no source yet |
 | `api` | Shared C ABI headers (`emfe_plugin.h`) | **Header-only** — not a plugin DLL; consumed by all real plugins |
 
 Plugins listed as *Shipped* are built by CI on every push and bundled
-in the GitHub Release zip / installer for tagged commits.  *Design
-notes only* and *Header-only* rows are documented for completeness so
-the directory layout doesn't surprise anyone — the GitHub Release
-will not contain a DLL for them.
+in the GitHub Release zip / installer for tagged commits.  The *z8000*
+DLL is also packaged on every release, but with the Z8002-only
+caveat above — selecting Z8001 / Z8003 / Z8004 in Settings does not
+yet exercise their distinguishing behaviour.  *Design notes only*
+and *Header-only* rows are documented for completeness so the
+directory layout doesn't surprise anyone — the GitHub Release will
+not contain a DLL for them.
 
 Sample guest programs (e.g. Hha Forth / Hha Lisp for MC6809) live under each
 plugin's `examples/` directory.
