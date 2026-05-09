@@ -9,6 +9,9 @@
 Guest-CPU plugins for the `emfe` emulator framework. Each subdirectory is a
 self-contained plugin that exposes the `emfe` C ABI.
 
+*Developed through vibe coding with
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code).*
+
 | Plugin | Target |
 |--------|--------|
 | `mc6809` | Motorola 6809 (wraps the `em6809` Rust crate) |
