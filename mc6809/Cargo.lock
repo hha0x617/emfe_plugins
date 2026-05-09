@@ -5,6 +5,7 @@ version = 4
 [[package]]
 name = "em6809-core"
 version = "0.1.0"
+source = "git+https://github.com/hha0x617/em6809-core?rev=185a39f439b72791cf121dc68c83f1e764c8a6d5#185a39f439b72791cf121dc68c83f1e764c8a6d5"
 dependencies = [
  "libc",
  "once_cell",

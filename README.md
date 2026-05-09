@@ -26,12 +26,11 @@ plugin's `examples/` directory.
 
 ## Cloning
 
-This repository vendors two upstream source trees as git submodules:
+This repository vendors **one** upstream source tree as a git submodule:
 
-- `external/em6809` — [hha0x617/em6809](https://github.com/hha0x617/em6809)
-  (required by the `mc6809` plugin)
 - `external/em68030_WinUI3Cpp` — [hha0x617/Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp)
-  (required by the `mc68030` plugin)
+  (required by the `mc68030` C++ plugin — the build pulls headers and
+  Core/IO sources directly from this tree)
 
 Clone recursively:
 
@@ -44,6 +43,11 @@ Or, if you already cloned without `--recurse-submodules`:
 ```bash
 git submodule update --init --recursive
 ```
+
+The `mc6809` Rust plugin depends on
+[em6809-core](https://github.com/hha0x617/em6809-core) via Cargo's
+`git`-with-pinned-rev dependency, so `cargo build` fetches it
+automatically — no submodule step is needed for that one.
 
 ## Building
 
