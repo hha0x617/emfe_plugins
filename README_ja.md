@@ -8,6 +8,8 @@
 
 `emfe` エミュレータフレームワーク用のゲスト CPU プラグイン集です。各サブディレクトリはそれぞれ独立したプラグインで、`emfe` の C ABI を介してホストから呼び出されます。
 
+*[Claude Code](https://docs.anthropic.com/en/docs/claude-code) との vibe coding で開発しています。*
+
 | プラグイン | ターゲット |
 |-----------|----------|
 | `mc6809` | Motorola 6809 (`em6809` Rust クレートを薄くラップ) |
