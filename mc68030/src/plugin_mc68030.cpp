@@ -2186,8 +2186,17 @@ EmfeResult EMFE_CALL emfe_push_mouse_move(EmfeInstance instance, int32_t dx, int
 EmfeResult EMFE_CALL emfe_push_mouse_absolute(EmfeInstance instance, int32_t x, int32_t y) {
     if (!instance) return EMFE_ERR_INVALID;
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
-    if (inst->inputDevice)
-        inst->inputDevice->PushMouseAbsEvent(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
+    if (inst->inputDevice) {
+        // Update the absolute-position MMIO registers only.  PushMouseAbsEvent
+        // also enqueues a FIFO event with the absolute coordinates stored in
+        // the dx/dy slots, but the guest em68030input driver interprets FIFO
+        // EVENT_MOUSE_MOVE entries as relative deltas (input_report_rel REL_X,
+        // REL_Y) — feeding absolute pixel values there produced huge spurious
+        // jumps on the mouse_dev device every frame.  The tablet_dev path
+        // reads the registers directly via polling, so register-only updates
+        // are the correct semantics for "absolute mouse position".
+        inst->inputDevice->SetMouseAbsPosition(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
+    }
     return EMFE_OK;
 }
 
