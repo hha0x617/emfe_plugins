@@ -1030,6 +1030,17 @@ bool EvaluateCondition(const Em68030::Core::MC68030& cpu, const char* condition)
 void EmfeInstanceData::EmulationLoop() {
     try {
         auto& c = *cpu;
+        // Infinite-loop halt detector.  Linux machine_halt() compiles to
+        // `bra.s 1b` (60 FE) — a tight self-branch with interrupts disabled.
+        // The CPU keeps fetching the same PC forever, never sets Halted, and
+        // never executes STOP, so the explicit-halt checks below cannot
+        // catch it.  Mirror the standalone em68030's MainViewModel detector
+        // (1000 consecutive identical PCs → halt).  Same-PC only: a real
+        // spinlock waiting for an IRQ resets the counter as soon as the
+        // interrupt handler dispatches, so this does not falsely trip on
+        // ordinary kernel code.
+        uint32_t loopDetectPC = UINT32_MAX;
+        int loopDetectCount = 0;
         while (!stopRequested.load(std::memory_order_relaxed)) {
             // Check breakpoints (with condition evaluation)
             if (!enabledBreakpoints.empty() && enabledBreakpoints.contains(c.PC)) {
@@ -1065,6 +1076,20 @@ void EmfeInstanceData::EmulationLoop() {
                 NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT, c.PC,
                                   c.StopReason.empty() ? "CPU halted" : c.StopReason.c_str());
                 return;
+            }
+
+            // Same-PC infinite-loop check.  See declaration above for rationale.
+            if (c.PC == loopDetectPC) {
+                if (++loopDetectCount >= 1000) {
+                    c.Halted = true;
+                    c.StopReason = std::format("Infinite loop at ${:08X}", c.PC);
+                    NotifyStateChange(EMFE_STATE_HALTED, EMFE_STOP_REASON_HALT, c.PC,
+                                      c.StopReason.c_str());
+                    return;
+                }
+            } else {
+                loopDetectPC = c.PC;
+                loopDetectCount = 0;
             }
 
             // Check watchpoint hit (with condition evaluation)
