@@ -1251,24 +1251,26 @@ static std::string& GetDataDirString() {
 }
 
 static std::filesystem::path GetSettingsPath() {
+    // Settings persistence is host-driven: emfe_WinUI3Cpp / emfe_CsWPF call
+    // emfe_set_data_dir on plugin load with a per-host per-plugin path under
+    // %LOCALAPPDATA%\<app>\<plugin-stem>.  The Windows LOCALAPPDATA fallback
+    // (the plugin inventing its own top-level directory) was removed because
+    // it polluted the user profile and bypassed the per-host layout.  An
+    // empty path makes load/save no-op gracefully; the XDG-style Linux
+    // fallback remains because it lives under $HOME/.config and is
+    // user-namespaced.
     auto& dir = GetDataDirString();
     if (dir.empty()) {
 #ifdef _WIN32
-        wchar_t* appData = nullptr;
-        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appData)) && appData) {
-            std::filesystem::path defaultDir = std::filesystem::path(appData) / L"emfe_plugin_em8";
-            ::CoTaskMemFree(appData);
-            dir = defaultDir.string();
-        }
+        return {};
 #else
         const char* home = std::getenv("HOME");
         if (home) dir = std::string(home) + "/.config/emfe_plugin_em8";
 #endif
     }
-    if (!dir.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
-    }
+    if (dir.empty()) return {};
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     return std::filesystem::path(dir) / "appsettings.json";
 }
 
@@ -1375,6 +1377,8 @@ EmfeResult EMFE_CALL emfe_save_settings(EmfeInstance instance) {
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
     try {
         auto path = GetSettingsPath();
+        // No data dir configured — skip persistence silently.
+        if (path.empty()) return EMFE_OK;
         std::ofstream ofs(path);
         if (!ofs.is_open()) {
             inst->lastError = "Failed to open settings file for writing";
@@ -1400,7 +1404,7 @@ EmfeResult EMFE_CALL emfe_load_settings(EmfeInstance instance) {
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
     try {
         auto path = GetSettingsPath();
-        if (!std::filesystem::exists(path)) return EMFE_OK;
+        if (path.empty() || !std::filesystem::exists(path)) return EMFE_OK;
 
         std::ifstream ifs(path);
         if (!ifs.is_open()) return EMFE_OK;

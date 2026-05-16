@@ -2714,8 +2714,12 @@ pub extern "C" fn emfe_remove_list_item(
 // ---------------------------------------------------------------------------
 // Settings persistence — matches em8 / z8000 / mc68030 convention:
 // writes `<data_dir>/appsettings.json` where `data_dir` is the directory
-// supplied by the frontend via `emfe_set_data_dir`, falling back to
-// `%LOCALAPPDATA%\emfe_plugin_mc6809\` if the frontend did not set one.
+// supplied by the frontend via `emfe_set_data_dir`.  If the frontend has not
+// set one (e.g. the plugin is loaded by a test program), `get_settings_path`
+// returns `None` and load/save are no-ops.  The earlier `%LOCALAPPDATA%\
+// emfe_plugin_mc6809\` fallback was removed because it polluted the user
+// profile and bypassed the per-host `%LOCALAPPDATA%\<app>\<plugin-stem>`
+// layout that emfe_WinUI3Cpp / emfe_CsWPF establish.
 // ---------------------------------------------------------------------------
 
 fn data_dir_cell() -> &'static Mutex<Option<String>> {
@@ -2724,14 +2728,7 @@ fn data_dir_cell() -> &'static Mutex<Option<String>> {
 }
 
 fn get_settings_path() -> Option<PathBuf> {
-    let mut guard = data_dir_cell().lock().ok()?;
-    if guard.is_none() {
-        // Fallback: %LOCALAPPDATA%\emfe_plugin_mc6809
-        if let Ok(lad) = std::env::var("LOCALAPPDATA") {
-            let p = PathBuf::from(lad).join("emfe_plugin_mc6809");
-            *guard = Some(p.to_string_lossy().into_owned());
-        }
-    }
+    let guard = data_dir_cell().lock().ok()?;
     let dir = guard.as_ref()?.clone();
     if dir.is_empty() {
         return None;
@@ -2807,10 +2804,10 @@ pub unsafe extern "C" fn emfe_save_settings(instance: EmfeInstance) -> EmfeResul
         };
         let path = match get_settings_path() {
             Some(p) => p,
-            None => {
-                inst.last_error = CString::new("No data dir available").unwrap();
-                return EmfeResult::ErrIo;
-            }
+            // No data dir configured — host did not call emfe_set_data_dir.
+            // Skip persistence silently, matching em8/z8000/mc68030 and
+            // letting non-emfe hosts (test programs) succeed.
+            None => return EmfeResult::Ok,
         };
 
         let mut out = String::from("{\n");

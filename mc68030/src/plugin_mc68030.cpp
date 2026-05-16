@@ -1171,10 +1171,13 @@ EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instance) {
     if (!inst) return EMFE_ERR_MEMORY;
 
     try {
-        // Load settings from emfe-managed location (set via emfe_set_data_dir or default)
+        // Load settings from the emfe-managed location.  GetSettingsPath
+        // returns an empty path when the host has not called
+        // emfe_set_data_dir; treat that as "no persisted settings yet" and
+        // keep the in-memory defaults.
         try {
             auto path = GetSettingsPath();
-            if (std::filesystem::exists(path)) {
+            if (!path.empty() && std::filesystem::exists(path)) {
                 std::ifstream ifs(path);
                 if (ifs.is_open()) {
                     nlohmann::json j = nlohmann::json::parse(ifs);
@@ -2622,20 +2625,19 @@ static std::string& GetDataDirString() {
 }
 
 static std::filesystem::path GetSettingsPath() {
+    // Settings persistence is only enabled when the host has called
+    // emfe_set_data_dir.  The plugin must NOT invent a fallback path:
+    // earlier revisions dropped an `emfe_plugin_m68030/` directory directly
+    // under %LOCALAPPDATA% (also with a typo — missing the 'c'), which
+    // polluted the user's profile and bypassed the per-host
+    // %LOCALAPPDATA%\<app>\<plugin-stem> layout that emfe_WinUI3Cpp /
+    // emfe_CsWPF set up.  Returning an empty path here makes the load/save
+    // call sites no-op gracefully, which is the right behaviour when the
+    // plugin is loaded standalone (e.g. test_plugin.exe).
     auto& dir = GetDataDirString();
-    if (dir.empty()) {
-        // Default to %LOCALAPPDATA%\emfe_plugin_m68030
-        wchar_t* appData = nullptr;
-        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appData)) && appData) {
-            std::filesystem::path defaultDir = std::filesystem::path(appData) / L"emfe_plugin_m68030";
-            ::CoTaskMemFree(appData);
-            dir = defaultDir.string();
-        }
-    }
-    if (!dir.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
-    }
+    if (dir.empty()) return {};
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     return std::filesystem::path(dir) / "appsettings.json";
 }
 
@@ -2654,6 +2656,10 @@ EmfeResult EMFE_CALL emfe_save_settings(EmfeInstance instance) {
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
     try {
         auto path = GetSettingsPath();
+        // No data dir configured — host did not call emfe_set_data_dir.
+        // Silently skip persistence (returning OK lets non-emfe hosts and
+        // test programs proceed without spurious IO errors).
+        if (path.empty()) return EMFE_OK;
         nlohmann::json j = inst->config;
         std::ofstream ofs(path);
         if (!ofs.is_open()) {
@@ -2673,7 +2679,7 @@ EmfeResult EMFE_CALL emfe_load_settings(EmfeInstance instance) {
     auto inst = reinterpret_cast<EmfeInstanceData*>(instance);
     try {
         auto path = GetSettingsPath();
-        if (std::filesystem::exists(path)) {
+        if (!path.empty() && std::filesystem::exists(path)) {
             std::ifstream ifs(path);
             if (ifs.is_open()) {
                 nlohmann::json j = nlohmann::json::parse(ifs);
