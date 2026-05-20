@@ -38,8 +38,8 @@ Emulator backends are built as DLLs and connected to the frontends
 
 | Project | Role |
 |---|---|
-| [`emfe_WinUI3Cpp/`](../../emfe_WinUI3Cpp/) | C++ WinUI3 frontend |
-| [`emfe_CsWPF/`](../../emfe_CsWPF/) | C# WPF frontend |
+| [`emfe_WinUI3Cpp`](https://github.com/hha0x617/emfe_WinUI3Cpp) | C++ WinUI3 frontend |
+| [`emfe_CsWPF`](https://github.com/hha0x617/emfe_CsWPF) | C# WPF frontend |
 
 ### Plugins
 

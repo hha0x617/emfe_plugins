@@ -39,8 +39,8 @@ English: see [`README.md`](README.md).
 
 | プロジェクト | 役割 |
 |---|---|
-| [`emfe_WinUI3Cpp/`](../../emfe_WinUI3Cpp/) | C++ WinUI3 フロントエンド |
-| [`emfe_CsWPF/`](../../emfe_CsWPF/) | C# WPF フロントエンド |
+| [`emfe_WinUI3Cpp`](https://github.com/hha0x617/emfe_WinUI3Cpp) | C++ WinUI3 フロントエンド |
+| [`emfe_CsWPF`](https://github.com/hha0x617/emfe_CsWPF) | C# WPF フロントエンド |
 
 ### プラグイン
 
