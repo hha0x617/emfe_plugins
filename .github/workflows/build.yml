@@ -12,7 +12,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Detect whether a PR touches anything other than Markdown / LICENSE.
+  # Docs-only PRs short-circuit the build job below, which costs ~15 s of
+  # ubuntu-latest instead of the full Rust + 3×CMake + Inno Setup pipeline.
+  # Skipped jobs are treated as success for required status checks, so the
+  # `build` context remains satisfied.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_code: ${{ steps.detect.outputs.has_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Detect non-docs changes
+        id: detect
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "Not a PR (event=${{ github.event_name }}) — always build"
+            echo "has_code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files:"
+          echo "$CHANGED"
+          NON_DOCS=$(echo "$CHANGED" | grep -vE '(\.md$|^LICENSE)' || true)
+          if [ -n "$NON_DOCS" ]; then
+            echo "Non-docs files present — build will run"
+            echo "has_code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docs-only PR — build will be skipped"
+            echo "has_code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: [changes]
+    if: needs.changes.outputs.has_code == 'true'
     runs-on: windows-latest
     permissions:
       contents: write
