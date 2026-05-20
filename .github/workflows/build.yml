@@ -204,6 +204,11 @@ jobs:
         shell: bash
         run: |
           TAG="${{ github.ref_name }}"
+          # Auto-generate "What's Changed" — PRs merged between the previous
+          # v* tag and this one. Returns empty body for the very first release,
+          # which just renders an empty section under the separator.
+          AUTO_NOTES=$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -F tag_name="$TAG" --jq .body 2>/dev/null || true)
           # Delete existing release if tag was moved to a new commit.
           gh release delete "$TAG" --yes 2>/dev/null || true
           gh release create "$TAG" "${ZIP_NAME}" "${SETUP_EXE_PATH}" --title "$TAG" --notes "$(cat <<EOF
@@ -253,5 +258,9 @@ jobs:
           Upstream CPU cores:
           - [em6809-core](https://github.com/hha0x617/em6809-core) (MIT OR Apache-2.0) — pinned via Cargo \`git\` rev (see \`mc6809/Cargo.toml\`)
           - [Em68030_WinUI3Cpp](https://github.com/hha0x617/Em68030_WinUI3Cpp) (Apache-2.0) — pinned via submodule (\`external/em68030_WinUI3Cpp\`)
+
+          ---
+
+          ${AUTO_NOTES}
           EOF
           )"
