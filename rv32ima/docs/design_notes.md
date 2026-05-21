@@ -46,18 +46,25 @@ emfe plugin straightforward.
 | License | 3rd-party code retained; attribution required |
 | Path to future JIT | mostly rewrite |
 
-### Option B — Full self-implementation (like em8 / z8000)
+### Option B — Full self-implementation (like em8 / z8000) **(recommended)**
+
+Implement the RV32IMA core from the RISC-V unprivileged + privileged
+specifications, in the same single-translation-unit-per-instruction-group
+style used by `em8`, `mc6809`, `z8000`, and `mc68030`. mini-rv32ima's
+source is consulted as a behavioural cross-reference only; no code is
+borrowed.
 
 | Aspect | Rating |
 |---|---|
 | Code size | 1500–2000 LoC |
 | Time to Linux boot | 5–8 days |
-| Consistency | ◎ |
+| Consistency with existing plugins | ◎ |
 | Debugger flexibility | high |
-| License | original |
+| License | original throughout — no third-party attribution needed |
 | Future JIT | extends naturally |
+| Educational clarity | ◎ (single coherent reading of the source) |
 
-### Option C — Fork / derive from mini-rv32ima **(recommended)**
+### Option C — Fork / derive from mini-rv32ima
 
 Use mini-rv32ima's implementation as starter code and refactor it into the
 emfe plugin style: split files, install a handler table for instruction
@@ -151,13 +158,19 @@ spot in the design space.
 
 ### This cycle
 
-**Implement emfe_plugin_rv32ima using Option C (fork + modify).**
+**Implement emfe_plugin_rv32ima using Option B (full self-implementation).**
+
+mini-rv32ima's source serves only as a behavioural cross-reference; no
+code is borrowed. The plugin is written from the RISC-V unprivileged +
+privileged specifications, in the same style as every other plugin in
+this family.
 
 Layout:
 - `D:\projects\emfe_plugins\rv32ima\`
 - DLL: `emfe_plugin_rv32ima.dll`
 - Same naming / deployment rules as other plugins
-- Default RAM: 64 MB (mini-rv32ima's default)
+- Default RAM: 64 MB (matches mini-rv32ima's default for ease of
+  cross-comparison while validating)
 
 ### Future extensions (priority order)
 
@@ -183,15 +196,18 @@ trap path). 1e / 1f complete the emfe integration and user-facing story.
 
 ## 9. Open questions
 
-- [ ] Where to place mini-rv32ima starter code: `rv32ima/third_party/` vs.
-      pasted directly into `rv32ima/src/`?
 - [ ] Default search path / setting for the user-supplied Linux image (kernel
       + DTB)?
 - [ ] Embed the device tree blob in the plugin, or leave it as an external
       file the user must provide?
 - [ ] Block device (virtio-blk-equivalent) for rootfs: Phase 1 or deferred to
       Phase 2?
-- [ ] ELF loading on top of mini-rv32ima's raw-binary expectation?
+- [ ] ELF loader support (in addition to raw-binary load), to match the
+      convention used by `mc68030`?
+- [ ] Which existing implementations to consult as behavioural cross-
+      references during Phase 1? `mini-rv32ima` is the most obvious; QEMU
+      and Spike are options for trickier corners (CSR semantics, trap
+      delivery).
 
 ## 10. References
 

@@ -44,18 +44,24 @@ emfe プラグインアーキテクチャ上で、MMU を持たない RISC-V サ
 | ライセンス | 3rd party コードのまま、著作権表示必要 |
 | 将来 JIT | ほぼ書き直し |
 
-### 案 B: 完全自前実装 (em8/z8000 と同じスタイル)
+### 案 B: 完全自前実装 (em8/z8000 と同じスタイル) **(推奨)**
+
+RISC-V unprivileged + privileged 仕様から RV32IMA core を実装する。
+`em8`、`mc6809`、`z8000`、`mc68030` と同じ「命令グループ単位の translation
+unit」スタイル。mini-rv32ima のソースは挙動 cross-reference としてのみ
+参照、コード借用なし。
 
 | 項目 | 評価 |
 |---|---|
 | 実装規模 | 1500〜2000 行 |
 | 着工〜Linux ブート | 5〜8 日 |
-| 一貫性 | ◎ |
+| 既存プラグインとの一貫性 | ◎ |
 | デバッガ自由度 | 高 |
-| ライセンス | オリジナル |
+| ライセンス | 全面 original — third-party attribution 不要 |
 | 将来 JIT | 素直に拡張可能 |
+| 教育的明快さ | ◎ (1 本筋の通った読み物) |
 
-### 案 C: mini-rv32ima をコード流用・emfe 用に改変 **(推奨)**
+### 案 C: mini-rv32ima をコード流用・emfe 用に改変
 
 mini-rv32ima の実装を初期コードとして使い、emfe プラグイン用にファイル分割・
 命令ハンドラ table 化・デバッグフック追加を行う。3 ライセンスのうち MIT/BSD/CC0
@@ -146,13 +152,17 @@ mini-rv32ima はこれらを概ね**回避**しながら Linux を起動でき�
 
 ### 今回着手
 
-**案 C (コード流用 + 改変) で emfe_plugin_rv32ima を実装する**
+**案 B (完全自前実装) で emfe_plugin_rv32ima を実装する**
+
+mini-rv32ima のソースは挙動 cross-reference としてのみ参照、コード
+借用なし。RISC-V unprivileged + privileged 仕様から、他プラグインと
+同じスタイルで書き下ろす。
 
 構成:
 - `D:\projects\emfe_plugins\rv32ima\`
 - DLL 名: `emfe_plugin_rv32ima.dll`
 - 他プラグインと同じ命名規則・配置ルール
-- デフォルト RAM: 64MB (mini-rv32ima デフォルト)
+- デフォルト RAM: 64MB (mini-rv32ima デフォルトと一致、検証時の cross-comparison しやすさのため)
 
 ### 将来拡張 (優先度順)
 
@@ -178,10 +188,11 @@ mini-rv32ima はこれらを概ね**回避**しながら Linux を起動でき�
 
 ## 9. 未決事項
 
-- [ ] mini-rv32ima の初期コード流用元をどこにコピーするか (`rv32ima/third_party/` か `rv32ima/src/` 内直接か)
 - [ ] ユーザが用意する Linux イメージ (kernel + DTB) の想定デフォルトパス
 - [ ] デバイスツリーを emfe プラグイン内に埋め込むか、外部ファイルとするか
 - [ ] ブロックデバイス (rootfs 用 virtio-blk 相当) を Phase 1 に含めるか Phase 2 に回すか
+- [ ] ELF ローダ対応 (`mc68030` の作法と整合させるか、raw binary load のみで十分か)
+- [ ] Phase 1 中、挙動 cross-reference として参照すべき既存実装はどれか — mini-rv32ima が最も近い、QEMU や Spike は CSR セマンティクス / trap 配信などの難所で参考になる
 - [ ] ELF 直接ロード対応の可否 (mini-rv32ima は raw binary 前提)
 
 ## 10. 参考資料
