@@ -171,14 +171,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          Write-Host "Scanning release artifacts with Windows Defender..."
-          # Signature update is best-effort; transient runner failures
-          # should not block the release.
-          try {
-            Update-MpSignature -ErrorAction Stop
-            Write-Host "Signatures updated."
-          } catch {
-            Write-Warning "Signature update failed (continuing with stale signatures): $_"
+          # Invoke Defender via MpCmdRun.exe (the standalone CLI) rather than
+          # the PowerShell `Defender` module's cmdlets (Start-MpScan etc.).
+          # The module wraps WMI/COM and exhibits sporadic "Provider load
+          # failure" on GitHub-hosted Windows runners under pwsh 7; the .exe
+          # is the underlying engine entry point and is unaffected.
+          $mpCmdRun = "C:\Program Files\Windows Defender\MpCmdRun.exe"
+          if (-not (Test-Path $mpCmdRun)) {
+            Write-Error "MpCmdRun.exe not found at $mpCmdRun"
+            exit 1
           }
           # Resolve installer setup.exe path (filename embeds APP_VERSION).
           $setupExe = Get-ChildItem dist\emfe_plugins-*-setup.exe | Select-Object -First 1
@@ -188,14 +189,31 @@ jobs:
           }
           echo "SETUP_EXE_NAME=$($setupExe.Name)" >> $env:GITHUB_ENV
           echo "SETUP_EXE_PATH=$($setupExe.FullName)" >> $env:GITHUB_ENV
-          Start-MpScan -ScanType CustomScan -ScanPath "$PWD\${env:ZIP_NAME}"
-          Start-MpScan -ScanType CustomScan -ScanPath "$($setupExe.FullName)"
-          $threats = Get-MpThreatDetection 2>$null
-          if ($threats) {
-            Write-Error "Threat detected: $($threats | Format-List | Out-String)"
-            exit 1
+          Write-Host "Scanning release artifacts with Windows Defender (MpCmdRun.exe)..."
+          # Signature update — best-effort; runner-side failures should not
+          # fail the build, the scan still runs with whatever signatures
+          # are currently loaded.
+          & $mpCmdRun -SignatureUpdate
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Signature update failed (exit $LASTEXITCODE), continuing with stale signatures"
           }
-          Write-Host "Scan passed: no threats detected."
+          # MpCmdRun exit codes:
+          #   0 = no malware found
+          #   2 = malware detected
+          #   other = engine error
+          foreach ($target in @("$PWD\${env:ZIP_NAME}", $setupExe.FullName)) {
+            Write-Host "Scanning: $target"
+            & $mpCmdRun -Scan -ScanType 3 -File $target -DisableRemediation
+            switch ($LASTEXITCODE) {
+              0 { Write-Host "  -> clean" }
+              2 { Write-Error "  -> threat detected (MpCmdRun exit 2)"; exit 1 }
+              default {
+                Write-Error "  -> scan engine error (exit $LASTEXITCODE)"
+                exit $LASTEXITCODE
+              }
+            }
+          }
+          Write-Host "All scans passed: no threats detected."
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
