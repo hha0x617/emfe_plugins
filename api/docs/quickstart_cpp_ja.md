@@ -7,7 +7,7 @@
 [`plugin_developer_guide_ja.md`](plugin_developer_guide_ja.md) を参照。
 
 参考にできる既存プラグイン:
-- `emfe_plugins/em8/` — 最小 (8 bit 学習用 CPU、約 1,400 行)
+- `emfe_plugins/em8/` — 最小 (コンパクト 8-bit CPU、約 1,400 行)
 - `emfe_plugins/z8000/` — 中規模 (Z8000 ファミリー、自前実装)
 - `emfe_plugins/mc68030/` — 大規模 (外部 Em68030 を C++ でラップ)
 
@@ -293,5 +293,5 @@ dumpbin /dependents build/bin/Release/emfe_plugin_foo.dll
 - 契約詳細は
   [`plugin_developer_guide_ja.md`](plugin_developer_guide_ja.md)
   (スレッド、文字列所有権、ステートマシンなど)
-- 類似プラグインをコピーして改変: 単純な toy CPU なら em8、自前実装
-  ISA なら z8000、外部エンジンのラップなら mc68030
+- 類似プラグインをコピーして改変: コンパクト・最小規模 CPU が対象なら em8、
+  自前実装 ISA なら z8000、外部エンジンのラップなら mc68030
