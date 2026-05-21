@@ -48,7 +48,7 @@ All under [`emfe_plugins/`](../) (the parent of this `api/` directory):
 | Plugin | CPU / system | Implementation language |
 |---|---|---|
 | [`mc68030/`](../mc68030/) | Motorola MC68030 (MVME147 board) | C++ (wraps Em68030) |
-| [`em8/`](../em8/) | EM8 (toy 8-bit) | C++ (self-contained) |
+| [`em8/`](../em8/) | EM8 (compact 8-bit) | C++ (self-contained) |
 | [`z8000/`](../z8000/) | Zilog Z8000 family (Z8001/Z8002/Z8003/Z8004) | C++ (self-contained) |
 | [`mc6809/`](../mc6809/) | Motorola MC6809 + MC6850 ACIA | Rust (wraps em6809) |
 

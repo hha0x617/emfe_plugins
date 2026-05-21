@@ -6,7 +6,7 @@ The target is a Windows DLL statically linked against the MSVC runtime.
 For the contract details, see [`plugin_developer_guide.md`](plugin_developer_guide.md).
 
 Existing plugins you can copy from:
-- `emfe_plugins/em8/` — smallest plugin (8-bit toy CPU, ~1400 LoC)
+- `emfe_plugins/em8/` — smallest plugin (compact 8-bit CPU, ~1400 LoC)
 - `emfe_plugins/z8000/` — mid-size (Z8000 family, self-implemented)
 - `emfe_plugins/mc68030/` — largest (wraps external Em68030 C++ emulator)
 
@@ -292,5 +292,5 @@ that loads the plugin via the C ABI and exercises all entry points.
 
 - Read [`plugin_developer_guide.md`](plugin_developer_guide.md) for the
   contract details (threading, string ownership, state machine, ...)
-- Copy a similar plugin and adapt: em8 for simple toy CPUs, z8000 for
-  self-implemented ISAs, mc68030 for wrapping an external engine.
+- Copy a similar plugin and adapt: em8 for compact / minimal CPU targets,
+  z8000 for self-implemented ISAs, mc68030 for wrapping an external engine.
