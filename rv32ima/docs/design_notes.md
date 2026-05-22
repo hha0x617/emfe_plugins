@@ -1,17 +1,28 @@
 # emfe_plugin_rv32ima — Design Notes
 
-Date: 2026-04-18
+Date: 2026-04-18 (revised 2026-05-22)
 Status: **Design phase** — not yet implemented
 
 ## 1. Goal
 
-Build an emfe plugin that hosts an MMU-less RISC-V subset (rv32ima) Linux
-system on top of the existing emfe plugin architecture.
+Build an emfe plugin for **RV32IMA** as a **"modern RISC playground"** —
+the modern-RISC counterpart to the family's classic CISC plugins
+(`mc6809`, `z8000`, `mc68030`), positioned for ISA learning, embedded /
+RTOS experimentation, and ISA-compliance checking rather than for
+mainstream Linux distribution hosting.
 
-Reference: [cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima).
-The target is to boot a Linux kernel + DTB + rootfs built with the companion
-Buildroot configuration (`qemu_riscv32_nommu_virt_defconfig`) directly inside
-the plugin.
+Key consequence of this positioning: the plugin does **not** chase
+mainstream RV Linux distros, because mainstream RV distros all target
+RVA20 (RV64GC), which is a substantially larger plugin (5000–8000 LoC)
+and slow without JIT (boot 10–30 min). RV32IMA's value is **smallness
+and speed**, and the stress-target story is told via a **portfolio**
+rather than a single Linux distro.
+
+Reference implementation studied for behavioural cross-reference:
+[cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima). Its
+companion Buildroot configuration (`qemu_riscv32_nommu_virt_defconfig`)
+provides one of the portfolio's stress targets (Linux nommu booting in
+seconds), but is no longer the singular goal.
 
 ## 2. Background — What mini-rv32ima is
 
@@ -124,10 +135,22 @@ riscv64 only; RV32 exists in Gentoo and Buildroot in practice.
 
 ### Implication
 
-- OSes bootable on our mini-rv32ima plugin: **Linux built via the
-  mini-rv32ima-specific Buildroot configuration only.**
-- To run Debian / Ubuntu / NetBSD, a **separate plugin** (RV64GC + MMU +
-  PLIC) would be required — not in scope here.
+- Mainstream distros do not run on RV32IMA, period — even Alpine targets
+  RVA20 (RV64GC), so even with Sv32 MMU added, mainstream userspace
+  binaries (which use F/D/C instructions) would not execute.
+- This was the original motivation for treating "boot a mainstream
+  distro" as the goal, but it does not survive contact with the RV
+  ecosystem reality.
+- **Pivot adopted on 2026-05-22**: the plugin's value proposition is
+  *not* "boot a Linux distro" — it is **"modern RISC playground"** —
+  fast, small, readable, and validated against a curated portfolio of
+  stress targets (see §7). Linux nommu (via mini-rv32ima Buildroot)
+  remains in the portfolio as one item, not the only item.
+- To run Debian / Ubuntu / NetBSD / OpenBSD / FreeBSD, a **separate
+  plugin** (RV64GC + Sv39 + PLIC + JIT) would be required — explicitly
+  deferred, possibly indefinitely. The family already has an OS-booting
+  plugin in `mc68030` (NetBSD/m68k, Linux 6.12); a second "Linux distro"
+  plugin via RISC-V is not the current priority.
 
 ## 6. Performance projections
 
@@ -156,6 +179,24 @@ spot in the design space.
 
 ## 7. Direction (agreed)
 
+### Positioning — "modern RISC playground"
+
+The plugin is the family's **modern-RISC representative** rather than a
+"boot Linux on RV" vehicle. It earns its place in the lineup through:
+
+- **Smallness and speed** — 1500–2000 LoC interpreter, 100–200 MIPS
+  projected; everything boots in seconds.
+- **Educational clarity** — RV32IMA is the textbook ISA used in the
+  current edition of Patterson & Hennessy and most contemporary CS
+  curricula. Source is meant to be read alongside the spec.
+- **Portfolio of stress targets** (see Phase 7) — Linux nommu, FreeRTOS,
+  riscv-tests, CoreMark, bare-metal C examples — covering several
+  different teaching and demo angles, not a single "did Linux boot"
+  question.
+- **mc68030 carries the OS-booting story** — the family already has
+  NetBSD/m68k and Linux 6.12 booting via that plugin. The RV plugin
+  does not need to duplicate that effort.
+
 ### This cycle
 
 **Implement emfe_plugin_rv32ima using Option B (full self-implementation).**
@@ -172,27 +213,62 @@ Layout:
 - Default RAM: 64 MB (matches mini-rv32ima's default for ease of
   cross-comparison while validating)
 
-### Future extensions (priority order)
+### Future extensions (deferred — possibly indefinitely)
 
-1. **rv64ima** (with MMU) — 32 → 64-bit extension without F/D/C. Brings Alpine
-   and Void within reach while reusing Phase 1 foundations.
-2. **RV64GC** — add F/D + compressed. JIT required to be usable.
-3. **JIT** — reapply em68030 lessons (deferred snapshot, block cache,
-   bailout blacklist, inline dispatch).
+The pre-pivot plan listed `rv64ima → RV64GC → JIT` as a priority queue
+toward mainstream Linux distros. With the playground positioning, that
+ladder is no longer on the active roadmap:
 
-## 8. Phase 1 (rv32ima) work breakdown
+1. **rv64ima + Sv39** (no F/D/C) — would unlock custom Alpine-musl
+   rebuilds, but the procurement friction remains and the extra
+   1000–1500 LoC buys little marquee value. **Deferred.**
+2. **RV64GC** — full mainstream RV Linux. 5000–8000 LoC + soft-float +
+   Sv39 + compressed decode + M/S/U delegation. Boot 10–30 min without
+   JIT. **Treated as a separate future plugin, not an extension of this
+   one.** When (if) tackled, it gets its own design notes.
+3. **JIT** — applies to either this plugin or a future RV64GC plugin.
+   Lessons from `mc68030`'s JIT (deferred snapshot, block cache,
+   bailout blacklist, inline dispatch) carry over. Not on the Phase
+   1–7 roadmap for `rv32ima`.
+
+## 8. Phase plan
+
+The interpreter implementation (Phases 1–6) is unchanged by the pivot to
+playground positioning — the core ISA and supervisor machinery is what
+it is. **Phase 7** is new and exists to make the playground positioning
+concrete via a curated stress-target portfolio.
+
+### Phases 1–6 (interpreter implementation, unchanged)
 
 | Phase | Scope | Est. LoC |
 |---|---|---|
-| 1a | RV32I base (arith / logic / load / store / branch / JAL[R]) | 400 |
-| 1b | M extension (MUL/DIV) + Zifencei + Zicsr | 200 |
-| 1c | A extension (AMO) | 150 |
-| 1d | Privileged modes + CSRs + trap/interrupt | 500 |
-| 1e | CLINT + UART (8250) + SYSCON + boot stub | 400 |
-| 1f | Disassembler + plugin ABI + tests | 400 |
+| 1 | RV32I base (arith / logic / load / store / branch / JAL[R]) | 400 |
+| 2 | M extension (MUL/DIV) + Zifencei + Zicsr | 200 |
+| 3 | A extension (AMO) | 150 |
+| 4 | Privileged modes + CSRs + trap/interrupt | 500 |
+| 5 | CLINT + UART (8250) + SYSCON + boot stub | 400 |
+| 6 | Disassembler + emfe plugin ABI + `riscv-tests` passing | 400 |
 
-Linux boot becomes feasible once 1a–1d are functional (minimal machine-mode
-trap path). 1e / 1f complete the emfe integration and user-facing story.
+`riscv-tests` (BSD-licensed official RISC-V ISA compliance suite) is the
+Phase 6 acceptance gate. Once it passes, the plugin is provably
+spec-correct for RV32IMA + Zifencei + Zicsr + machine-mode supervisor.
+
+### Phase 7 — stress-target portfolio (new)
+
+| Category | Target | License | Source / status |
+|---|---|---|---|
+| Linux nommu | mini-rv32ima Buildroot Linux image | GPL-2.0 (Linux) + Buildroot composition licenses | Pre-built in companion repo (see §10), one-shot reproduction recipe alongside |
+| Bare-metal RTOS | **FreeRTOS** RISC-V port | MIT | Demo bundle in companion repo |
+| Bare-metal RTOS | **Zephyr** (RISC-V support) | Apache-2.0 | Optional — added if FreeRTOS demo lands cleanly |
+| Compliance | **riscv-tests** | BSD | Re-used from Phase 6 acceptance gate; also shipped to end users as a "you can run the official compliance suite" demo |
+| Benchmark | **CoreMark** / **Dhrystone** | BSD with attribution | For "modern RISC playground" performance demonstration |
+| Bare-metal C | **picolibc**-based examples | BSD | Original example programs showcasing the ISA at minimal scaffolding |
+
+Phase 7 does not add interpreter LoC; it adds curated demo content and
+recipes. The actual binaries / images that ship are stored in a
+**companion repository** (see §10) to keep this plugin's MIT/Apache
+tree clean of upstream-licensed payloads — same pattern as the Z80
+plugin's `emfe_plugin_z80_cpm22` companion.
 
 ## 9. Open questions
 
@@ -200,16 +276,51 @@ trap path). 1e / 1f complete the emfe integration and user-facing story.
       + DTB)?
 - [ ] Embed the device tree blob in the plugin, or leave it as an external
       file the user must provide?
-- [ ] Block device (virtio-blk-equivalent) for rootfs: Phase 1 or deferred to
-      Phase 2?
+- [ ] Block device (virtio-blk-equivalent) for rootfs: Phase 5 or deferred to
+      Phase 7 (as part of the Linux nommu demo)?
 - [ ] ELF loader support (in addition to raw-binary load), to match the
       convention used by `mc68030`?
 - [ ] Which existing implementations to consult as behavioural cross-
       references during Phase 1? `mini-rv32ima` is the most obvious; QEMU
       and Spike are options for trickier corners (CSR semantics, trap
       delivery).
+- [ ] Companion-repository naming for the Phase 7 portfolio. Working name:
+      `emfe_plugin_rv32ima_demos`. Should each stress-target category be a
+      sub-directory under one repo, or split across multiple companions?
+      First answer: single repo, sub-directories — keeps the Phase 7
+      portfolio discoverable in one place; precedent is
+      `emfe_plugin_z80_cpm22` doing the analogous thing for one license
+      zone.
 
-## 10. References
+## 10. Companion repository
+
+Phase 7 stress targets are delivered through a companion repository (to
+keep this plugin's MIT/Apache source tree clean of upstream-licensed
+payloads). Working name: **`emfe_plugin_rv32ima_demos`** (not yet
+created). Anticipated layout:
+
+```
+emfe_plugin_rv32ima_demos/
+├── README.md                — purpose and license posture
+├── linux-nommu/             — mini-rv32ima Buildroot image + recipe
+│                              (Linux GPL-2.0 + per-package licenses)
+├── freertos/                — FreeRTOS RISC-V port demo (MIT)
+├── riscv-tests/             — official ISA compliance suite (BSD)
+├── coremark/                — CoreMark benchmark (BSD, attribution)
+└── baremetal-c/             — picolibc-based examples (BSD + original)
+```
+
+The companion-repo pattern is the same one used by the Z80 plugin's
+`emfe_plugin_z80_cpm22` (CP/M-only payloads under a separate license).
+Here the motivation is mixed-license payloads from a variety of
+upstream projects rather than a single restrictive license, but the
+solution structure is identical.
+
+The companion repo will be created when Phase 6 is in sight, not
+sooner — there is no point assembling stress targets for an
+interpreter that does not yet exist.
+
+## 11. References
 
 - [cnlohr/mini-rv32ima](https://github.com/cnlohr/mini-rv32ima)
 - [cnlohr/buildroot_for_mini_rv32ima](https://github.com/cnlohr/buildroot_for_mini_rv32ima)
