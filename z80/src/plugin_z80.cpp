@@ -43,6 +43,13 @@ struct EmfeInstanceData {
     Z80Uart uart;
     Z80Timer timer;
     std::atomic<EmfeState> state{EMFE_STATE_STOPPED};
+
+    // Console char callback (set by the host) — fired whenever the
+    // guest writes a byte to the UART data port. Stored under a mutex
+    // so the host can swap it while the worker thread is running.
+    EmfeConsoleCharCallback consoleCharCb = nullptr;
+    void* consoleCharUserData = nullptr;
+    std::mutex consoleCbMutex;
 };
 
 static inline EmfeInstanceData* to_inst(EmfeInstance i) {
@@ -70,6 +77,20 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
     auto* inst = new (std::nothrow) EmfeInstanceData();
     if (!inst) return EMFE_ERR_MEMORY;
     inst->cpu.Memory = &inst->memory;
+    inst->memory.Uart = &inst->uart;
+    inst->memory.Timer = &inst->timer;
+    // Wire UART TX → console char callback. Captures `inst` so we can
+    // grab the latest callback under the mutex when each byte fires.
+    inst->uart.TxCallback = [inst](uint8_t ch) {
+        EmfeConsoleCharCallback cb = nullptr;
+        void* user = nullptr;
+        {
+            std::lock_guard lock(inst->consoleCbMutex);
+            cb = inst->consoleCharCb;
+            user = inst->consoleCharUserData;
+        }
+        if (cb) cb(user, static_cast<char>(ch));
+    };
     inst->cpu.Reset();
     inst->memory.Reset();
     inst->uart.Reset();
@@ -89,8 +110,13 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_destroy(EmfeInstance instance) 
 // ============================================================================
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_console_char_callback(
-        EmfeInstance instance, EmfeConsoleCharCallback /*cb*/, void* /*user*/) {
-    return instance ? EMFE_OK : EMFE_ERR_INVALID;
+        EmfeInstance instance, EmfeConsoleCharCallback cb, void* user) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    std::lock_guard lock(inst->consoleCbMutex);
+    inst->consoleCharCb = cb;
+    inst->consoleCharUserData = user;
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_state_change_callback(
@@ -134,16 +160,66 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_registers(
 // Memory — Phase 1.2 fills these in
 // ============================================================================
 
-extern "C" EMFE_EXPORT uint8_t  EMFE_CALL emfe_peek_byte(EmfeInstance, uint64_t) { return 0; }
-extern "C" EMFE_EXPORT uint16_t EMFE_CALL emfe_peek_word(EmfeInstance, uint64_t) { return 0; }
-extern "C" EMFE_EXPORT uint32_t EMFE_CALL emfe_peek_long(EmfeInstance, uint64_t) { return 0; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_byte(EmfeInstance, uint64_t, uint8_t)  { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_word(EmfeInstance, uint64_t, uint16_t) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_long(EmfeInstance, uint64_t, uint32_t) { return EMFE_ERR_UNSUPPORTED; }
+extern "C" EMFE_EXPORT uint8_t EMFE_CALL emfe_peek_byte(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    return to_inst(instance)->memory.Peek(static_cast<uint16_t>(address & 0xFFFF));
+}
+
+extern "C" EMFE_EXPORT uint16_t EMFE_CALL emfe_peek_word(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    auto& mem = to_inst(instance)->memory;
+    uint16_t a = static_cast<uint16_t>(address & 0xFFFF);
+    // Z80 is little-endian; the word at addr is (mem[addr] | (mem[addr+1] << 8)).
+    uint16_t lo = mem.Peek(a);
+    uint16_t hi = mem.Peek(static_cast<uint16_t>(a + 1));
+    return static_cast<uint16_t>(lo | (hi << 8));
+}
+
+extern "C" EMFE_EXPORT uint32_t EMFE_CALL emfe_peek_long(EmfeInstance instance, uint64_t address) {
+    if (!instance) return 0;
+    auto& mem = to_inst(instance)->memory;
+    uint16_t a = static_cast<uint16_t>(address & 0xFFFF);
+    uint32_t b0 = mem.Peek(a);
+    uint32_t b1 = mem.Peek(static_cast<uint16_t>(a + 1));
+    uint32_t b2 = mem.Peek(static_cast<uint16_t>(a + 2));
+    uint32_t b3 = mem.Peek(static_cast<uint16_t>(a + 3));
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_byte(EmfeInstance instance, uint64_t address, uint8_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    to_inst(instance)->memory.Poke(static_cast<uint16_t>(address & 0xFFFF), value);
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_word(EmfeInstance instance, uint64_t address, uint16_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto& mem = to_inst(instance)->memory;
+    uint16_t a = static_cast<uint16_t>(address & 0xFFFF);
+    mem.Poke(a, static_cast<uint8_t>(value & 0xFF));
+    mem.Poke(static_cast<uint16_t>(a + 1), static_cast<uint8_t>((value >> 8) & 0xFF));
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_poke_long(EmfeInstance instance, uint64_t address, uint32_t value) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto& mem = to_inst(instance)->memory;
+    uint16_t a = static_cast<uint16_t>(address & 0xFFFF);
+    mem.Poke(a,                                static_cast<uint8_t>(value & 0xFF));
+    mem.Poke(static_cast<uint16_t>(a + 1),     static_cast<uint8_t>((value >> 8) & 0xFF));
+    mem.Poke(static_cast<uint16_t>(a + 2),     static_cast<uint8_t>((value >> 16) & 0xFF));
+    mem.Poke(static_cast<uint16_t>(a + 3),     static_cast<uint8_t>((value >> 24) & 0xFF));
+    return EMFE_OK;
+}
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_peek_range(
-        EmfeInstance, uint64_t, uint8_t* /*out_data*/, uint32_t /*size*/) {
-    return EMFE_ERR_UNSUPPORTED;
+        EmfeInstance instance, uint64_t address, uint8_t* out_data, uint32_t size) {
+    if (!instance || !out_data) return EMFE_ERR_INVALID;
+    auto& mem = to_inst(instance)->memory;
+    for (uint32_t i = 0; i < size; ++i) {
+        out_data[i] = mem.Peek(static_cast<uint16_t>((address + i) & 0xFFFF));
+    }
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT uint64_t EMFE_CALL emfe_get_memory_size(EmfeInstance) {
@@ -287,8 +363,20 @@ extern "C" EMFE_EXPORT const char* EMFE_CALL emfe_get_last_error(EmfeInstance) {
 // Console I/O — Phase 1.2 wires these into the UART
 // ============================================================================
 
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_char(EmfeInstance, char)         { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_string(EmfeInstance, const char*) { return EMFE_ERR_UNSUPPORTED; }
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_char(EmfeInstance instance, char ch) {
+    if (!instance) return EMFE_ERR_INVALID;
+    to_inst(instance)->uart.ReceiveChar(static_cast<uint8_t>(ch));
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_string(EmfeInstance instance, const char* str) {
+    if (!instance || !str) return EMFE_ERR_INVALID;
+    auto& uart = to_inst(instance)->uart;
+    for (const char* p = str; *p; ++p) {
+        uart.ReceiveChar(static_cast<uint8_t>(*p));
+    }
+    return EMFE_OK;
+}
 
 // ============================================================================
 // Settings — Phase 6 fills these in
