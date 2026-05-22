@@ -127,4 +127,12 @@ private:
     uint8_t AluOr (uint8_t a, uint8_t b);
     uint8_t AluXor(uint8_t a, uint8_t b);
     void    AluCp (uint8_t a, uint8_t b);
+
+    // ---- Stack helpers (Z80 little-endian, pre-decrement push) ------
+    void     Push16(uint16_t val);
+    uint16_t Pop16();
+
+    // ---- Condition-code evaluator (Zilog 3-bit ccc) -----------------
+    // 0 NZ  1 Z  2 NC  3 C  4 PO  5 PE  6 P  7 M
+    bool CheckCond(int ccc) const;
 };
