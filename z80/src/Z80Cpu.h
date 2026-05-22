@@ -70,6 +70,21 @@ public:
     void SetH(uint8_t v) { HL = static_cast<uint16_t>((HL & 0x00FF) | (uint16_t(v) << 8)); }
     void SetL(uint8_t v) { HL = static_cast<uint16_t>((HL & 0xFF00) | v); }
 
+    // ---- F (flags) register bit constants ---------------------------
+    // Layout per Zilog UM008011 §2.4. Y and X are undocumented copies
+    // of bits 5 and 3 of either the result (most ALU ops) or the
+    // operand (CP — see Z80Cpu::AluCp). For normal 8-bit ALU these
+    // are straightforward result-bit copies; Phase 2 deals with the
+    // weirder propagation rules for BIT / SCF / CCF / 16-bit ops.
+    static constexpr uint8_t F_S  = 0x80;
+    static constexpr uint8_t F_Z  = 0x40;
+    static constexpr uint8_t F_Y  = 0x20;
+    static constexpr uint8_t F_H  = 0x10;
+    static constexpr uint8_t F_X  = 0x08;
+    static constexpr uint8_t F_PV = 0x04;
+    static constexpr uint8_t F_N  = 0x02;
+    static constexpr uint8_t F_C  = 0x01;
+
     // ---- Execution surface ------------------------------------------
     // Reset to power-on state (Zilog UM008011 §2.4).
     void Reset();
@@ -98,4 +113,18 @@ private:
     // count (callers add 3 T-states when reading or writing via code 6).
     uint8_t Reg8Read (int code);
     void    Reg8Write(int code, uint8_t val);
+
+    // ---- 8-bit ALU helpers (all update F via SetF) ------------------
+    // AluAdd / AluSub take the optional carry/borrow input (used by
+    // ADC / SBC; pass false for ADD / SUB). They return the result
+    // (caller writes to A as appropriate).
+    // AluCp is SUB without writing the result back to A — and unlike
+    // SUB, the undocumented Y / X flag bits come from the OPERAND
+    // rather than the result (Zilog peculiarity, important for zexall).
+    uint8_t AluAdd(uint8_t a, uint8_t b, bool carry);
+    uint8_t AluSub(uint8_t a, uint8_t b, bool borrow);
+    uint8_t AluAnd(uint8_t a, uint8_t b);
+    uint8_t AluOr (uint8_t a, uint8_t b);
+    uint8_t AluXor(uint8_t a, uint8_t b);
+    void    AluCp (uint8_t a, uint8_t b);
 };

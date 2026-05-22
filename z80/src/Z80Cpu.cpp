@@ -3,13 +3,24 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 1.4: NOP + the documented LD (load/store) family. Arithmetic
-// lands in Phase 1.5, control flow in Phase 1.6, prefix opcodes
-// (CB / DD / ED / FD) and HALT in Phase 2.
+// Phase 1.5: NOP + LD family + 8-bit ALU (ADD/ADC/SUB/SBC/AND/OR/XOR/CP)
+// against A,r / A,(HL) / A,n. Control flow lands in Phase 1.6, prefix
+// opcodes (CB / DD / ED / FD) and HALT in Phase 2.
 
 #include "pch.h"
 #include "Z80Cpu.h"
 #include "Z80Memory.h"
+
+namespace {
+    // Even-parity check on an 8-bit value. Returns true when the popcount
+    // of `v` is even (matches the Zilog "P" flag for AND/OR/XOR).
+    inline bool parity8(uint8_t v) {
+        v ^= static_cast<uint8_t>(v >> 4);
+        v ^= static_cast<uint8_t>(v >> 2);
+        v ^= static_cast<uint8_t>(v >> 1);
+        return (v & 1) == 0;
+    }
+}
 
 void Z80Cpu::Reset() {
     // Z80 power-on / RESET state per Zilog UM008011 §2.4:
@@ -67,6 +78,101 @@ void Z80Cpu::Reg8Write(int code, uint8_t val) {
     case 6: Memory->WriteByte(HL, val); break;
     case 7: SetA(val); break;
     }
+}
+
+// ---- 8-bit ALU helpers ---------------------------------------------
+// All update F via SetF. The "Zilog peculiarity" handled here:
+//   - Y / X come from the result for ADD/ADC/SUB/SBC/AND/OR/XOR.
+//   - Y / X come from the OPERAND for CP (since CP doesn't write a
+//     result back to A, the convention reuses the operand's bits 5/3).
+// Signed-overflow (P/V) is computed via the standard same-sign / sign-
+// flip identity.
+
+uint8_t Z80Cpu::AluAdd(uint8_t a, uint8_t b, bool carry) {
+    int cy = carry ? 1 : 0;
+    int full = static_cast<int>(a) + static_cast<int>(b) + cy;
+    int half = (a & 0x0F) + (b & 0x0F) + cy;
+    uint8_t result = static_cast<uint8_t>(full & 0xFF);
+    uint8_t f = 0;
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (result & 0x20)                                f |= F_Y;
+    if (half > 0x0F)                                  f |= F_H;
+    if (result & 0x08)                                f |= F_X;
+    if (((a ^ result) & (b ^ result) & 0x80) != 0)    f |= F_PV;
+    // N = 0 for add — already cleared.
+    if (full > 0xFF)                                  f |= F_C;
+    SetF(f);
+    return result;
+}
+
+uint8_t Z80Cpu::AluSub(uint8_t a, uint8_t b, bool borrow) {
+    int by = borrow ? 1 : 0;
+    int full = static_cast<int>(a) - static_cast<int>(b) - by;
+    int half = (a & 0x0F) - (b & 0x0F) - by;
+    uint8_t result = static_cast<uint8_t>(full & 0xFF);
+    uint8_t f = F_N;
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (result & 0x20)                                f |= F_Y;
+    if (half < 0)                                     f |= F_H;
+    if (result & 0x08)                                f |= F_X;
+    if (((a ^ b) & (a ^ result) & 0x80) != 0)         f |= F_PV;
+    if (full < 0)                                     f |= F_C;
+    SetF(f);
+    return result;
+}
+
+uint8_t Z80Cpu::AluAnd(uint8_t a, uint8_t b) {
+    uint8_t result = static_cast<uint8_t>(a & b);
+    uint8_t f = F_H;                                  // AND sets H
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (result & 0x20)                                f |= F_Y;
+    if (result & 0x08)                                f |= F_X;
+    if (parity8(result))                              f |= F_PV;
+    // N = 0, C = 0 — already cleared.
+    SetF(f);
+    return result;
+}
+
+uint8_t Z80Cpu::AluOr(uint8_t a, uint8_t b) {
+    uint8_t result = static_cast<uint8_t>(a | b);
+    uint8_t f = 0;                                    // OR clears H/N/C
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (result & 0x20)                                f |= F_Y;
+    if (result & 0x08)                                f |= F_X;
+    if (parity8(result))                              f |= F_PV;
+    SetF(f);
+    return result;
+}
+
+uint8_t Z80Cpu::AluXor(uint8_t a, uint8_t b) {
+    uint8_t result = static_cast<uint8_t>(a ^ b);
+    uint8_t f = 0;                                    // XOR clears H/N/C
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (result & 0x20)                                f |= F_Y;
+    if (result & 0x08)                                f |= F_X;
+    if (parity8(result))                              f |= F_PV;
+    SetF(f);
+    return result;
+}
+
+void Z80Cpu::AluCp(uint8_t a, uint8_t b) {
+    int full = static_cast<int>(a) - static_cast<int>(b);
+    int half = (a & 0x0F) - (b & 0x0F);
+    uint8_t result = static_cast<uint8_t>(full & 0xFF);
+    uint8_t f = F_N;
+    if (result & 0x80)                                f |= F_S;
+    if (result == 0)                                  f |= F_Z;
+    if (b & 0x20)                                     f |= F_Y;  // from operand
+    if (half < 0)                                     f |= F_H;
+    if (b & 0x08)                                     f |= F_X;  // from operand
+    if (((a ^ b) & (a ^ result) & 0x80) != 0)         f |= F_PV;
+    if (full < 0)                                     f |= F_C;
+    SetF(f);
 }
 
 int Z80Cpu::ExecuteOne() {
@@ -162,6 +268,55 @@ int Z80Cpu::ExecuteOne() {
         CycleCount += cycles;
         InstructionCount += 1;
         return cycles;
+    }
+
+    // ----- 0x80 .. 0xBF : 8-bit ALU on A,r ----------------------------
+    // Pattern 10 ooo sss. ooo selects the operation:
+    //   000 ADD  001 ADC  010 SUB  011 SBC
+    //   100 AND  101 XOR  110 OR   111 CP
+    // sss selects the source register code (0=B .. 7=A; code 6 = (HL)).
+    if ((opcode & 0xC0) == 0x80) {
+        int op  = (opcode >> 3) & 0x07;
+        int src = opcode & 0x07;
+        uint8_t val = Reg8Read(src);
+        bool cy  = (F() & F_C) != 0;
+        uint8_t a = A();
+        switch (op) {
+        case 0: SetA(AluAdd(a, val, false)); break;
+        case 1: SetA(AluAdd(a, val, cy));    break;
+        case 2: SetA(AluSub(a, val, false)); break;
+        case 3: SetA(AluSub(a, val, cy));    break;
+        case 4: SetA(AluAnd(a, val));        break;
+        case 5: SetA(AluXor(a, val));        break;
+        case 6: SetA(AluOr (a, val));        break;
+        case 7: AluCp(a, val);               break;   // no writeback
+        }
+        int cycles = (src == 6) ? 7 : 4;
+        CycleCount += cycles;
+        InstructionCount += 1;
+        return cycles;
+    }
+
+    // ----- 0xC6 / 0xCE / 0xD6 / 0xDE / 0xE6 / 0xEE / 0xF6 / 0xFE -------
+    // 8-bit ALU on A,n — pattern 11 ooo 110.
+    if ((opcode & 0xC7) == 0xC6) {
+        int op = (opcode >> 3) & 0x07;
+        uint8_t val = FetchByte();
+        bool cy  = (F() & F_C) != 0;
+        uint8_t a = A();
+        switch (op) {
+        case 0: SetA(AluAdd(a, val, false)); break;
+        case 1: SetA(AluAdd(a, val, cy));    break;
+        case 2: SetA(AluSub(a, val, false)); break;
+        case 3: SetA(AluSub(a, val, cy));    break;
+        case 4: SetA(AluAnd(a, val));        break;
+        case 5: SetA(AluXor(a, val));        break;
+        case 6: SetA(AluOr (a, val));        break;
+        case 7: AluCp(a, val);               break;
+        }
+        CycleCount += 7;
+        InstructionCount += 1;
+        return 7;
     }
 
     // ----- unrecognised opcode: rollback PC, surface trap -------------

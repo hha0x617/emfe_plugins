@@ -583,8 +583,230 @@ static void TestLdHLMemNNAbsolute() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 1.5 tests — 8-bit ALU (ADD/ADC/SUB/SBC/AND/OR/XOR/CP)
+// ---------------------------------------------------------------------
+
+// Flag bit mirrors for the test (same values as Z80Cpu::F_*).
+static constexpr uint8_t TF_S = 0x80, TF_Z = 0x40, TF_Y = 0x20, TF_H = 0x10;
+static constexpr uint8_t TF_X = 0x08, TF_PV = 0x04, TF_N = 0x02, TF_C = 0x01;
+
+// Convenience: load a single ALU instruction (1 or 2 bytes), preset A
+// and F, single-step once, return the resulting A and F. Does NOT
+// reset the CPU — callers are responsible for any HL/(HL)/other
+// setup that needs to survive the call (see TestAluMemoryIndirect).
+// Cycle count is monotonic: tests that assert exact cycle counts must
+// be the FIRST RunAlu call after emfe_create.
+struct AluOut { uint8_t a; uint8_t f; };
+static AluOut RunAlu(EmfeInstance inst, uint8_t initialA, uint8_t initialF,
+                     const uint8_t* prog, size_t n) {
+    SetReg(inst, REG_A, initialA);
+    SetReg(inst, REG_F, initialF);
+    LoadProgram(inst, 0, prog, n);
+    emfe_step(inst);
+    AluOut o{};
+    o.a = (uint8_t)GetReg(inst, REG_A);
+    o.f = (uint8_t)GetReg(inst, REG_F);
+    return o;
+}
+
+static void TestAluAddBasic() {
+    printf("TestAluAddBasic...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADD A,B with A=5, B=3 -> A=8, no S/Z/H/PV/N/C set.
+    SetReg(inst, REG_B, 3);
+    const uint8_t prog[] = { 0x80 };
+    AluOut r = RunAlu(inst, 5, 0xFF, prog, 1);  // start with F=0xFF
+    TEST_EQ(r.a, 8, "5 + 3 = 8");
+    TEST_TRUE((r.f & TF_S) == 0, "S clear");
+    TEST_TRUE((r.f & TF_Z) == 0, "Z clear");
+    TEST_TRUE((r.f & TF_H) == 0, "H clear (no half-carry)");
+    TEST_TRUE((r.f & TF_PV) == 0, "PV clear (no overflow)");
+    TEST_TRUE((r.f & TF_N) == 0, "N clear (add)");
+    TEST_TRUE((r.f & TF_C) == 0, "C clear (no carry)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluAddCarryHalfOverflow() {
+    printf("TestAluAddCarryHalfOverflow...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADD A,B with A=0xFF, B=1 -> A=0, Z=1, H=1, C=1.
+    SetReg(inst, REG_B, 1);
+    const uint8_t prog[] = { 0x80 };
+    AluOut r = RunAlu(inst, 0xFF, 0, prog, 1);
+    TEST_EQ(r.a, 0,                          "0xFF + 1 = 0 (mod 256)");
+    TEST_TRUE((r.f & TF_Z) != 0,             "Z set");
+    TEST_TRUE((r.f & TF_H) != 0,             "H set (0xF + 1 = 0x10)");
+    TEST_TRUE((r.f & TF_C) != 0,             "C set");
+    TEST_TRUE((r.f & TF_N) == 0,             "N clear");
+
+    // Signed overflow: A=0x7F (+127), B=1 -> A=0x80 (-128), V=1.
+    SetReg(inst, REG_B, 1);
+    r = RunAlu(inst, 0x7F, 0, prog, 1);
+    TEST_EQ(r.a, 0x80,                       "0x7F + 1 = 0x80");
+    TEST_TRUE((r.f & TF_S) != 0,             "S set");
+    TEST_TRUE((r.f & TF_PV) != 0,            "PV set (signed overflow)");
+    TEST_TRUE((r.f & TF_H) != 0,             "H set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluAdcUsesCarry() {
+    printf("TestAluAdcUsesCarry...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADC A,B with A=1, B=1, C=1 -> A=3.
+    SetReg(inst, REG_B, 1);
+    const uint8_t prog[] = { 0x88 };           // ADC A,B
+    AluOut r = RunAlu(inst, 1, TF_C, prog, 1);
+    TEST_EQ(r.a, 3, "1 + 1 + carry(1) = 3");
+    TEST_TRUE((r.f & TF_C) == 0, "no new carry out");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluSubBasic() {
+    printf("TestAluSubBasic...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // SUB B with A=10, B=3 -> A=7, N=1, no Z/H/C.
+    SetReg(inst, REG_B, 3);
+    const uint8_t prog[] = { 0x90 };
+    AluOut r = RunAlu(inst, 10, 0, prog, 1);
+    TEST_EQ(r.a, 7, "10 - 3 = 7");
+    TEST_TRUE((r.f & TF_N) != 0, "N set (sub)");
+    TEST_TRUE((r.f & TF_Z) == 0, "Z clear");
+    TEST_TRUE((r.f & TF_C) == 0, "no borrow");
+
+    // SUB B with A=0, B=1 -> A=0xFF, borrow + S=1 + half-borrow.
+    SetReg(inst, REG_B, 1);
+    r = RunAlu(inst, 0, 0, prog, 1);
+    TEST_EQ(r.a, 0xFF, "0 - 1 = 0xFF");
+    TEST_TRUE((r.f & TF_S) != 0, "S set");
+    TEST_TRUE((r.f & TF_H) != 0, "H set (half borrow)");
+    TEST_TRUE((r.f & TF_C) != 0, "C set (borrow)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluAndOrXor() {
+    printf("TestAluAndOrXor...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // AND with A=0x0F, B=0xF0 -> A=0, Z=1, H=1, PV=1 (parity of 0 is even).
+    SetReg(inst, REG_B, 0xF0);
+    const uint8_t and_b[] = { 0xA0 };
+    AluOut r = RunAlu(inst, 0x0F, 0, and_b, 1);
+    TEST_EQ(r.a, 0, "0x0F AND 0xF0 = 0");
+    TEST_TRUE((r.f & TF_Z) != 0,  "Z set");
+    TEST_TRUE((r.f & TF_H) != 0,  "H set (AND quirk)");
+    TEST_TRUE((r.f & TF_PV) != 0, "PV set (parity)");
+    TEST_TRUE((r.f & TF_C) == 0,  "C clear");
+
+    // OR with A=0x55, B=0xAA -> A=0xFF, S=1, PV=1.
+    SetReg(inst, REG_B, 0xAA);
+    const uint8_t or_b[] = { 0xB0 };
+    r = RunAlu(inst, 0x55, 0, or_b, 1);
+    TEST_EQ(r.a, 0xFF, "0x55 OR 0xAA = 0xFF");
+    TEST_TRUE((r.f & TF_S) != 0,  "S set");
+    TEST_TRUE((r.f & TF_PV) != 0, "PV set (8 bits, parity even)");
+    TEST_TRUE((r.f & TF_H) == 0,  "H clear");
+
+    // XOR self -> zero.
+    SetReg(inst, REG_B, 0x55);
+    const uint8_t xor_b[] = { 0xA8 };
+    r = RunAlu(inst, 0x55, 0, xor_b, 1);
+    TEST_EQ(r.a, 0, "0x55 XOR 0x55 = 0");
+    TEST_TRUE((r.f & TF_Z) != 0, "Z set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluCpPreservesA() {
+    // CP is SUB without writing the result back. Its Y/X flags come
+    // from the OPERAND, not the result — important for zexall.
+    printf("TestAluCpPreservesA...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_B, 10);
+    const uint8_t cp_b[] = { 0xB8 };
+    AluOut r = RunAlu(inst, 10, 0, cp_b, 1);
+    TEST_EQ(r.a, 10, "A preserved (CP does not write)");
+    TEST_TRUE((r.f & TF_Z) != 0, "Z set (equal)");
+    TEST_TRUE((r.f & TF_N) != 0, "N set");
+    TEST_TRUE((r.f & TF_C) == 0, "no borrow");
+
+    // CP Y/X comes from operand: A=0x00, B=0x28 (bits 5+3 set in operand).
+    SetReg(inst, REG_B, 0x28);
+    r = RunAlu(inst, 0x00, 0, cp_b, 1);
+    TEST_EQ(r.a, 0x00, "A still 0");
+    TEST_TRUE((r.f & TF_Y) != 0, "Y from operand bit 5");
+    TEST_TRUE((r.f & TF_X) != 0, "X from operand bit 3");
+    TEST_TRUE((r.f & TF_C) != 0, "borrow (0 - 0x28 underflows)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluImmediate() {
+    // ADD A,n (0xC6) and friends — same 8 ops, immediate operand.
+    printf("TestAluImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADD A,#0x10 with A=0x20.
+    const uint8_t add[] = { 0xC6, 0x10 };
+    AluOut r = RunAlu(inst, 0x20, 0, add, 2);
+    TEST_EQ(r.a, 0x30, "0x20 + 0x10 = 0x30 via ADD A,n");
+
+    // AND #0x0F with A=0xAB.
+    const uint8_t and_imm[] = { 0xE6, 0x0F };
+    r = RunAlu(inst, 0xAB, 0, and_imm, 2);
+    TEST_EQ(r.a, 0x0B, "0xAB AND 0x0F = 0x0B");
+
+    // CP #5 with A=5 (immediate compare, equality).
+    const uint8_t cp_imm[] = { 0xFE, 0x05 };
+    r = RunAlu(inst, 5, 0, cp_imm, 2);
+    TEST_EQ(r.a, 5, "A preserved by CP n");
+    TEST_TRUE((r.f & TF_Z) != 0, "Z set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluMemoryIndirect() {
+    // ALU through (HL) — 7 T-states instead of 4.
+    printf("TestAluMemoryIndirect...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x4000);
+    emfe_poke_byte(inst, 0x4000, 0x42);
+    const uint8_t prog[] = { 0x86 };           // ADD A, (HL)
+    AluOut r = RunAlu(inst, 0x10, 0, prog, 1);
+    TEST_EQ(r.a, 0x52, "0x10 + (HL=0x42) = 0x52");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)7, "ALU (HL) is 7 T");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 1.4) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 1.5) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -604,6 +826,15 @@ int main() {
     TestLdAMemBCDE();
     TestLdAMemNNAbsolute();
     TestLdHLMemNNAbsolute();
+    // Phase 1.5
+    TestAluAddBasic();
+    TestAluAddCarryHalfOverflow();
+    TestAluAdcUsesCarry();
+    TestAluSubBasic();
+    TestAluAndOrXor();
+    TestAluCpPreservesA();
+    TestAluImmediate();
+    TestAluMemoryIndirect();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
