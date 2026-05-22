@@ -12,42 +12,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Detect whether a PR touches anything other than Markdown / LICENSE.
-  # Docs-only PRs short-circuit the build job below, which costs ~15 s of
-  # ubuntu-latest instead of the full Rust + 3×CMake + Inno Setup pipeline.
-  # Skipped jobs are treated as success for required status checks, so the
-  # `build` context remains satisfied.
+  # Per-plugin path-based change detection.
+  #
+  # On a pull_request, inspect the diff against the base branch and decide
+  # which plugins were actually touched. Each plugin's build step is then
+  # gated by `needs.changes.outputs.<plugin> == 'true' || shared == 'true'`,
+  # so a PR that only modifies z80/ skips mc6809 / em8 / mc68030 / z8000.
+  #
+  # For ANY non-PR event (tag push, workflow_dispatch) the detect step
+  # short-circuits to every output being true — releases and manual runs
+  # always build everything, no matter what the diff says. The release
+  # path is additionally guarded by a sanity-check step further below
+  # that fails the build if any expected DLL is missing.
+  #
+  # `has_code` is preserved for the docs-only bypass introduced in #40:
+  # when ALL outputs are false (PR touched only **/*.md / LICENSE), the
+  # build job is skipped entirely and the required `build` status is
+  # treated as success.
   changes:
     runs-on: ubuntu-latest
     outputs:
       has_code: ${{ steps.detect.outputs.has_code }}
+      shared:   ${{ steps.detect.outputs.shared }}
+      mc6809:   ${{ steps.detect.outputs.mc6809 }}
+      em8:      ${{ steps.detect.outputs.em8 }}
+      mc68030:  ${{ steps.detect.outputs.mc68030 }}
+      z8000:    ${{ steps.detect.outputs.z8000 }}
+      z80:      ${{ steps.detect.outputs.z80 }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      - name: Detect non-docs changes
+      - name: Detect per-plugin changes
         id: detect
         shell: bash
         run: |
+          # Non-PR events: build everything.
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "Not a PR (event=${{ github.event_name }}) — always build"
-            echo "has_code=true" >> "$GITHUB_OUTPUT"
+            echo "Not a PR (event=${{ github.event_name }}) — building all plugins"
+            {
+              echo "has_code=true"
+              echo "shared=true"
+              echo "mc6809=true"
+              echo "em8=true"
+              echo "mc68030=true"
+              echo "z8000=true"
+              echo "z80=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           echo "Changed files:"
           echo "$CHANGED"
-          NON_DOCS=$(echo "$CHANGED" | grep -vE '(\.md$|^LICENSE)' || true)
-          if [ -n "$NON_DOCS" ]; then
-            echo "Non-docs files present — build will run"
-            echo "has_code=true" >> "$GITHUB_OUTPUT"
+
+          detect() {
+            # detect <pattern> — print "true" if any changed file matches.
+            if echo "$CHANGED" | grep -qE "$1"; then
+              echo "true"
+            else
+              echo "false"
+            fi
+          }
+
+          # Shared: anything that affects every plugin's build. api/ is
+          # the ABI header, .github/ holds this workflow, installer/ is
+          # the release-only Inno Setup recipe. Anything matching here
+          # forces a full build, ignoring per-plugin diffs.
+          shared=$(detect '^(api/|\.github/|installer/)')
+
+          # Per-plugin directories. mc68030 also depends on the
+          # em68030_WinUI3Cpp submodule pulled in under external/.
+          mc6809=$(detect '^mc6809/')
+          em8=$(detect '^em8/')
+          mc68030=$(detect '^(mc68030/|external/em68030_WinUI3Cpp/)')
+          z8000=$(detect '^z8000/')
+          z80=$(detect '^z80/')
+
+          # has_code is true if anything code-relevant changed.
+          if [ "$shared" = "true" ] || \
+             [ "$mc6809" = "true" ] || \
+             [ "$em8" = "true" ] || \
+             [ "$mc68030" = "true" ] || \
+             [ "$z8000" = "true" ] || \
+             [ "$z80" = "true" ]; then
+            has_code=true
           else
-            echo "Docs-only PR — build will be skipped"
-            echo "has_code=false" >> "$GITHUB_OUTPUT"
+            has_code=false
           fi
+
+          echo "Per-plugin: mc6809=$mc6809 em8=$em8 mc68030=$mc68030 z8000=$z8000 z80=$z80"
+          echo "Shared=$shared  has_code=$has_code"
+
+          {
+            echo "has_code=$has_code"
+            echo "shared=$shared"
+            echo "mc6809=$mc6809"
+            echo "em8=$em8"
+            echo "mc68030=$mc68030"
+            echo "z8000=$z8000"
+            echo "z80=$z80"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: [changes]
@@ -91,29 +159,42 @@ jobs:
           }
           echo "APP_VERSION=$ver" >> $env:GITHUB_OUTPUT
 
+      # Per-plugin build steps are gated by the change-detection outputs.
+      # Each step builds if EITHER (a) its own plugin directory changed,
+      # OR (b) something shared (api/, .github/, installer/) changed and
+      # therefore every plugin must rebuild.
+      #
+      # Tag pushes and workflow_dispatch land here with all outputs set
+      # to "true" via the changes job's non-PR short-circuit.
+
       - name: Build mc6809 (Rust)
+        if: needs.changes.outputs.mc6809 == 'true' || needs.changes.outputs.shared == 'true'
         working-directory: mc6809
         run: cargo build --release
 
       - name: Configure & build em8 (CMake)
+        if: needs.changes.outputs.em8 == 'true' || needs.changes.outputs.shared == 'true'
         working-directory: em8
         run: |
           cmake -S . -B build
           cmake --build build --config Release
 
       - name: Configure & build mc68030 (CMake)
+        if: needs.changes.outputs.mc68030 == 'true' || needs.changes.outputs.shared == 'true'
         working-directory: mc68030
         run: |
           cmake -S . -B build
           cmake --build build --config Release
 
       - name: Configure & build z8000 (CMake)
+        if: needs.changes.outputs.z8000 == 'true' || needs.changes.outputs.shared == 'true'
         working-directory: z8000
         run: |
           cmake -S . -B build
           cmake --build build --config Release
 
       - name: Configure & build z80 (CMake)
+        if: needs.changes.outputs.z80 == 'true' || needs.changes.outputs.shared == 'true'
         working-directory: z80
         run: |
           cmake -S . -B build
@@ -127,10 +208,60 @@ jobs:
           # Stage under dist/plugins/ so the release zip can be
           # extracted next to emfe.exe without further rearrangement.
           mkdir -p dist/plugins
-          cp mc6809/target/release/emfe_plugin_mc6809.dll dist/plugins/
-          cp em8/build/bin/Release/emfe_plugin_em8.dll dist/plugins/
-          cp mc68030/build/bin/Release/emfe_plugin_mc68030.dll dist/plugins/
-          cp z8000/build/bin/Release/emfe_plugin_z8000.dll dist/plugins/
+
+          # Per-plugin defensive copy: a PR that only touched (say) z80
+          # leaves the other plugins unbuilt. The release sanity check
+          # below catches accidental misses on tag pushes; for PRs the
+          # smaller dist/plugins/ is intentional and correct.
+          copy_if_exists() {
+            local src="$1"
+            if [ -f "$src" ]; then
+              cp "$src" dist/plugins/
+              echo "Copied: $src"
+            else
+              echo "Skipped (not built this run): $src"
+            fi
+          }
+          copy_if_exists mc6809/target/release/emfe_plugin_mc6809.dll
+          copy_if_exists em8/build/bin/Release/emfe_plugin_em8.dll
+          copy_if_exists mc68030/build/bin/Release/emfe_plugin_mc68030.dll
+          copy_if_exists z8000/build/bin/Release/emfe_plugin_z8000.dll
+          # z80 is added to this list (and to the sanity check below)
+          # once Phase 1.7 ships real functionality and the DLL is
+          # ready for end users.
+
+          ls -l dist/plugins/
+
+      - name: Sanity-check release artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # On a release tag push the change-detection job has set every
+          # per-plugin output to 'true', so all plugins should have been
+          # built and copied above. This step belt-and-braces verifies
+          # that — fail fast before any release / installer is touched.
+          expected=(
+            emfe_plugin_mc6809.dll
+            emfe_plugin_em8.dll
+            emfe_plugin_mc68030.dll
+            emfe_plugin_z8000.dll
+          )
+          # NOTE: keep this list in lockstep with `Collect plugin DLLs`
+          # above. When z80 starts shipping (Phase 1.7), add it here AND
+          # in the copy_if_exists list.
+
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "dist/plugins/$f" ]; then
+              echo "::error::Missing release artifact: $f"
+              missing=$((missing+1))
+            fi
+          done
+          if [ $missing -gt 0 ]; then
+            echo "::error::Release would be incomplete ($missing missing). Aborting before any release artifact is created."
+            exit 1
+          fi
+          echo "All ${#expected[@]} release artifacts present:"
           ls -l dist/plugins/
 
       - name: Compile installer (Inno Setup)
