@@ -113,6 +113,12 @@ jobs:
           cmake -S . -B build
           cmake --build build --config Release
 
+      - name: Configure & build z80 (CMake)
+        working-directory: z80
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release
+
       - name: Collect plugin DLLs
         shell: bash
         run: |
