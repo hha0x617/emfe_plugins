@@ -3,9 +3,10 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 1.5: NOP + LD family + 8-bit ALU (ADD/ADC/SUB/SBC/AND/OR/XOR/CP)
-// against A,r / A,(HL) / A,n. Control flow lands in Phase 1.6, prefix
-// opcodes (CB / DD / ED / FD) and HALT in Phase 2.
+// Phase 1.6: NOP + LD family + 8-bit ALU + control flow (JP / JR / CALL
+// / RET / DJNZ / RST / PUSH / POP, conditional and unconditional).
+// Prefix opcodes (CB / DD / ED / FD), HALT, EX/EXX, and 16-bit ALU land
+// in Phase 2.
 
 #include "pch.h"
 #include "Z80Cpu.h"
@@ -158,6 +159,38 @@ uint8_t Z80Cpu::AluXor(uint8_t a, uint8_t b) {
     if (parity8(result))                              f |= F_PV;
     SetF(f);
     return result;
+}
+
+// ---- Stack helpers --------------------------------------------------
+// Z80 push convention: SP pre-decrements by 2, then the word is stored
+// little-endian (low byte at SP, high byte at SP+1). Pop is the inverse.
+
+void Z80Cpu::Push16(uint16_t val) {
+    SP = static_cast<uint16_t>(SP - 2);
+    Memory->WriteWord(SP, val);
+}
+
+uint16_t Z80Cpu::Pop16() {
+    uint16_t v = Memory->ReadWord(SP);
+    SP = static_cast<uint16_t>(SP + 2);
+    return v;
+}
+
+// ---- Condition-code evaluator (Zilog 3-bit ccc) ---------------------
+
+bool Z80Cpu::CheckCond(int ccc) const {
+    uint8_t f = F();
+    switch (ccc & 0x07) {
+    case 0: return (f & F_Z)  == 0;  // NZ
+    case 1: return (f & F_Z)  != 0;  // Z
+    case 2: return (f & F_C)  == 0;  // NC
+    case 3: return (f & F_C)  != 0;  // C
+    case 4: return (f & F_PV) == 0;  // PO (parity odd)
+    case 5: return (f & F_PV) != 0;  // PE (parity even)
+    case 6: return (f & F_S)  == 0;  // P  (positive)
+    case 7: return (f & F_S)  != 0;  // M  (minus)
+    }
+    return false;
 }
 
 void Z80Cpu::AluCp(uint8_t a, uint8_t b) {
@@ -317,6 +350,122 @@ int Z80Cpu::ExecuteOne() {
         CycleCount += 7;
         InstructionCount += 1;
         return 7;
+    }
+
+    // ----- Control flow ------------------------------------------------
+
+    // 0x18 JR e  (unconditional relative jump)
+    if (opcode == 0x18) {
+        int8_t e = static_cast<int8_t>(FetchByte());
+        PC = static_cast<uint16_t>(PC + e);
+        CycleCount += 12; InstructionCount++; return 12;
+    }
+    // 0x10 DJNZ e (B := B - 1; if B != 0 jump)
+    if (opcode == 0x10) {
+        int8_t e = static_cast<int8_t>(FetchByte());
+        SetB(static_cast<uint8_t>(B() - 1));
+        if (B() != 0) {
+            PC = static_cast<uint16_t>(PC + e);
+            CycleCount += 13; InstructionCount++; return 13;
+        }
+        CycleCount += 8; InstructionCount++; return 8;
+    }
+    // 0x20 / 0x28 / 0x30 / 0x38 : JR cc, e — pattern 001 cc 000
+    // cc takes only 2 bits here (NZ / Z / NC / C — same as cond 0..3).
+    if ((opcode & 0xE7) == 0x20) {
+        int cc = (opcode >> 3) & 0x03;
+        int8_t e = static_cast<int8_t>(FetchByte());
+        if (CheckCond(cc)) {
+            PC = static_cast<uint16_t>(PC + e);
+            CycleCount += 12; InstructionCount++; return 12;
+        }
+        CycleCount += 7; InstructionCount++; return 7;
+    }
+
+    // 0xC3 JP nn (unconditional)
+    if (opcode == 0xC3) {
+        PC = FetchWord();
+        CycleCount += 10; InstructionCount++; return 10;
+    }
+    // 0xE9 JP (HL) — PC := HL (no indirect despite the name)
+    if (opcode == 0xE9) {
+        PC = HL;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+    // 0xC2/CA/D2/DA/E2/EA/F2/FA : JP cc, nn — pattern 11 ccc 010
+    if ((opcode & 0xC7) == 0xC2) {
+        int cc = (opcode >> 3) & 0x07;
+        uint16_t nn = FetchWord();
+        if (CheckCond(cc)) PC = nn;
+        CycleCount += 10; InstructionCount++; return 10;
+    }
+
+    // 0xCD CALL nn (unconditional)
+    if (opcode == 0xCD) {
+        uint16_t nn = FetchWord();
+        Push16(PC);
+        PC = nn;
+        CycleCount += 17; InstructionCount++; return 17;
+    }
+    // 0xC4/CC/D4/DC/E4/EC/F4/FC : CALL cc, nn — pattern 11 ccc 100
+    if ((opcode & 0xC7) == 0xC4) {
+        int cc = (opcode >> 3) & 0x07;
+        uint16_t nn = FetchWord();
+        if (CheckCond(cc)) {
+            Push16(PC);
+            PC = nn;
+            CycleCount += 17; InstructionCount++; return 17;
+        }
+        CycleCount += 10; InstructionCount++; return 10;
+    }
+
+    // 0xC9 RET (unconditional)
+    if (opcode == 0xC9) {
+        PC = Pop16();
+        CycleCount += 10; InstructionCount++; return 10;
+    }
+    // 0xC0/C8/D0/D8/E0/E8/F0/F8 : RET cc — pattern 11 ccc 000
+    if ((opcode & 0xC7) == 0xC0) {
+        int cc = (opcode >> 3) & 0x07;
+        if (CheckCond(cc)) {
+            PC = Pop16();
+            CycleCount += 11; InstructionCount++; return 11;
+        }
+        CycleCount += 5; InstructionCount++; return 5;
+    }
+
+    // 0xC7/CF/D7/DF/E7/EF/F7/FF : RST nnn (push PC, jump to nnn*8)
+    if ((opcode & 0xC7) == 0xC7) {
+        int n = (opcode >> 3) & 0x07;
+        Push16(PC);
+        PC = static_cast<uint16_t>(n * 8);
+        CycleCount += 11; InstructionCount++; return 11;
+    }
+
+    // PUSH rr — pattern 11 pp 0101 (0xC5/D5/E5/F5). pp: 00 BC 01 DE 10 HL 11 AF.
+    if ((opcode & 0xCF) == 0xC5) {
+        int pp = (opcode >> 4) & 0x03;
+        uint16_t val = 0;
+        switch (pp) {
+        case 0: val = BC; break;
+        case 1: val = DE; break;
+        case 2: val = HL; break;
+        case 3: val = AF; break;
+        }
+        Push16(val);
+        CycleCount += 11; InstructionCount++; return 11;
+    }
+    // POP rr — pattern 11 pp 0001 (0xC1/D1/E1/F1).
+    if ((opcode & 0xCF) == 0xC1) {
+        int pp = (opcode >> 4) & 0x03;
+        uint16_t val = Pop16();
+        switch (pp) {
+        case 0: BC = val; break;
+        case 1: DE = val; break;
+        case 2: HL = val; break;
+        case 3: AF = val; break;
+        }
+        CycleCount += 10; InstructionCount++; return 10;
     }
 
     // ----- unrecognised opcode: rollback PC, surface trap -------------

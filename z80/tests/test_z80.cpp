@@ -805,8 +805,225 @@ static void TestAluMemoryIndirect() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 1.6 tests — control flow (JP/JR/CALL/RET/RST/PUSH/POP/DJNZ)
+// ---------------------------------------------------------------------
+
+static void TestJpUnconditional() {
+    printf("TestJpUnconditional...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const uint8_t prog[] = { 0xC3, 0x34, 0x12 };     // JP 0x1234
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JP nn OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x1234, "PC = nn");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)10, "10 T");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestJpConditional() {
+    printf("TestJpConditional...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // JP NZ, 0x2000 with Z=0 → taken.
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog_nz[] = { 0xC2, 0x00, 0x20 };
+    LoadProgram(inst, 0, prog_nz, sizeof(prog_nz));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JP NZ taken OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x2000, "PC jumped");
+
+    // JP NZ with Z=1 → not taken (PC just advances past the operand).
+    SetReg(inst, REG_F, TF_Z);
+    LoadProgram(inst, 0x100, prog_nz, sizeof(prog_nz));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JP NZ not-taken OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x103, "PC just past operand");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestJpHl() {
+    printf("TestJpHl...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x5678);
+    const uint8_t prog[] = { 0xE9 };                 // JP (HL)
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JP (HL) OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x5678, "PC = HL");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)4, "4 T-states");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestJrRelative() {
+    printf("TestJrRelative...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // JR +5 from PC=0x100 lands at 0x102 + 5 = 0x107 (offset is added
+    // AFTER the operand byte is consumed).
+    const uint8_t prog_fwd[] = { 0x18, 0x05 };
+    LoadProgram(inst, 0x100, prog_fwd, sizeof(prog_fwd));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JR +5 OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x107, "PC = 0x102 + 5");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)12, "12 T-states");
+
+    // JR -2 from PC=0x200 lands at 0x202 - 2 = 0x200 (self-loop).
+    const uint8_t prog_back[] = { 0x18, 0xFE };
+    LoadProgram(inst, 0x200, prog_back, sizeof(prog_back));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JR -2 OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x200, "self-loop landed");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestJrConditional() {
+    printf("TestJrConditional...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // JR Z, +5 with Z=1 → taken.
+    SetReg(inst, REG_F, TF_Z);
+    const uint8_t prog[] = { 0x28, 0x05 };
+    LoadProgram(inst, 0x100, prog, sizeof(prog));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JR Z taken OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x107, "PC jumped");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)12, "12 T taken");
+
+    // JR Z with Z=0 → not taken.
+    SetReg(inst, REG_F, 0);
+    LoadProgram(inst, 0x200, prog, sizeof(prog));
+    int64_t cyc_before = emfe_get_cycle_count(inst);
+    TEST_EQ(emfe_step(inst), EMFE_OK, "JR Z not-taken OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x202, "PC past operand");
+    TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)7, "7 T not taken");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDjnz() {
+    printf("TestDjnz...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // DJNZ from B=3 should loop 3 times then fall through (B counts
+    // down to 0). Plant `LD B,3 ; DJNZ -2` at PC=0 — each DJNZ jumps
+    // back to itself until B becomes 0.
+    const uint8_t prog[] = { 0x06, 0x03, 0x10, 0xFE };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);   // LD B,3
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)3, "B = 3");
+
+    emfe_step(inst);   // DJNZ -2: B=2, jump
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)2, "B decremented to 2");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)2, "PC looped to DJNZ");
+
+    emfe_step(inst);   // DJNZ -2: B=1, jump
+    emfe_step(inst);   // DJNZ -2: B=0, fall through
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0, "B = 0");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)4, "PC past DJNZ");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestPushPop() {
+    printf("TestPushPop...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Initialise SP and push HL, then pop into DE.
+    SetReg(inst, REG_SP, 0xFFF0);
+    SetReg(inst, REG_HL, 0xABCD);
+    const uint8_t prog[] = { 0xE5, 0xD1 };           // PUSH HL ; POP DE
+    LoadProgram(inst, 0, prog, sizeof(prog));
+
+    emfe_step(inst);   // PUSH HL — SP -= 2, mem[SP] = HL
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFEE, "SP -= 2");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEE), 0xCD, "low byte at SP");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEF), 0xAB, "high byte at SP+1");
+
+    emfe_step(inst);   // POP DE
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFF0, "SP restored");
+    TEST_EQ(GetReg(inst, REG_DE), (uint64_t)0xABCD, "DE = original HL");
+
+    // PUSH AF / POP BC round-trip.
+    SetReg(inst, REG_AF, 0x1234);
+    SetReg(inst, REG_BC, 0);
+    const uint8_t prog2[] = { 0xF5, 0xC1 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst); emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0x1234, "AF -> BC via stack");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCallRet() {
+    printf("TestCallRet...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_SP, 0xFFF0);
+
+    // Program at 0x100:
+    //   CALL 0x200      (3 bytes, PC after call = 0x103)
+    //   ...
+    // Subroutine at 0x200:
+    //   RET             (1 byte)
+    emfe_poke_byte(inst, 0x100, 0xCD);
+    emfe_poke_byte(inst, 0x101, 0x00);
+    emfe_poke_byte(inst, 0x102, 0x02);
+    emfe_poke_byte(inst, 0x200, 0xC9);
+    SetReg(inst, REG_PC, 0x100);
+
+    emfe_step(inst);   // CALL 0x200
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x200, "PC at subroutine");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFEE, "SP -= 2");
+    // The return address pushed should be 0x103 (after the operand bytes).
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEE), 0x03, "return-addr low");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEF), 0x01, "return-addr high");
+
+    emfe_step(inst);   // RET
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x103, "PC back at caller");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFF0, "SP restored");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestRst() {
+    printf("TestRst...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_SP, 0xFFF0);
+    // Place RST 0x10 (opcode 0xD7) at PC=0x500.
+    emfe_poke_byte(inst, 0x500, 0xD7);
+    SetReg(inst, REG_PC, 0x500);
+
+    TEST_EQ(emfe_step(inst), EMFE_OK, "RST 0x10 OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x10, "PC = vector");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFEE, "return-addr pushed");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEE), 0x01, "return-addr low (0x501)");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEF), 0x05, "return-addr high");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)11, "11 T");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 1.5) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 1.6) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -835,6 +1052,16 @@ int main() {
     TestAluCpPreservesA();
     TestAluImmediate();
     TestAluMemoryIndirect();
+    // Phase 1.6
+    TestJpUnconditional();
+    TestJpConditional();
+    TestJpHl();
+    TestJrRelative();
+    TestJrConditional();
+    TestDjnz();
+    TestPushPop();
+    TestCallRet();
+    TestRst();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
