@@ -339,8 +339,252 @@ static void TestRunningStateBlocksWrites() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 1.4 tests — LD (load/store) instruction family
+// ---------------------------------------------------------------------
+
+// Helper: load a sequence of bytes starting at `addr` and reset PC to
+// `addr` so emfe_step picks them up immediately.
+static void LoadProgram(EmfeInstance inst, uint16_t addr,
+                        const uint8_t* bytes, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        emfe_poke_byte(inst, addr + i, bytes[i]);
+    }
+    SetReg(inst, REG_PC, addr);
+}
+
+static void TestLdRegImmediate() {
+    // LD r, n — pattern 00 ddd 110. Eight opcodes, one per dest.
+    printf("TestLdRegImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // LD B, 0x11 ; LD C, 0x22 ; LD D, 0x33 ; LD E, 0x44 ;
+    // LD H, 0x55 ; LD L, 0x66 ; LD A, 0x77
+    const uint8_t prog[] = {
+        0x06, 0x11, 0x0E, 0x22, 0x16, 0x33, 0x1E, 0x44,
+        0x26, 0x55, 0x2E, 0x66, 0x3E, 0x77,
+    };
+    LoadProgram(inst, 0x0100, prog, sizeof(prog));
+    for (int i = 0; i < 7; ++i) {
+        TEST_EQ(emfe_step(inst), EMFE_OK, "LD r,n step OK");
+    }
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0x11, "B = 0x11");
+    TEST_EQ(GetReg(inst, REG_C), (uint64_t)0x22, "C = 0x22");
+    TEST_EQ(GetReg(inst, REG_D), (uint64_t)0x33, "D = 0x33");
+    TEST_EQ(GetReg(inst, REG_E), (uint64_t)0x44, "E = 0x44");
+    TEST_EQ(GetReg(inst, REG_H), (uint64_t)0x55, "H = 0x55");
+    TEST_EQ(GetReg(inst, REG_L), (uint64_t)0x66, "L = 0x66");
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x77, "A = 0x77");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)(7 * 7),
+            "7 instructions × 7 T-states");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)(0x0100 + 14), "PC advanced 14 bytes");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdRegPairImmediate() {
+    // LD rr, nn — pattern 00 pp 0001. BC / DE / HL / SP.
+    printf("TestLdRegPairImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // LD BC,0x1234 ; LD DE,0x5678 ; LD HL,0x9ABC ; LD SP,0xDEF0
+    const uint8_t prog[] = {
+        0x01, 0x34, 0x12,
+        0x11, 0x78, 0x56,
+        0x21, 0xBC, 0x9A,
+        0x31, 0xF0, 0xDE,
+    };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    for (int i = 0; i < 4; ++i) {
+        TEST_EQ(emfe_step(inst), EMFE_OK, "LD rr,nn step OK");
+    }
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0x1234, "BC = 0x1234");
+    TEST_EQ(GetReg(inst, REG_DE), (uint64_t)0x5678, "DE = 0x5678");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x9ABC, "HL = 0x9ABC");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xDEF0, "SP = 0xDEF0");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)(4 * 10),
+            "4 × 10 T-states");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdRegReg() {
+    // LD r, r' — pattern 01 ddd sss. Spot-check several combinations
+    // and verify HALT (0x76) is NOT executed.
+    printf("TestLdRegReg...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Set A=0xAA via LD A,n, then LD B,A ; LD C,B ; LD D,A ;
+    //   LD H,D ; LD L,H ; LD A,L.
+    const uint8_t prog[] = {
+        0x3E, 0xAA,   // LD A, 0xAA
+        0x47,         // LD B, A
+        0x48,         // LD C, B
+        0x57,         // LD D, A
+        0x62,         // LD H, D
+        0x6C,         // LD L, H
+        0x7D,         // LD A, L
+    };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    for (int i = 0; i < 7; ++i) {
+        TEST_EQ(emfe_step(inst), EMFE_OK, "LD r,r' step OK");
+    }
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0xAA, "A round-trip");
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0xAA, "B got A");
+    TEST_EQ(GetReg(inst, REG_C), (uint64_t)0xAA, "C got B");
+    TEST_EQ(GetReg(inst, REG_D), (uint64_t)0xAA, "D got A");
+    TEST_EQ(GetReg(inst, REG_H), (uint64_t)0xAA, "H got D");
+    TEST_EQ(GetReg(inst, REG_L), (uint64_t)0xAA, "L got H");
+    // First instruction was LD A,n (7 T), remaining 6 were LD r,r' (4 T each).
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)(7 + 6 * 4),
+            "cycle counts as expected");
+
+    // HALT (0x76) is in the LD r,r' opcode range but must NOT be
+    // executed by Phase 1.4. Poke it and confirm the step traps.
+    emfe_poke_byte(inst, 0x100, 0x76);
+    SetReg(inst, REG_PC, 0x100);
+    TEST_EQ(emfe_step(inst), EMFE_ERR_UNSUPPORTED, "HALT still unsupported");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x100, "PC preserved on HALT trap");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdRegMemHL() {
+    // LD r, (HL) and LD (HL), r — Reg8Read/Write code 6 path.
+    printf("TestLdRegMemHL...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Stage HL=0x2000, memory[0x2000]=0x5A; then LD B,(HL).
+    SetReg(inst, REG_HL, 0x2000);
+    emfe_poke_byte(inst, 0x2000, 0x5A);
+    const uint8_t prog1[] = { 0x46 };   // LD B, (HL)
+    LoadProgram(inst, 0, prog1, sizeof(prog1));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD B,(HL) OK");
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0x5A, "B = mem[HL]");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)7, "LD r,(HL) is 7 T");
+
+    // LD (HL), C with C=0x3C.
+    SetReg(inst, REG_C, 0x3C);
+    const uint8_t prog2[] = { 0x71 };   // LD (HL), C
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD (HL),C OK");
+    TEST_EQ(emfe_peek_byte(inst, 0x2000), 0x3C, "mem[HL] = C");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdMemHLImmediate() {
+    // LD (HL), n — special case of the LD r,n family with dst=6.
+    printf("TestLdMemHLImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x3000);
+    const uint8_t prog[] = { 0x36, 0xA5 };   // LD (HL), 0xA5
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD (HL),n OK");
+    TEST_EQ(emfe_peek_byte(inst, 0x3000), 0xA5, "mem[HL] = 0xA5");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)10, "LD (HL),n is 10 T");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdAMemBCDE() {
+    // LD A,(BC) / LD A,(DE) and the writeback pair.
+    printf("TestLdAMemBCDE...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_BC, 0x4000);
+    SetReg(inst, REG_DE, 0x4001);
+    emfe_poke_byte(inst, 0x4000, 0x11);
+    emfe_poke_byte(inst, 0x4001, 0x22);
+
+    const uint8_t prog[] = {
+        0x0A,         // LD A, (BC)  -> A = 0x11
+        0x47,         // LD B, A
+        0x1A,         // LD A, (DE)  -> A = 0x22
+    };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst); TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x11, "LD A,(BC)");
+    emfe_step(inst);
+    emfe_step(inst); TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x22, "LD A,(DE)");
+
+    // Writeback: LD (BC), A and LD (DE), A.
+    SetReg(inst, REG_BC, 0x4010);
+    SetReg(inst, REG_DE, 0x4011);
+    SetReg(inst, REG_A,  0x99);
+    const uint8_t prog2[] = { 0x02, 0x12 };   // LD (BC),A ; LD (DE),A
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst); TEST_EQ(emfe_peek_byte(inst, 0x4010), 0x99, "(BC) <- A");
+    emfe_step(inst); TEST_EQ(emfe_peek_byte(inst, 0x4011), 0x99, "(DE) <- A");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdAMemNNAbsolute() {
+    // LD A,(nn) / LD (nn),A — direct 16-bit absolute.
+    printf("TestLdAMemNNAbsolute...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x5000, 0x7F);
+    const uint8_t prog1[] = { 0x3A, 0x00, 0x50 };   // LD A, (0x5000)
+    LoadProgram(inst, 0, prog1, sizeof(prog1));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD A,(nn) OK");
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x7F, "A = mem[0x5000]");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)13, "13 T-states");
+
+    // LD (0x6000), A
+    SetReg(inst, REG_A, 0x42);
+    const uint8_t prog2[] = { 0x32, 0x00, 0x60 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD (nn),A OK");
+    TEST_EQ(emfe_peek_byte(inst, 0x6000), 0x42, "mem[0x6000] = A");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdHLMemNNAbsolute() {
+    // LD HL,(nn) / LD (nn),HL — 16-bit word transfer through absolute.
+    printf("TestLdHLMemNNAbsolute...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Plant a word at 0x7000: lo=0x34 hi=0x12 (little-endian).
+    emfe_poke_byte(inst, 0x7000, 0x34);
+    emfe_poke_byte(inst, 0x7001, 0x12);
+    const uint8_t prog1[] = { 0x2A, 0x00, 0x70 };   // LD HL, (0x7000)
+    LoadProgram(inst, 0, prog1, sizeof(prog1));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD HL,(nn) OK");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x1234, "HL = 0x1234");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)16, "16 T-states");
+
+    // Writeback: LD (0x8000), HL with HL=0xCAFE.
+    SetReg(inst, REG_HL, 0xCAFE);
+    const uint8_t prog2[] = { 0x22, 0x00, 0x80 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "LD (nn),HL OK");
+    TEST_EQ(emfe_peek_byte(inst, 0x8000), 0xFE, "mem[0x8000] = lo");
+    TEST_EQ(emfe_peek_byte(inst, 0x8001), 0xCA, "mem[0x8001] = hi");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 1.3) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 1.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -351,6 +595,15 @@ int main() {
     TestRegisterRoundTrip();
     TestStepNop();
     TestRunningStateBlocksWrites();
+    // Phase 1.4
+    TestLdRegImmediate();
+    TestLdRegPairImmediate();
+    TestLdRegReg();
+    TestLdRegMemHL();
+    TestLdMemHLImmediate();
+    TestLdAMemBCDE();
+    TestLdAMemNNAbsolute();
+    TestLdHLMemNNAbsolute();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
