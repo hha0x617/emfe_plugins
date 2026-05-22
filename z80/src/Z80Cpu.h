@@ -76,9 +76,26 @@ public:
 
     // Execute one instruction at PC. Returns:
     //   > 0 : T-states consumed; CPU state advanced.
-    //     0 : unrecognised opcode; PC unchanged, no side effects. The
-    //         caller (emfe_step) translates 0 into EMFE_ERR_UNSUPPORTED
-    //         so the host knows the trap was not a normal step.
+    //     0 : unrecognised opcode; PC rolled back to the opcode address
+    //         so the host's disassembly pane still shows the offending
+    //         byte. The R register is left in its incremented state to
+    //         match the real hardware behaviour (R bumps per M1 fetch).
+    //         The caller (emfe_step) translates 0 into
+    //         EMFE_ERR_UNSUPPORTED.
     // Cycle counts follow the Zilog UM008011 reference values.
     int ExecuteOne();
+
+private:
+    // ---- Instruction-fetch helpers ----------------------------------
+    // Both advance PC; FetchWord uses little-endian byte order.
+    uint8_t  FetchByte();
+    uint16_t FetchWord();
+
+    // ---- Register-code accessors (Zilog 3-bit encoding) -------------
+    // 0=B 1=C 2=D 3=E 4=H 5=L 6=(HL) 7=A. Code 6 routes through
+    // Memory->ReadByte(HL) / WriteByte(HL, val), which adds the
+    // documented one-extra-memory-cycle to the instruction's T-state
+    // count (callers add 3 T-states when reading or writing via code 6).
+    uint8_t Reg8Read (int code);
+    void    Reg8Write(int code, uint8_t val);
 };
