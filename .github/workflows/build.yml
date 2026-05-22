@@ -226,9 +226,12 @@ jobs:
           copy_if_exists em8/build/bin/Release/emfe_plugin_em8.dll
           copy_if_exists mc68030/build/bin/Release/emfe_plugin_mc68030.dll
           copy_if_exists z8000/build/bin/Release/emfe_plugin_z8000.dll
-          # z80 is added to this list (and to the sanity check below)
-          # once Phase 1.7 ships real functionality and the DLL is
-          # ready for end users.
+          copy_if_exists z80/build/bin/Release/emfe_plugin_z80.dll
+          # z80 is collected starting at Phase 1.7 (hello-world ROM
+          # works end-to-end). It is intentionally NOT yet added to
+          # the sanity-check `expected` list below or to the
+          # installer's .iss script — those gates flip when Phase 2
+          # (zexdoc parity) lands and the plugin is fit to ship.
 
           ls -l dist/plugins/
 

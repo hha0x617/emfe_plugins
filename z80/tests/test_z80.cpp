@@ -1022,8 +1022,216 @@ static void TestRst() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 1.7 tests — INC/DEC + IN/OUT + hello-world ROM end-to-end
+// ---------------------------------------------------------------------
+
+static void TestInc16BitPair() {
+    printf("TestInc16BitPair...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x1234);
+    const uint8_t prog[] = { 0x23 };           // INC HL
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "INC HL OK");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x1235, "HL += 1");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)6, "6 T-states");
+
+    // Wrap: 0xFFFF + 1 == 0
+    SetReg(inst, REG_HL, 0xFFFF);
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0000, "HL wraps");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDec16BitPair() {
+    printf("TestDec16BitPair...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_BC, 0x0001);
+    const uint8_t prog[] = { 0x0B };           // DEC BC
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0, "BC -= 1");
+
+    // 0 - 1 wraps to 0xFFFF.
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0xFFFF, "BC underflows to 0xFFFF");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestInc8BitFlags() {
+    // INC r is supposed to set H when the low nibble wraps (was 0x0F),
+    // set V when the result is 0x80 (was 0x7F), preserve C.
+    printf("TestInc8BitFlags...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // INC B with B=0x0F → result 0x10, H set, C preserved.
+    SetReg(inst, REG_B, 0x0F);
+    SetReg(inst, REG_F, TF_C);
+    const uint8_t inc_b[] = { 0x04 };
+    LoadProgram(inst, 0, inc_b, 1);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0x10, "B = 0x10");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_H) != 0, "H set (low nibble was F)");
+    TEST_TRUE((f & TF_C) != 0, "C preserved");
+    TEST_TRUE((f & TF_N) == 0, "N cleared by INC");
+
+    // INC B with B=0x7F → result 0x80, V set (signed overflow), S set.
+    SetReg(inst, REG_B, 0x7F);
+    SetReg(inst, REG_F, 0);
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0x80, "0x7F + 1 = 0x80");
+    f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_S) != 0,  "S set");
+    TEST_TRUE((f & TF_PV) != 0, "V set");
+    TEST_TRUE((f & TF_H) != 0,  "H set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDec8BitFlags() {
+    printf("TestDec8BitFlags...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // DEC C with C=0x80 → 0x7F, V set (signed underflow), N=1.
+    // Low nibble of 0x80 is 0, so DEC borrows from bit 4 — H is set.
+    SetReg(inst, REG_C, 0x80);
+    SetReg(inst, REG_F, 0);
+    const uint8_t dec_c[] = { 0x0D };
+    LoadProgram(inst, 0, dec_c, 1);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_C), (uint64_t)0x7F, "C = 0x7F");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_N) != 0,  "N set (sub)");
+    TEST_TRUE((f & TF_PV) != 0, "V set (0x80 → 0x7F crosses signed boundary)");
+    TEST_TRUE((f & TF_H) != 0,  "H set (borrow from bit 4 since low nibble was 0)");
+
+    // DEC C with C=0x05 → 0x04, H should be CLEAR (low nibble = 5).
+    SetReg(inst, REG_C, 0x05);
+    SetReg(inst, REG_F, 0);
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_C), (uint64_t)0x04, "C = 0x04");
+    f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_H) == 0,  "H clear (no half-borrow)");
+    TEST_TRUE((f & TF_PV) == 0, "V clear (no overflow)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestInOutImmediate() {
+    // OUT (0xFE), A delivers A through the UART → console callback.
+    // IN  A, (0xFF) reads the UART status byte.
+    printf("TestInOutImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    CaptureCtx ctx;
+    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
+
+    SetReg(inst, REG_A, 'X');
+    const uint8_t prog_out[] = { 0xD3, 0xFE };       // OUT (0xFE), A
+    LoadProgram(inst, 0, prog_out, sizeof(prog_out));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "OUT (0xFE),A OK");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)11, "11 T-states");
+    TEST_TRUE(ctx.captured == "X", "console captured 'X'");
+
+    // IN A, (0xFF): empty FIFO → status TX_READY (bit 0) only.
+    const uint8_t prog_in[] = { 0xDB, 0xFF };        // IN A, (0xFF)
+    LoadProgram(inst, 0x10, prog_in, sizeof(prog_in));
+    TEST_EQ(emfe_step(inst), EMFE_OK, "IN A,(0xFF) OK");
+    TEST_EQ(GetReg(inst, REG_A) & 0x01, (uint64_t)0x01, "TX_READY bit set");
+    TEST_EQ(GetReg(inst, REG_A) & 0x02, (uint64_t)0x00, "RX_AVAIL clear (empty FIFO)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+// ---------------------------------------------------------------------
+// Phase 1.7 ACCEPTANCE TEST: load examples/hello/hello.asm assembled to
+// 30 bytes, step until the self-loop is reached, assert the captured
+// console output equals "Hello, World!\r\n".
+//
+// The byte sequence below is hand-assembled and must stay in lockstep
+// with examples/hello/hello.asm — if you change one, regenerate the
+// other.
+// ---------------------------------------------------------------------
+
+static const uint8_t hello_world_bin[] = {
+    // start: ld   hl, message       (message starts at offset 0x000E)
+    0x21, 0x0E, 0x00,
+    // loop:  ld   a, (hl)
+    0x7E,
+    //        or   a                  ; Z := (A == 0)
+    0xB7,
+    //        jr   z, done            ; +5 → 0x000C
+    0x28, 0x05,
+    //        out  (0xFE), a
+    0xD3, 0xFE,
+    //        inc  hl
+    0x23,
+    //        jr   loop               ; -9 → 0x0003
+    0x18, 0xF7,
+    // done:  jr   done               ; -2 → 0x000C (self-loop)
+    0x18, 0xFE,
+    // message: "Hello, World!\r\n\0"
+    'H','e','l','l','o',',',' ','W','o','r','l','d','!',
+    0x0D, 0x0A, 0x00,
+};
+
+static void TestHelloWorld() {
+    printf("TestHelloWorld...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    CaptureCtx ctx;
+    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
+
+    // Load the ROM at 0x0000 and start at the reset vector.
+    for (size_t i = 0; i < sizeof(hello_world_bin); ++i) {
+        emfe_poke_byte(inst, (uint16_t)i, hello_world_bin[i]);
+    }
+    SetReg(inst, REG_PC, 0);
+
+    // Run until the self-loop is reached (PC sits at 0x000C with the
+    // captured string complete). 5000 steps is more than 30× what the
+    // program actually needs; the loop exit covers the happy path.
+    const uint64_t done_pc = 0x000C;
+    bool reached_done = false;
+    for (int i = 0; i < 5000; ++i) {
+        emfe_step(inst);
+        if (GetReg(inst, REG_PC) == done_pc &&
+            ctx.captured.size() >= 15 &&
+            ctx.captured.back() == '\n') {
+            reached_done = true;
+            break;
+        }
+    }
+    TEST_TRUE(reached_done, "reached self-loop with full output");
+    TEST_TRUE(ctx.captured == "Hello, World!\r\n",
+              "captured string matches expected");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 1.6) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 1.7) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -1062,6 +1270,13 @@ int main() {
     TestPushPop();
     TestCallRet();
     TestRst();
+    // Phase 1.7
+    TestInc16BitPair();
+    TestDec16BitPair();
+    TestInc8BitFlags();
+    TestDec8BitFlags();
+    TestInOutImmediate();
+    TestHelloWorld();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

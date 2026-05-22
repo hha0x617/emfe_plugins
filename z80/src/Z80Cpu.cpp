@@ -3,8 +3,10 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 1.6: NOP + LD family + 8-bit ALU + control flow (JP / JR / CALL
-// / RET / DJNZ / RST / PUSH / POP, conditional and unconditional).
+// Phase 1.7: Phase 1.6 + INC/DEC (8-bit r and 16-bit pair) + IN/OUT
+// immediate. With this set the plugin can execute a hand-written hello-
+// world ROM that walks a string, OUTs each byte to the UART and loops
+// via INC HL — that's the Phase 1 acceptance demo.
 // Prefix opcodes (CB / DD / ED / FD), HALT, EX/EXX, and 16-bit ALU land
 // in Phase 2.
 
@@ -243,6 +245,71 @@ int Z80Cpu::ExecuteOne() {
         return 10;
     }
 
+    // ----- 0x03 / 0x13 / 0x23 / 0x33 : INC rr  (no flag effects) ------
+    // Pattern 00 pp 0011. pp: 00=BC 01=DE 10=HL 11=SP.
+    if ((opcode & 0xCF) == 0x03) {
+        int pp = (opcode >> 4) & 0x03;
+        switch (pp) {
+        case 0: BC = static_cast<uint16_t>(BC + 1); break;
+        case 1: DE = static_cast<uint16_t>(DE + 1); break;
+        case 2: HL = static_cast<uint16_t>(HL + 1); break;
+        case 3: SP = static_cast<uint16_t>(SP + 1); break;
+        }
+        CycleCount += 6; InstructionCount++; return 6;
+    }
+    // ----- 0x0B / 0x1B / 0x2B / 0x3B : DEC rr  (no flag effects) ------
+    if ((opcode & 0xCF) == 0x0B) {
+        int pp = (opcode >> 4) & 0x03;
+        switch (pp) {
+        case 0: BC = static_cast<uint16_t>(BC - 1); break;
+        case 1: DE = static_cast<uint16_t>(DE - 1); break;
+        case 2: HL = static_cast<uint16_t>(HL - 1); break;
+        case 3: SP = static_cast<uint16_t>(SP - 1); break;
+        }
+        CycleCount += 6; InstructionCount++; return 6;
+    }
+
+    // ----- 0x04/0C/14/1C/24/2C/34/3C : INC r  (8-bit) -----------------
+    // Pattern 00 ddd 100. Flags: S/Z/Y/H/X from result; P/V set when
+    // the result is 0x80 (signed overflow on add of 1); N = 0; C is
+    // preserved (per Zilog UM008011 §5).
+    if ((opcode & 0xC7) == 0x04) {
+        int dst = (opcode >> 3) & 0x07;
+        uint8_t orig = Reg8Read(dst);
+        uint8_t result = static_cast<uint8_t>(orig + 1);
+        Reg8Write(dst, result);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);   // preserve C
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x0F) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x80) f |= F_PV;
+        // N already 0.
+        SetF(f);
+        int cycles = (dst == 6) ? 11 : 4;
+        CycleCount += cycles; InstructionCount++; return cycles;
+    }
+    // ----- 0x05/0D/15/1D/25/2D/35/3D : DEC r  (8-bit) -----------------
+    // Pattern 00 ddd 101. Flags: as INC but N=1, P/V set on 0x7F
+    // (signed overflow on subtract of 1), H = 1 when low nibble was 0.
+    if ((opcode & 0xC7) == 0x05) {
+        int dst = (opcode >> 3) & 0x07;
+        uint8_t orig = Reg8Read(dst);
+        uint8_t result = static_cast<uint8_t>(orig - 1);
+        Reg8Write(dst, result);
+        uint8_t f = static_cast<uint8_t>((F() & F_C) | F_N);   // preserve C, set N
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x00) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x7F) f |= F_PV;
+        SetF(f);
+        int cycles = (dst == 6) ? 11 : 4;
+        CycleCount += cycles; InstructionCount++; return cycles;
+    }
+
     // ----- 0x02 LD (BC), A    0x12 LD (DE), A -------------------------
     if (opcode == 0x02) { Memory->WriteByte(BC, A()); CycleCount += 7; InstructionCount++; return 7; }
     if (opcode == 0x12) { Memory->WriteByte(DE, A()); CycleCount += 7; InstructionCount++; return 7; }
@@ -466,6 +533,22 @@ int Z80Cpu::ExecuteOne() {
         case 3: AF = val; break;
         }
         CycleCount += 10; InstructionCount++; return 10;
+    }
+
+    // ----- IN A, (n) / OUT (n), A  (immediate-port I/O) ----------------
+    // 0xDB IN  A, (n) : A := port[n] — 11 T
+    // 0xD3 OUT (n), A : port[n] := A — 11 T
+    // Phase 1.7 wires these straight through to Z80Memory's I/O space,
+    // which the UART hooks into at ports 0xFE / 0xFF (see docs/mmio.md).
+    if (opcode == 0xDB) {
+        uint8_t port = FetchByte();
+        SetA(Memory->ReadIo(port));
+        CycleCount += 11; InstructionCount++; return 11;
+    }
+    if (opcode == 0xD3) {
+        uint8_t port = FetchByte();
+        Memory->WriteIo(port, A());
+        CycleCount += 11; InstructionCount++; return 11;
     }
 
     // ----- unrecognised opcode: rollback PC, surface trap -------------
