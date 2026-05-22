@@ -265,6 +265,19 @@ jobs:
           ls -l dist/plugins/
 
       - name: Compile installer (Inno Setup)
+        # The installer script (installer/emfe_plugins.iss) hard-codes
+        # every plugin DLL by path. A PR that only touched one plugin
+        # leaves the other DLLs unbuilt under the path-based selective
+        # build introduced in #50, so iscc would error with "missing
+        # source file".
+        #
+        # Gate the installer compile to "full-build situations":
+        #   - any non-PR event (tag push, workflow_dispatch)
+        #   - PR that touched a shared path (api/, .github/, installer/)
+        #
+        # Installer-syntax regressions are still caught on installer/
+        # PRs (which set shared=true) and on every release.
+        if: github.event_name != 'pull_request' || needs.changes.outputs.shared == 'true'
         shell: pwsh
         run: |
           # Inno Setup 6 is preinstalled on windows-latest runners; iscc is on PATH.
@@ -278,9 +291,17 @@ jobs:
         with:
           name: emfe-plugins-${{ env.SHORT_HASH }}
           path: dist/plugins/*.dll
-          if-no-files-found: error
+          # Tolerate empty dist/plugins/ on PRs that touched only plugins
+          # whose DLLs are not yet listed in the Collect step (e.g. z80
+          # before Phase 1.7). The release path is still guarded by the
+          # Sanity-check release artifacts step above, which fails the
+          # build before any release is created if anything is missing.
+          if-no-files-found: warn
 
       - name: Upload installer artifact
+        # Skipped on PRs that did not trigger an installer compile —
+        # nothing to upload in that case.
+        if: github.event_name != 'pull_request' || needs.changes.outputs.shared == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: emfe-plugins-installer-${{ env.SHORT_HASH }}
