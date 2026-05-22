@@ -20,7 +20,32 @@
 #include <cstdint>
 #include <cstring>
 #include <atomic>
+#include <mutex>
 #include <new>
+#include <vector>
+
+// ============================================================================
+// Register IDs (host displays in declaration order, grouped by `group`)
+// ============================================================================
+
+enum RegId : uint32_t {
+    // Primary pairs and their 8-bit halves.
+    REG_AF = 0, REG_A, REG_F,
+    REG_BC,     REG_B, REG_C,
+    REG_DE,     REG_D, REG_E,
+    REG_HL,     REG_H, REG_L,
+    // Index, stack, program counter.
+    REG_IX, REG_IY, REG_SP, REG_PC,
+    // Interrupt / refresh.
+    REG_I, REG_R,
+    // Shadow set (16-bit only — halves are rarely useful interactively).
+    REG_AF_SHADOW, REG_BC_SHADOW, REG_DE_SHADOW, REG_HL_SHADOW,
+    // Interrupt enable flip-flops + mode.
+    REG_IFF1, REG_IFF2, REG_IM,
+    // Counters (hidden / read-only).
+    REG_CYCLES, REG_INSTRUCTIONS,
+    REG_COUNT
+};
 
 // ============================================================================
 // Board info (static — lives for the DLL's lifetime)
@@ -50,6 +75,11 @@ struct EmfeInstanceData {
     EmfeConsoleCharCallback consoleCharCb = nullptr;
     void* consoleCharUserData = nullptr;
     std::mutex consoleCbMutex;
+
+    // Register definitions, built once at create() and handed back via
+    // emfe_get_register_defs. Strings live in static storage (literals)
+    // so the vector can be copied / reset freely.
+    std::vector<EmfeRegisterDef> regDefs;
 };
 
 static inline EmfeInstanceData* to_inst(EmfeInstance i) {
@@ -95,6 +125,44 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
     inst->memory.Reset();
     inst->uart.Reset();
     inst->timer.Reset();
+
+    // Build the register definition table. Order here drives the host's
+    // display order; group strings cluster registers under collapsible
+    // headings.
+    auto add = [inst](uint32_t id, const char* name, const char* group,
+                      uint32_t bits, uint32_t flags) {
+        inst->regDefs.push_back({id, name, group, EMFE_REG_INT, bits, flags});
+    };
+    add(REG_AF, "AF", "Main", 16, EMFE_REG_FLAG_NONE);
+    add(REG_A,  "A",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_F,  "F",  "Main",  8, EMFE_REG_FLAG_FLAGS);
+    add(REG_BC, "BC", "Main", 16, EMFE_REG_FLAG_NONE);
+    add(REG_B,  "B",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_C,  "C",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_DE, "DE", "Main", 16, EMFE_REG_FLAG_NONE);
+    add(REG_D,  "D",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_E,  "E",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_HL, "HL", "Main", 16, EMFE_REG_FLAG_NONE);
+    add(REG_H,  "H",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_L,  "L",  "Main",  8, EMFE_REG_FLAG_NONE);
+    add(REG_IX, "IX", "Index", 16, EMFE_REG_FLAG_NONE);
+    add(REG_IY, "IY", "Index", 16, EMFE_REG_FLAG_NONE);
+    add(REG_SP, "SP", "System", 16, EMFE_REG_FLAG_SP);
+    add(REG_PC, "PC", "System", 16, EMFE_REG_FLAG_PC);
+    add(REG_I,  "I",  "System",  8, EMFE_REG_FLAG_NONE);
+    add(REG_R,  "R",  "System",  8, EMFE_REG_FLAG_NONE);
+    add(REG_AF_SHADOW, "AF'", "Shadow", 16, EMFE_REG_FLAG_NONE);
+    add(REG_BC_SHADOW, "BC'", "Shadow", 16, EMFE_REG_FLAG_NONE);
+    add(REG_DE_SHADOW, "DE'", "Shadow", 16, EMFE_REG_FLAG_NONE);
+    add(REG_HL_SHADOW, "HL'", "Shadow", 16, EMFE_REG_FLAG_NONE);
+    add(REG_IFF1, "IFF1", "Interrupt", 8, EMFE_REG_FLAG_NONE);
+    add(REG_IFF2, "IFF2", "Interrupt", 8, EMFE_REG_FLAG_NONE);
+    add(REG_IM,   "IM",   "Interrupt", 8, EMFE_REG_FLAG_NONE);
+    add(REG_CYCLES,       "Cycles",       "Counters", 64,
+        EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
+    add(REG_INSTRUCTIONS, "Instructions", "Counters", 64,
+        EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
+
     *out_instance = reinterpret_cast<EmfeInstance>(inst);
     return EMFE_OK;
 }
@@ -134,26 +202,125 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_diagnostic_callback(
 // ============================================================================
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_defs(
-        EmfeInstance /*instance*/, const EmfeRegisterDef** out_defs) {
-    if (out_defs) *out_defs = nullptr;
-    return 0;
+        EmfeInstance instance, const EmfeRegisterDef** out_defs) {
+    if (!instance || !out_defs) return 0;
+    auto* inst = to_inst(instance);
+    *out_defs = inst->regDefs.data();
+    return static_cast<int32_t>(inst->regDefs.size());
 }
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_register_flag_defs(
-        EmfeInstance /*instance*/, uint32_t /*register_id*/,
+        EmfeInstance /*instance*/, uint32_t reg_id,
         const EmfeRegFlagBitDef** out_defs) {
-    if (out_defs) *out_defs = nullptr;
+    if (!out_defs) return 0;
+    *out_defs = nullptr;
+
+    // Z80 F register layout per Zilog UM008011 §2.4:
+    //   bit 7 S   bit 6 Z   bit 5 Y*  bit 4 H
+    //   bit 3 X*  bit 2 P/V bit 1 N   bit 0 C
+    // The Y and X bits are undocumented copies of bits 5 and 3 of the
+    // last ALU result; they're exposed in the bit decomposition so the
+    // host's checkbox UI matches what zexall checks. Order is MSB-first
+    // so the displayed string reads like a status byte literal.
+    static const EmfeRegFlagBitDef f_bits[] = {
+        { 7, "S" },
+        { 6, "Z" },
+        { 5, "Y" },
+        { 4, "H" },
+        { 3, "X" },
+        { 2, "P/V" },
+        { 1, "N" },
+        { 0, "C" },
+    };
+    if (reg_id == REG_F) {
+        *out_defs = f_bits;
+        return static_cast<int32_t>(sizeof(f_bits) / sizeof(f_bits[0]));
+    }
     return 0;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_get_registers(
-        EmfeInstance instance, EmfeRegValue* /*values*/, int32_t /*count*/) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+        EmfeInstance instance, EmfeRegValue* values, int32_t count) {
+    if (!instance || !values) return EMFE_ERR_INVALID;
+    auto& cpu = to_inst(instance)->cpu;
+    for (int32_t i = 0; i < count; ++i) {
+        auto& v = values[i];
+        v.value.u64 = 0;
+        switch (v.reg_id) {
+        case REG_AF: v.value.u64 = cpu.AF; break;
+        case REG_A:  v.value.u64 = cpu.A(); break;
+        case REG_F:  v.value.u64 = cpu.F(); break;
+        case REG_BC: v.value.u64 = cpu.BC; break;
+        case REG_B:  v.value.u64 = cpu.B(); break;
+        case REG_C:  v.value.u64 = cpu.C(); break;
+        case REG_DE: v.value.u64 = cpu.DE; break;
+        case REG_D:  v.value.u64 = cpu.D(); break;
+        case REG_E:  v.value.u64 = cpu.E(); break;
+        case REG_HL: v.value.u64 = cpu.HL; break;
+        case REG_H:  v.value.u64 = cpu.H(); break;
+        case REG_L:  v.value.u64 = cpu.L(); break;
+        case REG_IX: v.value.u64 = cpu.IX; break;
+        case REG_IY: v.value.u64 = cpu.IY; break;
+        case REG_SP: v.value.u64 = cpu.SP; break;
+        case REG_PC: v.value.u64 = cpu.PC; break;
+        case REG_I:  v.value.u64 = cpu.I;  break;
+        case REG_R:  v.value.u64 = cpu.R;  break;
+        case REG_AF_SHADOW: v.value.u64 = cpu.AF_; break;
+        case REG_BC_SHADOW: v.value.u64 = cpu.BC_; break;
+        case REG_DE_SHADOW: v.value.u64 = cpu.DE_; break;
+        case REG_HL_SHADOW: v.value.u64 = cpu.HL_; break;
+        case REG_IFF1: v.value.u64 = cpu.IFF1 ? 1u : 0u; break;
+        case REG_IFF2: v.value.u64 = cpu.IFF2 ? 1u : 0u; break;
+        case REG_IM:   v.value.u64 = cpu.IM; break;
+        case REG_CYCLES:       v.value.u64 = cpu.CycleCount; break;
+        case REG_INSTRUCTIONS: v.value.u64 = static_cast<uint64_t>(cpu.InstructionCount); break;
+        default: return EMFE_ERR_INVALID;
+        }
+    }
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_registers(
-        EmfeInstance instance, const EmfeRegValue* /*values*/, int32_t /*count*/) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+        EmfeInstance instance, const EmfeRegValue* values, int32_t count) {
+    if (!instance || !values) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+    auto& cpu = inst->cpu;
+    for (int32_t i = 0; i < count; ++i) {
+        const auto& v = values[i];
+        switch (v.reg_id) {
+        case REG_AF: cpu.AF = static_cast<uint16_t>(v.value.u64); break;
+        case REG_A:  cpu.SetA(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_F:  cpu.SetF(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_BC: cpu.BC = static_cast<uint16_t>(v.value.u64); break;
+        case REG_B:  cpu.SetB(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_C:  cpu.SetC(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_DE: cpu.DE = static_cast<uint16_t>(v.value.u64); break;
+        case REG_D:  cpu.SetD(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_E:  cpu.SetE(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_HL: cpu.HL = static_cast<uint16_t>(v.value.u64); break;
+        case REG_H:  cpu.SetH(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_L:  cpu.SetL(static_cast<uint8_t>(v.value.u64)); break;
+        case REG_IX: cpu.IX = static_cast<uint16_t>(v.value.u64); break;
+        case REG_IY: cpu.IY = static_cast<uint16_t>(v.value.u64); break;
+        case REG_SP: cpu.SP = static_cast<uint16_t>(v.value.u64); break;
+        case REG_PC: cpu.PC = static_cast<uint16_t>(v.value.u64); break;
+        case REG_I:  cpu.I  = static_cast<uint8_t>(v.value.u64); break;
+        case REG_R:  cpu.R  = static_cast<uint8_t>(v.value.u64); break;
+        case REG_AF_SHADOW: cpu.AF_ = static_cast<uint16_t>(v.value.u64); break;
+        case REG_BC_SHADOW: cpu.BC_ = static_cast<uint16_t>(v.value.u64); break;
+        case REG_DE_SHADOW: cpu.DE_ = static_cast<uint16_t>(v.value.u64); break;
+        case REG_HL_SHADOW: cpu.HL_ = static_cast<uint16_t>(v.value.u64); break;
+        case REG_IFF1: cpu.IFF1 = (v.value.u64 != 0); break;
+        case REG_IFF2: cpu.IFF2 = (v.value.u64 != 0); break;
+        case REG_IM:   cpu.IM   = static_cast<uint8_t>(v.value.u64 & 0x03); break;
+        case REG_CYCLES:
+        case REG_INSTRUCTIONS:
+            break; // read-only, silently dropped
+        default: return EMFE_ERR_INVALID;
+        }
+    }
+    return EMFE_OK;
 }
 
 // ============================================================================
@@ -250,7 +417,11 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_get_program_range(
 // ============================================================================
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step(EmfeInstance instance) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+    int cycles = inst->cpu.ExecuteOne();
+    return cycles > 0 ? EMFE_OK : EMFE_ERR_UNSUPPORTED;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step_over(EmfeInstance instance) {
