@@ -167,4 +167,18 @@ private:
     // HL by this prefix. Returns total T-states (including the 4 T-
     // states added by the prefix M1 fetch).
     int ExecuteWithIndex(uint16_t* IXY);
+
+    // ---- 16-bit ADC HL,rr / SBC HL,rr helpers -----------------------
+    // Both update HL in place and set full flags per Zilog UM008011:
+    //   ADC: S/Z from result high byte sign + result==0,
+    //        Y/X from result high byte bits 5/3,
+    //        H from bit 11 carry, PV signed overflow,
+    //        N=0, C from bit 15.
+    //   SBC: same shape but N=1, H/C are borrow-style.
+    // The OPERATIONS reference the existing C flag as carry-in.
+    void AdcHl16(uint16_t addend);
+    void SbcHl16(uint16_t addend);
+
+    // ---- ED prefix dispatcher ---------------------------------------
+    int ExecuteEdPrefix();
 };

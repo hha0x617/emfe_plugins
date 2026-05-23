@@ -3,11 +3,12 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 2.2: Phase 2.1 + ADD HL,rr (16-bit ALU starter) + DD/FD prefix
-// (IX/IY index registers and (IX+d)/(IY+d) addressing modes,
-// including the 4-byte DD CB d xx shift/BIT/RES/SET form on
-// (IX+d)/(IY+d)). ED prefix, HALT, EX/EXX, and the undocumented
-// IXH/IXL/IYH/IYL byte access land later in Phase 2 / Phase 3.
+// Phase 2.3: Phase 2.2 + ED prefix family (block I/O LDI/LDD/CPI/CPD
+// + the R variants, INI/IND/OUTI/OUTD + R variants; per-register
+// IN r,(C) / OUT (C),r; 16-bit ADC/SBC on HL; LD (nn),rr / LD rr,(nn);
+// IM 0/1/2; LD A,I / LD A,R / LD I,A / LD R,A; NEG; RETN / RETI;
+// RRD / RLD). HALT, EX/EXX, and the undocumented IXH/IXL/IYH/IYL byte
+// access land later in Phase 2 / Phase 3.
 
 #include "pch.h"
 #include "Z80Cpu.h"
@@ -353,6 +354,11 @@ int Z80Cpu::ExecuteOne() {
     // ----- 0xDD / 0xFD prefix : IX / IY substitution ------------------
     if (opcode == 0xDD) return ExecuteWithIndex(&IX);
     if (opcode == 0xFD) return ExecuteWithIndex(&IY);
+
+    // ----- 0xED prefix : "extended" opcodes (block I/O, IM, ADC/SBC
+    //       on HL, IN r,(C), OUT (C),r, LD I/R, RETN/RETI, RRD/RLD,
+    //       NEG, …).
+    if (opcode == 0xED) return ExecuteEdPrefix();
 
     // ----- 0x01 / 0x11 / 0x21 / 0x31 : LD rr, nn ----------------------
     // Pattern 00 pp 0001. pp: 00=BC 01=DE 10=HL 11=SP.
@@ -959,4 +965,347 @@ int Z80Cpu::ExecuteWithIndex(uint16_t* IXY) {
     // re-fetch the suffix as its own primary opcode.
     PC = static_cast<uint16_t>(PC - 1);
     CycleCount += 4; InstructionCount++; return 4;
+}
+
+// ---- 16-bit ADC HL,rr / SBC HL,rr -----------------------------------
+//
+// Unlike ADD HL,rr (which preserves S/Z/PV), the WITH-CARRY variants
+// produce full flag updates including S, Z, P/V (signed overflow), and
+// Y/X copied from the result HIGH byte. Cycle cost is 15 T.
+
+void Z80Cpu::AdcHl16(uint16_t addend) {
+    uint16_t cy = (F() & F_C) ? 1u : 0u;
+    uint32_t full = static_cast<uint32_t>(HL) + addend + cy;
+    uint32_t half = (HL & 0x0FFF) + (addend & 0x0FFF) + cy;
+    uint16_t result = static_cast<uint16_t>(full);
+    uint8_t f = 0;
+    if (result & 0x8000)          f |= F_S;
+    if (result == 0)              f |= F_Z;
+    if ((result >> 8) & 0x20)     f |= F_Y;
+    if (half > 0x0FFF)            f |= F_H;
+    if ((result >> 8) & 0x08)     f |= F_X;
+    // Signed overflow: HL and addend same sign, result different sign.
+    if (((HL ^ result) & (addend ^ result) & 0x8000) != 0) f |= F_PV;
+    // N already 0.
+    if (full > 0xFFFF)            f |= F_C;
+    SetF(f);
+    HL = result;
+}
+
+void Z80Cpu::SbcHl16(uint16_t addend) {
+    uint16_t by = (F() & F_C) ? 1u : 0u;
+    int32_t full = static_cast<int32_t>(HL) - static_cast<int32_t>(addend) - by;
+    int32_t half = (HL & 0x0FFF) - (addend & 0x0FFF) - by;
+    uint16_t result = static_cast<uint16_t>(full & 0xFFFF);
+    uint8_t f = F_N;
+    if (result & 0x8000)          f |= F_S;
+    if (result == 0)              f |= F_Z;
+    if ((result >> 8) & 0x20)     f |= F_Y;
+    if (half < 0)                 f |= F_H;
+    if ((result >> 8) & 0x08)     f |= F_X;
+    // Signed overflow: HL and addend differ in sign, result has addend's sign.
+    if (((HL ^ addend) & (HL ^ result) & 0x8000) != 0) f |= F_PV;
+    if (full < 0)                 f |= F_C;
+    SetF(f);
+    HL = result;
+}
+
+// ---- ED prefix dispatcher -------------------------------------------
+//
+// ED-prefixed opcodes are a grab-bag: 16-bit ADC/SBC on HL, LD between
+// memory and 16-bit register pairs, IN r,(C) / OUT (C),r, NEG, IM 0/1/2,
+// LD A,I / LD A,R / LD I,A / LD R,A, RETN / RETI, RRD / RLD, and the
+// block I/O family (LDI/LDD/CPI/CPD/INI/IND/OUTI/OUTD + their *R
+// repeating variants).
+//
+// Each suffix byte is its own M1 fetch, so R bumps again after we read
+// it. Unknown ED opcodes act as a NOP (per real-hardware behaviour for
+// the unassigned slots in this table).
+
+int Z80Cpu::ExecuteEdPrefix() {
+    uint8_t sub = FetchByte();
+    R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+
+    auto setLogicalFlagsFromIo = [&](uint8_t v) {
+        // Used by IN r,(C) and the BIT-less ED in/out variants:
+        //   S, Z, Y, X from value; H = 0; P/V = parity; N = 0; C preserved.
+        uint8_t f = static_cast<uint8_t>(F() & F_C);
+        if (v & 0x80) f |= F_S;
+        if (v == 0)   f |= F_Z;
+        if (v & 0x20) f |= F_Y;
+        if (v & 0x08) f |= F_X;
+        if (parity8(v)) f |= F_PV;
+        SetF(f);
+    };
+
+    // --- 16-bit ADC/SBC HL,rr (ED 4A/5A/6A/7A and ED 42/52/62/72) ----
+    // Pattern: ED 01 pp [0|1] 010 — bit 3 = 1 → ADC, bit 3 = 0 → SBC.
+    if ((sub & 0xCF) == 0x42) {                       // SBC HL, rr
+        int pp = (sub >> 4) & 0x03;
+        uint16_t addend = 0;
+        switch (pp) { case 0: addend = BC; break; case 1: addend = DE; break;
+                      case 2: addend = HL; break; case 3: addend = SP; break; }
+        SbcHl16(addend);
+        CycleCount += 15; InstructionCount++; return 15;
+    }
+    if ((sub & 0xCF) == 0x4A) {                       // ADC HL, rr
+        int pp = (sub >> 4) & 0x03;
+        uint16_t addend = 0;
+        switch (pp) { case 0: addend = BC; break; case 1: addend = DE; break;
+                      case 2: addend = HL; break; case 3: addend = SP; break; }
+        AdcHl16(addend);
+        CycleCount += 15; InstructionCount++; return 15;
+    }
+
+    // --- LD (nn), rr / LD rr, (nn) (ED 43/4B, 53/5B, 63/6B, 73/7B) ---
+    // ED 01 pp 0 011 → LD (nn), rr.  ED 01 pp 1 011 → LD rr, (nn).
+    if ((sub & 0xCF) == 0x43) {                       // LD (nn), rr
+        int pp = (sub >> 4) & 0x03;
+        uint16_t nn = FetchWord();
+        uint16_t val = 0;
+        switch (pp) { case 0: val = BC; break; case 1: val = DE; break;
+                      case 2: val = HL; break; case 3: val = SP; break; }
+        Memory->WriteWord(nn, val);
+        CycleCount += 20; InstructionCount++; return 20;
+    }
+    if ((sub & 0xCF) == 0x4B) {                       // LD rr, (nn)
+        int pp = (sub >> 4) & 0x03;
+        uint16_t nn = FetchWord();
+        uint16_t val = Memory->ReadWord(nn);
+        switch (pp) { case 0: BC = val; break; case 1: DE = val; break;
+                      case 2: HL = val; break; case 3: SP = val; break; }
+        CycleCount += 20; InstructionCount++; return 20;
+    }
+
+    // --- NEG (ED 44 and the undocumented aliases 54/64/74/4C/5C/6C/7C)
+    if ((sub & 0xC7) == 0x44) {
+        uint8_t a = A();
+        SetA(AluSub(0, a, false));
+        CycleCount += 8; InstructionCount++; return 8;
+    }
+
+    // --- RETN / RETI (ED 45 / 4D and their aliases 55/65/75 / 5D/6D/7D)
+    // RETN restores IFF1 from IFF2 (NMI-return semantics). RETI is
+    // identical pop-PC; the side effect is signalling the interrupt
+    // controller (we don't model one yet so behave like RETN).
+    if ((sub & 0xC7) == 0x45) {
+        PC = Pop16();
+        IFF1 = IFF2;     // RETN behaviour; harmless for RETI
+        CycleCount += 14; InstructionCount++; return 14;
+    }
+
+    // --- IM 0 / IM 1 / IM 2 (ED 46/56/5E + aliases 66/6E/76/4E/7E) ---
+    // Pattern: ED 01 m 110 with m ∈ {00→IM0, 01→IM0/1 undef→treat as 0,
+    //                                10→IM1, 11→IM2}. Simpler to just
+    // table the documented slots; the undef slots (4E/6E) we map to 0.
+    if (sub == 0x46 || sub == 0x66 || sub == 0x4E || sub == 0x6E) {
+        IM = 0; CycleCount += 8; InstructionCount++; return 8;
+    }
+    if (sub == 0x56 || sub == 0x76) {
+        IM = 1; CycleCount += 8; InstructionCount++; return 8;
+    }
+    if (sub == 0x5E || sub == 0x7E) {
+        IM = 2; CycleCount += 8; InstructionCount++; return 8;
+    }
+
+    // --- LD I,A / LD R,A / LD A,I / LD A,R (ED 47 / 4F / 57 / 5F) ----
+    // LD A,I and LD A,R also set flags: S/Z from result, Y/X from result,
+    // H=0, N=0, PV=IFF2, C preserved.
+    if (sub == 0x47) { I = A(); CycleCount += 9; InstructionCount++; return 9; }
+    if (sub == 0x4F) { R = A(); CycleCount += 9; InstructionCount++; return 9; }
+    if (sub == 0x57 || sub == 0x5F) {
+        uint8_t v = (sub == 0x57) ? I : R;
+        SetA(v);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);
+        if (v & 0x80) f |= F_S;
+        if (v == 0)   f |= F_Z;
+        if (v & 0x20) f |= F_Y;
+        if (v & 0x08) f |= F_X;
+        if (IFF2) f |= F_PV;
+        SetF(f);
+        CycleCount += 9; InstructionCount++; return 9;
+    }
+
+    // --- IN r,(C) and OUT (C),r (ED 40/48/50/58/60/68/78 and 41/49/51/59/61/69/79)
+    // Pattern: ED 01 rrr 000 = IN r,(C);  ED 01 rrr 001 = OUT (C),r
+    // rrr == 110 is special:
+    //   ED 70  IN (C)    — read port, set flags, discard
+    //   ED 71  OUT (C),0 — write zero
+    if ((sub & 0xC7) == 0x40) {           // IN r,(C)
+        int dst = (sub >> 3) & 0x07;
+        uint8_t v = Memory->ReadIo(C());
+        if (dst != 6) Reg8Write(dst, v);  // dst==6 (ED 70) discards
+        setLogicalFlagsFromIo(v);
+        CycleCount += 12; InstructionCount++; return 12;
+    }
+    if ((sub & 0xC7) == 0x41) {           // OUT (C),r
+        int src = (sub >> 3) & 0x07;
+        uint8_t v = (src == 6) ? 0 : Reg8Read(src);  // ED 71 outputs 0
+        Memory->WriteIo(C(), v);
+        CycleCount += 12; InstructionCount++; return 12;
+    }
+
+    // --- RRD / RLD (ED 67 / 6F) ---------------------------------------
+    // 12-bit BCD rotate between A.low and (HL).
+    //   RRD: (HL).low → A.low → (HL).high → (HL).low
+    //   RLD: (HL).high → A.low → (HL).low → (HL).high
+    // A.high preserved. Flags: S/Z/Y/X from new A, H=0, PV=parity, N=0,
+    // C preserved.
+    if (sub == 0x67 || sub == 0x6F) {
+        uint8_t a = A();
+        uint8_t m = Memory->ReadByte(HL);
+        uint8_t new_a, new_m;
+        if (sub == 0x67) {
+            // RRD
+            new_a = static_cast<uint8_t>((a & 0xF0) | (m & 0x0F));
+            new_m = static_cast<uint8_t>((a << 4) | (m >> 4));
+        } else {
+            // RLD
+            new_a = static_cast<uint8_t>((a & 0xF0) | (m >> 4));
+            new_m = static_cast<uint8_t>((m << 4) | (a & 0x0F));
+        }
+        SetA(new_a);
+        Memory->WriteByte(HL, new_m);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);
+        if (new_a & 0x80) f |= F_S;
+        if (new_a == 0)   f |= F_Z;
+        if (new_a & 0x20) f |= F_Y;
+        if (new_a & 0x08) f |= F_X;
+        if (parity8(new_a)) f |= F_PV;
+        SetF(f);
+        CycleCount += 18; InstructionCount++; return 18;
+    }
+
+    // --- Block I/O ----------------------------------------------------
+    // LDI/LDD/CPI/CPD/INI/IND/OUTI/OUTD and their R-variants (LDIR
+    // etc.). Each single step takes 16 T; the repeating variants do
+    // the same work and, if the loop condition still holds, rewind PC
+    // by 2 (re-execute) adding 5 T (= 21 T total).
+
+    auto doLdMove = [&](int direction /* +1 or -1 */) {
+        uint8_t v = Memory->ReadByte(HL);
+        Memory->WriteByte(DE, v);
+        HL = static_cast<uint16_t>(HL + direction);
+        DE = static_cast<uint16_t>(DE + direction);
+        BC = static_cast<uint16_t>(BC - 1);
+        // Flags: S/Z/C preserved; H=0; N=0; PV = (BC != 0).
+        // Y/X come from low byte of (A + v) per Zilog quirk.
+        uint8_t n = static_cast<uint8_t>(A() + v);
+        uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_C));
+        if (n & 0x02) f |= F_Y;     // YES — bit 1 of (A+v) becomes Y
+        if (n & 0x08) f |= F_X;
+        if (BC != 0)  f |= F_PV;
+        SetF(f);
+    };
+
+    auto doCpStep = [&](int direction) {
+        // CPI/CPD/CPIR/CPDR — CP A,(HL); HL += direction; BC--; flags
+        // Z/S/H/N from the comparison; PV = (BC != 0); C preserved.
+        uint8_t v = Memory->ReadByte(HL);
+        uint8_t a = A();
+        int full = static_cast<int>(a) - static_cast<int>(v);
+        int half = (a & 0x0F) - (v & 0x0F);
+        uint8_t result = static_cast<uint8_t>(full & 0xFF);
+        HL = static_cast<uint16_t>(HL + direction);
+        BC = static_cast<uint16_t>(BC - 1);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);
+        f |= F_N;
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (half < 0)      f |= F_H;
+        // Y/X: bit 1 / bit 3 of (A - (HL) - H)   [Zilog quirk]
+        uint8_t n = static_cast<uint8_t>(result - ((half < 0) ? 1 : 0));
+        if (n & 0x02) f |= F_Y;
+        if (n & 0x08) f |= F_X;
+        if (BC != 0)  f |= F_PV;
+        SetF(f);
+        return (result == 0);  // true if A matched (HL)
+    };
+
+    if (sub == 0xA0) { doLdMove(+1); CycleCount += 16; InstructionCount++; return 16; } // LDI
+    if (sub == 0xA8) { doLdMove(-1); CycleCount += 16; InstructionCount++; return 16; } // LDD
+    if (sub == 0xB0) {                                                                  // LDIR
+        doLdMove(+1);
+        if (BC != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xB8) {                                                                  // LDDR
+        doLdMove(-1);
+        if (BC != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xA1) { doCpStep(+1); CycleCount += 16; InstructionCount++; return 16; } // CPI
+    if (sub == 0xA9) { doCpStep(-1); CycleCount += 16; InstructionCount++; return 16; } // CPD
+    if (sub == 0xB1) {                                                                  // CPIR
+        bool matched = doCpStep(+1);
+        if (!matched && BC != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xB9) {                                                                  // CPDR
+        bool matched = doCpStep(-1);
+        if (!matched && BC != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+
+    auto doInStep = [&](int direction) {
+        // INI/IND/INIR/INDR — (HL) := port[C]; HL += direction; B--.
+        // Flags: N=1; Z based on new B; rest are "Zilog quirky" —
+        // for Phase 2.3 we set the essentials and leave the exact
+        // H/PV bit patterns conservative (zexall details land in
+        // Phase 3 alongside undocumented edge cases).
+        uint8_t v = Memory->ReadIo(C());
+        Memory->WriteByte(HL, v);
+        HL = static_cast<uint16_t>(HL + direction);
+        SetB(static_cast<uint8_t>(B() - 1));
+        uint8_t f = F_N;
+        if (B() == 0) f |= F_Z;
+        if (B() & 0x80) f |= F_S;
+        if (B() & 0x20) f |= F_Y;
+        if (B() & 0x08) f |= F_X;
+        SetF(f);
+    };
+
+    auto doOutStep = [&](int direction) {
+        // OUTI/OUTD/OTIR/OTDR — port[C] := (HL); HL += direction; B--.
+        uint8_t v = Memory->ReadByte(HL);
+        SetB(static_cast<uint8_t>(B() - 1));
+        Memory->WriteIo(C(), v);
+        HL = static_cast<uint16_t>(HL + direction);
+        uint8_t f = F_N;
+        if (B() == 0) f |= F_Z;
+        if (B() & 0x80) f |= F_S;
+        if (B() & 0x20) f |= F_Y;
+        if (B() & 0x08) f |= F_X;
+        SetF(f);
+    };
+
+    if (sub == 0xA2) { doInStep(+1);  CycleCount += 16; InstructionCount++; return 16; } // INI
+    if (sub == 0xAA) { doInStep(-1);  CycleCount += 16; InstructionCount++; return 16; } // IND
+    if (sub == 0xB2) {                                                                   // INIR
+        doInStep(+1);
+        if (B() != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xBA) {                                                                   // INDR
+        doInStep(-1);
+        if (B() != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xA3) { doOutStep(+1); CycleCount += 16; InstructionCount++; return 16; } // OUTI
+    if (sub == 0xAB) { doOutStep(-1); CycleCount += 16; InstructionCount++; return 16; } // OUTD
+    if (sub == 0xB3) {                                                                   // OTIR
+        doOutStep(+1);
+        if (B() != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+    if (sub == 0xBB) {                                                                   // OTDR
+        doOutStep(-1);
+        if (B() != 0) { PC = static_cast<uint16_t>(PC - 2); CycleCount += 21; InstructionCount++; return 21; }
+        CycleCount += 16; InstructionCount++; return 16;
+    }
+
+    // --- Anything else under ED: treated as NOP (8 T-states) ---------
+    // This matches real-hardware behaviour for the unassigned ED slots
+    // (ED 00..3F, ED 80..9F not in the block-op list, ED 77/7F, etc.).
+    CycleCount += 8; InstructionCount++; return 8;
 }
