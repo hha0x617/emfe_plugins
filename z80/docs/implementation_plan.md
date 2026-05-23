@@ -83,10 +83,12 @@ when the plugin is loaded and stepped under a Google Test harness.
 | 2.3 | Extended operations (`ED` prefix): block I/O (`LDIR` / `LDDR` / `CPIR` / `CPDR`), `IM 0`/`1`/`2`, `NEG`, `RETN` / `RETI` |
 | 2.4 | Interrupt machinery: `INT` acceptance, `IM 1` (`RST 38h`), `IM 2` (vector table), `NMI` (`RST 66h`), `EI` / `DI`, `IFF1` / `IFF2` semantics |
 | 2.5 | `Z80Disasm` implementation |
-| 2.6 | `zexdoc` integration: load the ROM from `examples/zexdoc/`, run via a CP/M-stub harness, verify the published "PASS" output |
+| 2.6 | **Minimal Settings — placeholder set** so the host's Settings dialog renders non-empty and z80 has family parity with `em8` / `z8000` / `mc68030` / `mc6809`. Scope: a few read-only "Plugin info" entries (CPU name, ABI version, RAM size) plus 1–2 truly settable items (e.g. "Reset vector", "Clear RAM on reset"). **Full** settings UI (RAM-size matrix, ROM image picker, disk image list, interrupt-mode default, …) remains Phase 6 — this sub-phase exists only to retire the empty-dialog UX gap noticed during the Phase 1.7 demo |
+| 2.7 | `zexdoc` integration: load the ROM from `examples/zexdoc/`, run via a CP/M-stub harness, verify the published "PASS" output |
 
 **Phase 2 done when**: `zexdoc` passes every test inside the
-Google Test harness.
+Google Test harness AND the host's Settings dialog for the z80 plugin
+renders with at least the placeholder entries from 2.6.
 
 ## 5. Phase 3 — Undocumented opcodes + `zexall` (3–7 days)
 
