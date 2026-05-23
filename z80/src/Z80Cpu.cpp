@@ -3,12 +3,11 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 1.7: Phase 1.6 + INC/DEC (8-bit r and 16-bit pair) + IN/OUT
-// immediate. With this set the plugin can execute a hand-written hello-
-// world ROM that walks a string, OUTs each byte to the UART and loops
-// via INC HL — that's the Phase 1 acceptance demo.
-// Prefix opcodes (CB / DD / ED / FD), HALT, EX/EXX, and 16-bit ALU land
-// in Phase 2.
+// Phase 2.1: Phase 1.7 + CB-prefix bit/shift/rotate family. Adds
+// RLC/RRC/RL/RR (rotations), SLA/SRA/SLL/SRL (shifts including
+// undocumented SLL/SLI), and BIT b,r / RES b,r / SET b,r for all bit
+// numbers and register codes. DD/FD/ED prefixes, HALT, EX/EXX, and
+// 16-bit ALU land later in Phase 2.
 
 #include "pch.h"
 #include "Z80Cpu.h"
@@ -176,6 +175,108 @@ uint16_t Z80Cpu::Pop16() {
     uint16_t v = Memory->ReadWord(SP);
     SP = static_cast<uint16_t>(SP + 2);
     return v;
+}
+
+// ---- CB-prefix rotate / shift helpers -------------------------------
+//
+// Z80 rotate / shift flag rules (Zilog UM008011 §5):
+//   S, Z, Y, X copy from result; H = 0; N = 0; P/V = parity(result);
+//   C is the bit shifted/rotated OUT of the byte.
+// SLL is undocumented but well-known: identical to SLA but bit 0 is
+// forced to 1 instead of 0. Required for zexall in Phase 3.
+
+void Z80Cpu::SetShiftRotateFlags(uint8_t result, bool carry_out) {
+    uint8_t f = 0;
+    if (result & 0x80)   f |= F_S;
+    if (result == 0)     f |= F_Z;
+    if (result & 0x20)   f |= F_Y;
+    if (result & 0x08)   f |= F_X;
+    if (parity8(result)) f |= F_PV;
+    if (carry_out)       f |= F_C;
+    SetF(f);
+}
+
+uint8_t Z80Cpu::RotRLC(uint8_t v) {
+    bool carry = (v & 0x80) != 0;
+    uint8_t r = static_cast<uint8_t>((v << 1) | (carry ? 1 : 0));
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+uint8_t Z80Cpu::RotRRC(uint8_t v) {
+    bool carry = (v & 0x01) != 0;
+    uint8_t r = static_cast<uint8_t>((v >> 1) | (carry ? 0x80 : 0));
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+uint8_t Z80Cpu::RotRL(uint8_t v) {
+    bool old_c = (F() & F_C) != 0;
+    bool new_c = (v & 0x80) != 0;
+    uint8_t r = static_cast<uint8_t>((v << 1) | (old_c ? 1 : 0));
+    SetShiftRotateFlags(r, new_c);
+    return r;
+}
+
+uint8_t Z80Cpu::RotRR(uint8_t v) {
+    bool old_c = (F() & F_C) != 0;
+    bool new_c = (v & 0x01) != 0;
+    uint8_t r = static_cast<uint8_t>((v >> 1) | (old_c ? 0x80 : 0));
+    SetShiftRotateFlags(r, new_c);
+    return r;
+}
+
+uint8_t Z80Cpu::ShiftSLA(uint8_t v) {
+    bool carry = (v & 0x80) != 0;
+    uint8_t r = static_cast<uint8_t>(v << 1);
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+uint8_t Z80Cpu::ShiftSRA(uint8_t v) {
+    bool carry = (v & 0x01) != 0;
+    // Sign-preserving shift right: bit 7 stays put.
+    uint8_t r = static_cast<uint8_t>((v >> 1) | (v & 0x80));
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+uint8_t Z80Cpu::ShiftSLL(uint8_t v) {
+    // Undocumented: shift-left, bit 0 := 1 (not 0 like SLA).
+    bool carry = (v & 0x80) != 0;
+    uint8_t r = static_cast<uint8_t>((v << 1) | 1);
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+uint8_t Z80Cpu::ShiftSRL(uint8_t v) {
+    bool carry = (v & 0x01) != 0;
+    // Logical shift right: bit 7 always becomes 0.
+    uint8_t r = static_cast<uint8_t>(v >> 1);
+    SetShiftRotateFlags(r, carry);
+    return r;
+}
+
+void Z80Cpu::OpBit(int b, uint8_t v) {
+    // BIT b, r tests bit b of v and writes flags only.
+    //   Z, P/V := !bit;  H := 1; N := 0; C preserved.
+    //   S := bit 7 (only relevant when b == 7).
+    //   Y / X come from bits 5 / 3 of the operand (matches CP's quirk;
+    //   for BIT b, (HL) the proper Z80 sources Y/X from the WZ
+    //   internal register's high byte — implementing that lands in
+    //   Phase 3 alongside zexall, where it matters).
+    uint8_t mask = static_cast<uint8_t>(1 << b);
+    uint8_t bit_set = static_cast<uint8_t>(v & mask);
+    uint8_t f = static_cast<uint8_t>(F() & F_C);   // C preserved
+    f |= F_H;                                      // H := 1
+    if (bit_set == 0) {
+        f |= F_Z;
+        f |= F_PV;
+    }
+    if (bit_set & 0x80) f |= F_S;                  // S only when b == 7
+    if (v & 0x20) f |= F_Y;
+    if (v & 0x08) f |= F_X;
+    SetF(f);
 }
 
 // ---- Condition-code evaluator (Zilog 3-bit ccc) ---------------------
@@ -533,6 +634,67 @@ int Z80Cpu::ExecuteOne() {
         case 3: AF = val; break;
         }
         CycleCount += 10; InstructionCount++; return 10;
+    }
+
+    // ----- 0xCB prefix : bit / shift / rotate -------------------------
+    // CB xx pattern:
+    //   bits 7:6 — operation class
+    //              00 = rotation/shift (idx selects which of 8)
+    //              01 = BIT b, r
+    //              10 = RES b, r
+    //              11 = SET b, r
+    //   bits 5:3 — rotation idx (0..7) or bit number (0..7)
+    //   bits 2:0 — register code (0=B..7=A; 6 = (HL))
+    // Each prefix fetch is an M1 cycle, so R bumps a SECOND time after
+    // we fetch the CB-suffix byte (real-hardware behaviour, matters
+    // for `LD A, R` after a CB-prefixed instruction).
+    if (opcode == 0xCB) {
+        uint8_t cb = FetchByte();
+        R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+
+        int op  = (cb >> 6) & 0x03;
+        int idx = (cb >> 3) & 0x07;
+        int reg = cb & 0x07;
+        bool is_hl = (reg == 6);
+        uint8_t val = Reg8Read(reg);
+        int cycles = 0;
+
+        switch (op) {
+        case 0: {   // rotation / shift
+            uint8_t r = val;
+            switch (idx) {
+            case 0: r = RotRLC  (val); break;
+            case 1: r = RotRRC  (val); break;
+            case 2: r = RotRL   (val); break;
+            case 3: r = RotRR   (val); break;
+            case 4: r = ShiftSLA(val); break;
+            case 5: r = ShiftSRA(val); break;
+            case 6: r = ShiftSLL(val); break;  // undocumented
+            case 7: r = ShiftSRL(val); break;
+            }
+            Reg8Write(reg, r);
+            cycles = is_hl ? 15 : 8;
+            break;
+        }
+        case 1: {   // BIT b, r — flags only
+            OpBit(idx, val);
+            cycles = is_hl ? 12 : 8;
+            break;
+        }
+        case 2: {   // RES b, r
+            Reg8Write(reg, static_cast<uint8_t>(val & ~(1 << idx)));
+            cycles = is_hl ? 15 : 8;
+            break;
+        }
+        case 3: {   // SET b, r
+            Reg8Write(reg, static_cast<uint8_t>(val | (1 << idx)));
+            cycles = is_hl ? 15 : 8;
+            break;
+        }
+        }
+        CycleCount += cycles;
+        InstructionCount += 1;
+        return cycles;
     }
 
     // ----- IN A, (n) / OUT (n), A  (immediate-port I/O) ----------------
