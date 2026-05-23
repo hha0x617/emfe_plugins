@@ -1230,8 +1230,177 @@ static void TestHelloWorld() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.1 tests — CB-prefix bit/shift/rotate
+// ---------------------------------------------------------------------
+
+// Run a single CB-prefixed opcode on register A, preset A and F,
+// return resulting A and F.
+static AluOut RunCB(EmfeInstance inst, uint8_t initialA, uint8_t initialF,
+                    uint8_t cb_byte) {
+    SetReg(inst, REG_A, initialA);
+    SetReg(inst, REG_F, initialF);
+    uint8_t prog[] = { 0xCB, cb_byte };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    AluOut o{};
+    o.a = (uint8_t)GetReg(inst, REG_A);
+    o.f = (uint8_t)GetReg(inst, REG_F);
+    return o;
+}
+
+static void TestCbRotations() {
+    printf("TestCbRotations...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // RLC A (CB 07): 0x80 → 0x01, C=1
+    AluOut r = RunCB(inst, 0x80, 0, 0x07);
+    TEST_EQ(r.a, 0x01, "RLC 0x80 → 0x01");
+    TEST_TRUE((r.f & TF_C) != 0, "RLC carry out");
+
+    // RRC A (CB 0F): 0x01 → 0x80, C=1
+    r = RunCB(inst, 0x01, 0, 0x0F);
+    TEST_EQ(r.a, 0x80, "RRC 0x01 → 0x80");
+    TEST_TRUE((r.f & TF_C) != 0, "RRC carry out");
+    TEST_TRUE((r.f & TF_S) != 0, "RRC sign set (result 0x80)");
+
+    // RL A (CB 17) with C=1: 0x80 → 0x01 (old carry into bit 0)
+    r = RunCB(inst, 0x80, TF_C, 0x17);
+    TEST_EQ(r.a, 0x01, "RL 0x80 + C=1 → 0x01");
+    TEST_TRUE((r.f & TF_C) != 0, "new carry = old bit 7");
+
+    // RR A (CB 1F) with C=1: 0x00 → 0x80
+    r = RunCB(inst, 0x00, TF_C, 0x1F);
+    TEST_EQ(r.a, 0x80, "RR 0x00 + C=1 → 0x80");
+    TEST_TRUE((r.f & TF_C) == 0, "no new carry out");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCbShifts() {
+    printf("TestCbShifts...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // SLA A (CB 27): 0x80 → 0x00, C=1, Z=1
+    AluOut r = RunCB(inst, 0x80, 0, 0x27);
+    TEST_EQ(r.a, 0x00, "SLA 0x80 → 0x00");
+    TEST_TRUE((r.f & TF_C) != 0, "SLA carry");
+    TEST_TRUE((r.f & TF_Z) != 0, "SLA Z set");
+
+    // SRA A (CB 2F): 0x80 → 0xC0 (sign preserved), C=0
+    r = RunCB(inst, 0x80, 0, 0x2F);
+    TEST_EQ(r.a, 0xC0, "SRA preserves sign bit");
+    TEST_TRUE((r.f & TF_S) != 0, "S set");
+
+    // SLL A (CB 37, undocumented): 0x80 → 0x01 (bit 0 forced to 1)
+    r = RunCB(inst, 0x80, 0, 0x37);
+    TEST_EQ(r.a, 0x01, "SLL (undocumented) bit 0 := 1");
+    TEST_TRUE((r.f & TF_C) != 0, "SLL carry from bit 7");
+
+    // SRL A (CB 3F): 0x80 → 0x40, C=0
+    r = RunCB(inst, 0x80, 0, 0x3F);
+    TEST_EQ(r.a, 0x40, "SRL 0x80 → 0x40");
+    TEST_TRUE((r.f & TF_C) == 0, "no carry");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCbBit() {
+    // BIT b, A — flags only.
+    // CB 7F = BIT 7, A.  CB 47 = BIT 0, A.
+    printf("TestCbBit...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // BIT 7, A with A=0x80
+    AluOut r = RunCB(inst, 0x80, 0, 0x7F);
+    TEST_EQ(r.a, 0x80, "A unchanged");
+    TEST_TRUE((r.f & TF_Z) == 0, "bit set → Z clear");
+    TEST_TRUE((r.f & TF_S) != 0, "b=7 and bit set → S set");
+    TEST_TRUE((r.f & TF_H) != 0, "H always 1");
+    TEST_TRUE((r.f & TF_N) == 0, "N always 0");
+
+    // BIT 7, A with A=0x00
+    r = RunCB(inst, 0x00, 0, 0x7F);
+    TEST_TRUE((r.f & TF_Z)  != 0, "bit clear → Z set");
+    TEST_TRUE((r.f & TF_PV) != 0, "PV mirrors Z for BIT");
+
+    // BIT 0, A with A=0x01
+    r = RunCB(inst, 0x01, 0, 0x47);
+    TEST_TRUE((r.f & TF_Z) == 0, "bit 0 set");
+    TEST_TRUE((r.f & TF_S) == 0, "b≠7 → S clear");
+
+    // BIT preserves C
+    r = RunCB(inst, 0x00, TF_C, 0x7F);
+    TEST_TRUE((r.f & TF_C) != 0, "C preserved through BIT");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCbSetRes() {
+    // SET 3, A = CB DF. RES 7, A = CB BF. Neither changes flags.
+    printf("TestCbSetRes...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    AluOut r = RunCB(inst, 0x00, 0xFF, 0xDF);
+    TEST_EQ(r.a, 0x08, "SET 3 sets bit 3");
+    TEST_EQ(r.f, 0xFF, "SET preserves F");
+
+    r = RunCB(inst, 0xFF, 0x00, 0xBF);
+    TEST_EQ(r.a, 0x7F, "RES 7 clears bit 7");
+    TEST_EQ(r.f, 0x00, "RES preserves F");
+
+    // R bump check: CB-prefixed opcode must bump R twice (prefix +
+    // suffix), matching real-hardware M1 cycle counting.
+    SetReg(inst, REG_R, 0);
+    SetReg(inst, REG_B, 0);
+    const uint8_t prog[] = { 0xCB, 0xC0 };           // SET 0, B
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0x01, "SET 0, B sets bit 0");
+    TEST_EQ(GetReg(inst, REG_R), (uint64_t)2,    "R bumped twice");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCbMemoryIndirect() {
+    printf("TestCbMemoryIndirect...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x2000);
+    emfe_poke_byte(inst, 0x2000, 0x80);
+    // SLA (HL) = CB 26
+    const uint8_t prog[] = { 0xCB, 0x26 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x2000), 0x00, "SLA (HL): 0x80 → 0x00");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)15,
+            "shift on (HL) is 15 T-states");
+
+    // BIT 6, (HL) = CB 76, must NOT modify memory; 12 T-states.
+    emfe_poke_byte(inst, 0x2000, 0x40);
+    const uint8_t prog2[] = { 0xCB, 0x76 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    int64_t cyc_before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x2000), 0x40, "BIT does not modify memory");
+    TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)12,
+            "BIT n, (HL) is 12 T-states");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 1.7) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.1) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -1277,6 +1446,12 @@ int main() {
     TestDec8BitFlags();
     TestInOutImmediate();
     TestHelloWorld();
+    // Phase 2.1
+    TestCbRotations();
+    TestCbShifts();
+    TestCbBit();
+    TestCbSetRes();
+    TestCbMemoryIndirect();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

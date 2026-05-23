@@ -135,4 +135,22 @@ private:
     // ---- Condition-code evaluator (Zilog 3-bit ccc) -----------------
     // 0 NZ  1 Z  2 NC  3 C  4 PO  5 PE  6 P  7 M
     bool CheckCond(int ccc) const;
+
+    // ---- CB-prefix shift / rotate helpers ---------------------------
+    // Each returns the post-op byte and sets F via SetShiftRotateFlags.
+    // RotRL / RotRR consume the existing C flag as the rotated-in bit.
+    uint8_t RotRLC  (uint8_t v);   // rotate left circular
+    uint8_t RotRRC  (uint8_t v);   // rotate right circular
+    uint8_t RotRL   (uint8_t v);   // rotate left through carry
+    uint8_t RotRR   (uint8_t v);   // rotate right through carry
+    uint8_t ShiftSLA(uint8_t v);   // shift left arithmetic
+    uint8_t ShiftSRA(uint8_t v);   // shift right arithmetic (sign preserved)
+    uint8_t ShiftSLL(uint8_t v);   // shift left logical (undocumented, bit 0 = 1)
+    uint8_t ShiftSRL(uint8_t v);   // shift right logical
+
+    // BIT b, v — test bit b of v, set flags only.
+    void    OpBit(int b, uint8_t v);
+
+    // Shared flag setter for the rotate / shift family above.
+    void    SetShiftRotateFlags(uint8_t result, bool carry_out);
 };
