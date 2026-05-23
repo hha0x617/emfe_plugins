@@ -153,4 +153,18 @@ private:
 
     // Shared flag setter for the rotate / shift family above.
     void    SetShiftRotateFlags(uint8_t result, bool carry_out);
+
+    // ---- 16-bit ADD helper (ADD HL,rr / ADD IX,rr / ADD IY,rr) ------
+    // Computes target + addend, sets F per Zilog UM008011 §5:
+    //   N := 0; C := carry from bit 15; H := half-carry from bit 11;
+    //   Y / X copied from result high byte bits 5 / 3;
+    //   S, Z, P/V preserved.
+    uint16_t AddPair16(uint16_t target, uint16_t addend);
+
+    // ---- DD / FD prefix dispatcher ----------------------------------
+    // Called from ExecuteOne when opcode is 0xDD (IX) or 0xFD (IY).
+    // `IXY` is a pointer to the index register being substituted for
+    // HL by this prefix. Returns total T-states (including the 4 T-
+    // states added by the prefix M1 fetch).
+    int ExecuteWithIndex(uint16_t* IXY);
 };
