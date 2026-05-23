@@ -1632,8 +1632,257 @@ static void TestDdCbBitSetSla() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.3 tests — ED prefix (block I/O, IM, ADC/SBC HL, NEG, …)
+// ---------------------------------------------------------------------
+
+static void TestEdNeg() {
+    printf("TestEdNeg...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // NEG with A=0x01 → 0xFF, N=1, C=1 (borrow), S=1
+    SetReg(inst, REG_A, 0x01);
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog[] = { 0xED, 0x44 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0xFF, "NEG 0x01 → 0xFF");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_N) != 0, "N set (sub)");
+    TEST_TRUE((f & TF_C) != 0, "C set (borrow from 0)");
+    TEST_TRUE((f & TF_S) != 0, "S set");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)8, "8 T-states");
+
+    // NEG with A=0x00 → 0x00, Z=1, C=0
+    SetReg(inst, REG_A, 0x00);
+    SetReg(inst, REG_F, 0);
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x00, "NEG 0 → 0");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_Z) != 0, "Z set");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) == 0, "C clear (no borrow)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdImAndIRRegisters() {
+    // IM 2 (ED 5E) ; LD I,A (ED 47) ; LD A,I (ED 57)
+    printf("TestEdImAndIRRegisters...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const uint8_t prog[] = { 0xED, 0x5E };           // IM 2
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IM), (uint64_t)2, "IM 2 sets IM=2");
+
+    // LD I, A with A=0xC0 ; then LD A, I → A should be 0xC0 with flags
+    SetReg(inst, REG_A, 0xC0);
+    const uint8_t prog2[] = { 0xED, 0x47, 0xED, 0x57 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst);   // LD I, A
+    TEST_EQ(GetReg(inst, REG_I), (uint64_t)0xC0, "I := A");
+    emfe_step(inst);   // LD A, I
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0xC0, "A := I round-trip");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_S) != 0, "S set (bit 7)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdLdNNrr() {
+    // LD (nn),DE (ED 53) ; LD HL,(nn) (ED 6B). LD HL/(nn) ED form is
+    // redundant with the plain 0x2A but Z80 software uses both.
+    printf("TestEdLdNNrr...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_DE, 0xBEEF);
+    const uint8_t prog[] = { 0xED, 0x53, 0x00, 0x40 };    // LD (0x4000), DE
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x4000), 0xEF, "low byte at nn");
+    TEST_EQ(emfe_peek_byte(inst, 0x4001), 0xBE, "high byte at nn+1");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)20, "20 T");
+
+    // LD HL,(0x4000) — should read 0xBEEF back
+    const uint8_t prog2[] = { 0xED, 0x6B, 0x00, 0x40 };
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0xBEEF, "HL := mem[nn]");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdAdcSbcHl() {
+    // ADC HL,BC (ED 4A) and SBC HL,BC (ED 42) with full flag check.
+    printf("TestEdAdcSbcHl...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADC HL,BC with HL=0x1000, BC=0x2000, C=1 → HL=0x3001
+    SetReg(inst, REG_HL, 0x1000);
+    SetReg(inst, REG_BC, 0x2000);
+    SetReg(inst, REG_F, TF_C);
+    const uint8_t prog[] = { 0xED, 0x4A };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x3001, "HL += BC + 1");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_C) == 0, "no new carry");
+    TEST_TRUE((f & TF_N) == 0, "N clear (add)");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)15, "15 T-states");
+
+    // SBC HL,HL with HL=anything and C=0 → result 0, Z=1, N=1
+    SetReg(inst, REG_HL, 0x5555);
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog2[] = { 0xED, 0x62 };      // SBC HL, HL
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0, "HL - HL - 0 = 0");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_Z) != 0, "Z set");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_N) != 0, "N set");
+
+    // SBC HL,HL with HL=anything and C=1 → result 0xFFFF, idiomatic
+    // "negate carry" trick used by Z80 software.
+    SetReg(inst, REG_HL, 0x0000);
+    SetReg(inst, REG_F, TF_C);
+    SetReg(inst, REG_PC, 0x10);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0xFFFF, "HL - HL - 1 = 0xFFFF");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdInOutWithC() {
+    // OUT (C),r and IN r,(C). Use the UART port 0xFE.
+    printf("TestEdInOutWithC...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    CaptureCtx ctx;
+    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
+
+    SetReg(inst, REG_C, 0xFE);
+    SetReg(inst, REG_A, 'Z');
+    const uint8_t prog[] = { 0xED, 0x79 };            // OUT (C), A
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_TRUE(ctx.captured == "Z", "OUT (C),A reached console");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)12, "12 T-states");
+
+    // IN A,(C) from status port (0xFF): TX_READY (bit 0) always set.
+    SetReg(inst, REG_C, 0xFF);
+    const uint8_t prog2[] = { 0xED, 0x78 };            // IN A, (C)
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A) & 0x01, (uint64_t)0x01, "TX_READY visible via IN");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdLdiAndLdir() {
+    // LDI and LDIR — memcpy-style block move.
+    printf("TestEdLdiAndLdir...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Single LDI: copy one byte from HL to DE, advance both, BC--.
+    SetReg(inst, REG_HL, 0x3000);
+    SetReg(inst, REG_DE, 0x4000);
+    SetReg(inst, REG_BC, 0x0005);
+    emfe_poke_byte(inst, 0x3000, 0xAA);
+    const uint8_t ldi[] = { 0xED, 0xA0 };
+    LoadProgram(inst, 0, ldi, sizeof(ldi));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x4000), 0xAA, "byte copied");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x3001, "HL advanced");
+    TEST_EQ(GetReg(inst, REG_DE), (uint64_t)0x4001, "DE advanced");
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0x0004, "BC decremented");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_PV) != 0, "PV set (BC != 0)");
+
+    // LDIR: copy 4 bytes (BC=4 left over from above) — should re-execute
+    // until BC hits 0.
+    for (uint8_t i = 1; i <= 4; ++i) {
+        emfe_poke_byte(inst, 0x3000 + i, static_cast<uint8_t>(0x10 + i));
+    }
+    const uint8_t ldir[] = { 0xED, 0xB0 };
+    LoadProgram(inst, 0x10, ldir, sizeof(ldir));
+    // Step until BC reaches 0 — LDIR loops by rewinding PC.
+    for (int i = 0; i < 10 && GetReg(inst, REG_BC) != 0; ++i) {
+        emfe_step(inst);
+    }
+    TEST_EQ(GetReg(inst, REG_BC), (uint64_t)0, "LDIR ran to completion");
+    TEST_EQ(emfe_peek_byte(inst, 0x4001), 0x11, "dest[1]");
+    TEST_EQ(emfe_peek_byte(inst, 0x4004), 0x14, "dest[4]");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_PV) == 0, "PV clear after BC==0");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdCpirSearch() {
+    // CPIR scans memory at HL for A, decrementing BC, stopping when
+    // A matches or BC hits 0.
+    printf("TestEdCpirSearch...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Plant a string in memory ending with '!'. Search for '!'.
+    const char* s = "Hello!";
+    for (size_t i = 0; i <= 6; ++i) emfe_poke_byte(inst, 0x5000 + i, s[i]);
+
+    SetReg(inst, REG_A, '!');
+    SetReg(inst, REG_HL, 0x5000);
+    SetReg(inst, REG_BC, 10);    // search up to 10 chars
+    const uint8_t cpir[] = { 0xED, 0xB1 };
+    LoadProgram(inst, 0, cpir, sizeof(cpir));
+    for (int i = 0; i < 20 && GetReg(inst, REG_BC) != 0; ++i) {
+        emfe_step(inst);
+        if ((GetReg(inst, REG_F) & TF_Z) != 0) break;   // found
+    }
+    TEST_TRUE((GetReg(inst, REG_F) & TF_Z) != 0, "Z set when match found");
+    // After match: HL points just PAST the matched character (0x5006)
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x5006, "HL = match+1");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEdRrdRld() {
+    // RRD / RLD — 12-bit BCD rotate between A.low and (HL).
+    printf("TestEdRrdRld...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // RRD (Zilog UM008011): for a=0x12, m=0x34 (12-bit BCD nibbles
+    // [A.high=1][A.low=2][m.high=3][m.low=4]):
+    //   new A.low = old m.low (= 4)
+    //   new m.high = old A.low (= 2)
+    //   new m.low = old m.high (= 3)
+    //   A.high unchanged.
+    // So new A = 0x14, new mem = 0x23.
+    SetReg(inst, REG_A, 0x12);
+    SetReg(inst, REG_HL, 0x6000);
+    emfe_poke_byte(inst, 0x6000, 0x34);
+    const uint8_t rrd[] = { 0xED, 0x67 };
+    LoadProgram(inst, 0, rrd, sizeof(rrd));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x14, "A.low := old mem.low");
+    TEST_EQ(emfe_peek_byte(inst, 0x6000), 0x23, "mem.high := old A.low; mem.low := old mem.high");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)18, "18 T-states");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.2) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.3) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -1693,6 +1942,15 @@ int main() {
     TestAluViaIxDisplacement();
     TestIxPushPopAndSpJp();
     TestDdCbBitSetSla();
+    // Phase 2.3
+    TestEdNeg();
+    TestEdImAndIRRegisters();
+    TestEdLdNNrr();
+    TestEdAdcSbcHl();
+    TestEdInOutWithC();
+    TestEdLdiAndLdir();
+    TestEdCpirSearch();
+    TestEdRrdRld();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
