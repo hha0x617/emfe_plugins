@@ -1399,8 +1399,241 @@ static void TestCbMemoryIndirect() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.2 tests — ADD HL,rr + DD/FD prefix (IX/IY)
+// ---------------------------------------------------------------------
+
+static void TestAddHlPair() {
+    printf("TestAddHlPair...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADD HL,BC : 0x1234 + 0x1111 = 0x2345. S/Z/PV preserved; N/H/C cleared.
+    SetReg(inst, REG_HL, 0x1234);
+    SetReg(inst, REG_BC, 0x1111);
+    SetReg(inst, REG_F, TF_S | TF_Z | TF_PV);
+    const uint8_t prog[] = { 0x09 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x2345, "HL := HL+BC");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_N) == 0,  "N cleared");
+    TEST_TRUE((f & TF_C) == 0,  "no carry");
+    TEST_TRUE((f & TF_H) == 0,  "no half-carry");
+    TEST_TRUE((f & TF_S) != 0,  "S preserved");
+    TEST_TRUE((f & TF_Z) != 0,  "Z preserved");
+    TEST_TRUE((f & TF_PV) != 0, "PV preserved");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)11, "11 T-states");
+
+    // ADD HL,HL with HL=0x8000 doubles to 0 + C=1
+    SetReg(inst, REG_HL, 0x8000);
+    SetReg(inst, REG_F, 0);
+    const uint8_t addhlhl[] = { 0x29 };
+    LoadProgram(inst, 0x10, addhlhl, 1);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0000, "HL+HL doubles");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) != 0, "C set on overflow");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestLdIxImmediate() {
+    printf("TestLdIxImmediate...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const uint8_t prog[] = { 0xDD, 0x21, 0x34, 0x12 };       // LD IX, 0x1234
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x1234, "IX := 0x1234");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)14, "14 T-states");
+
+    const uint8_t prog2[] = { 0xFD, 0x21, 0x78, 0x56 };      // LD IY, 0x5678
+    LoadProgram(inst, 0x10, prog2, sizeof(prog2));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IY), (uint64_t)0x5678, "IY := 0x5678");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestIxIyArithmetic() {
+    printf("TestIxIyArithmetic...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // INC IX (DD 23): 0xFFFF → 0x0000
+    SetReg(inst, REG_IX, 0xFFFF);
+    const uint8_t inc_ix[] = { 0xDD, 0x23 };
+    LoadProgram(inst, 0, inc_ix, sizeof(inc_ix));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x0000, "INC IX wraps");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)10, "10 T-states");
+
+    // DEC IY (FD 2B): 0x0000 → 0xFFFF
+    SetReg(inst, REG_IY, 0x0000);
+    const uint8_t dec_iy[] = { 0xFD, 0x2B };
+    LoadProgram(inst, 0x10, dec_iy, sizeof(dec_iy));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IY), (uint64_t)0xFFFF, "DEC IY underflows");
+
+    // ADD IX, BC: 0x1000 + 0x0100 = 0x1100
+    SetReg(inst, REG_IX, 0x1000);
+    SetReg(inst, REG_BC, 0x0100);
+    SetReg(inst, REG_F, 0);
+    const uint8_t add_ix_bc[] = { 0xDD, 0x09 };
+    LoadProgram(inst, 0x20, add_ix_bc, sizeof(add_ix_bc));
+    int64_t cyc_before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x1100, "IX += BC");
+    TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)15,
+            "ADD IX,rr is 15 T");
+
+    // ADD IX, IX doubles IX (not IX+HL). With HL set to a distinct
+    // value to make sure it isn't used.
+    SetReg(inst, REG_IX, 0x4000);
+    SetReg(inst, REG_HL, 0xAAAA);
+    SetReg(inst, REG_F, 0);
+    const uint8_t add_ix_ix[] = { 0xDD, 0x29 };
+    LoadProgram(inst, 0x30, add_ix_ix, sizeof(add_ix_ix));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x8000, "ADD IX,IX doubles");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0xAAAA, "HL untouched");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestIxDisplacementMemory() {
+    printf("TestIxDisplacementMemory...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_IX, 0x3000);
+    emfe_poke_byte(inst, 0x3005, 0xAB);
+
+    // LD B, (IX+5) = DD 46 05
+    const uint8_t ld_b_ixd[] = { 0xDD, 0x46, 0x05 };
+    LoadProgram(inst, 0, ld_b_ixd, sizeof(ld_b_ixd));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_B), (uint64_t)0xAB, "B := mem[IX+5]");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)19, "19 T-states");
+
+    // LD (IX-1), C — signed displacement -1
+    SetReg(inst, REG_C, 0x5A);
+    const uint8_t ld_ixd_c[] = { 0xDD, 0x71, 0xFF };
+    LoadProgram(inst, 0x10, ld_ixd_c, sizeof(ld_ixd_c));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x2FFF), 0x5A, "(IX-1) := C with signed offset");
+
+    // LD (IX+2), n
+    const uint8_t ld_ixd_n[] = { 0xDD, 0x36, 0x02, 0x99 };
+    LoadProgram(inst, 0x20, ld_ixd_n, sizeof(ld_ixd_n));
+    int64_t cyc_before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x3002), 0x99, "(IX+2) := 0x99");
+    TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)19,
+            "LD (IX+d),n is 19 T");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAluViaIxDisplacement() {
+    printf("TestAluViaIxDisplacement...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_IY, 0x4000);
+    emfe_poke_byte(inst, 0x4003, 0x10);
+    SetReg(inst, REG_A, 0x05);
+
+    // ADD A, (IY+3) = FD 86 03
+    const uint8_t prog[] = { 0xFD, 0x86, 0x03 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x15, "A := A + mem[IY+3]");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)19, "19 T-states");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestIxPushPopAndSpJp() {
+    printf("TestIxPushPopAndSpJp...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_SP, 0xFFF0);
+    SetReg(inst, REG_IX, 0xCAFE);
+    // PUSH IX (DD E5) ; POP IY (FD E1)
+    const uint8_t prog[] = { 0xDD, 0xE5, 0xFD, 0xE1 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFEE, "SP -= 2");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEE), 0xFE, "low byte");
+    TEST_EQ(emfe_peek_byte(inst, 0xFFEF), 0xCA, "high byte");
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IY), (uint64_t)0xCAFE, "IY := original IX");
+
+    // LD SP, IX — set SP from IX
+    SetReg(inst, REG_IX, 0x2000);
+    const uint8_t ld_sp_ix[] = { 0xDD, 0xF9 };
+    LoadProgram(inst, 0x10, ld_sp_ix, sizeof(ld_sp_ix));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0x2000, "SP := IX");
+
+    // JP (IX) — PC := IX
+    SetReg(inst, REG_IX, 0x5000);
+    const uint8_t jp_ix[] = { 0xDD, 0xE9 };
+    LoadProgram(inst, 0x20, jp_ix, sizeof(jp_ix));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x5000, "PC := IX");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDdCbBitSetSla() {
+    // DD CB d xx — 4-byte form: BIT/SET/SLA on (IX+d).
+    printf("TestDdCbBitSetSla...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_IX, 0x5000);
+    emfe_poke_byte(inst, 0x5003, 0x80);
+
+    // BIT 7, (IX+3) = DD CB 03 7E. Memory unchanged; Z=0.
+    const uint8_t bit_ixd[] = { 0xDD, 0xCB, 0x03, 0x7E };
+    LoadProgram(inst, 0, bit_ixd, sizeof(bit_ixd));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x5003), 0x80, "BIT does not modify memory");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_Z) == 0, "Z clear (bit set)");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)20, "BIT (IX+d) is 20 T");
+
+    // SET 0, (IX+3) = DD CB 03 C6. 0x80 → 0x81.
+    const uint8_t set_ixd[] = { 0xDD, 0xCB, 0x03, 0xC6 };
+    LoadProgram(inst, 0x10, set_ixd, sizeof(set_ixd));
+    int64_t cyc_before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x5003), 0x81, "SET 0 lights bit 0");
+    TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)23,
+            "SET (IX+d) is 23 T");
+
+    // SLA (IX+3) = DD CB 03 26. 0x81 → 0x02, C=1.
+    const uint8_t sla_ixd[] = { 0xDD, 0xCB, 0x03, 0x26 };
+    LoadProgram(inst, 0x20, sla_ixd, sizeof(sla_ixd));
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x5003), 0x02, "SLA shifts the byte");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) != 0, "carry from bit 7");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.1) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.2) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -1452,6 +1685,14 @@ int main() {
     TestCbBit();
     TestCbSetRes();
     TestCbMemoryIndirect();
+    // Phase 2.2
+    TestAddHlPair();
+    TestLdIxImmediate();
+    TestIxIyArithmetic();
+    TestIxDisplacementMemory();
+    TestAluViaIxDisplacement();
+    TestIxPushPopAndSpJp();
+    TestDdCbBitSetSla();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

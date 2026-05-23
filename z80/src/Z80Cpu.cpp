@@ -3,11 +3,11 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 2.1: Phase 1.7 + CB-prefix bit/shift/rotate family. Adds
-// RLC/RRC/RL/RR (rotations), SLA/SRA/SLL/SRL (shifts including
-// undocumented SLL/SLI), and BIT b,r / RES b,r / SET b,r for all bit
-// numbers and register codes. DD/FD/ED prefixes, HALT, EX/EXX, and
-// 16-bit ALU land later in Phase 2.
+// Phase 2.2: Phase 2.1 + ADD HL,rr (16-bit ALU starter) + DD/FD prefix
+// (IX/IY index registers and (IX+d)/(IY+d) addressing modes,
+// including the 4-byte DD CB d xx shift/BIT/RES/SET form on
+// (IX+d)/(IY+d)). ED prefix, HALT, EX/EXX, and the undocumented
+// IXH/IXL/IYH/IYL byte access land later in Phase 2 / Phase 3.
 
 #include "pch.h"
 #include "Z80Cpu.h"
@@ -177,6 +177,26 @@ uint16_t Z80Cpu::Pop16() {
     return v;
 }
 
+// ---- 16-bit ADD helper (ADD HL,rr / ADD IX,rr / ADD IY,rr) ----------
+// Sets F per Zilog UM008011 §5: N := 0; C := carry from bit 15;
+// H := half-carry from bit 11; Y / X copied from result high byte
+// bits 5 / 3; S, Z, P/V preserved (NOT touched by 16-bit ADD).
+
+uint16_t Z80Cpu::AddPair16(uint16_t target, uint16_t addend) {
+    uint32_t full = static_cast<uint32_t>(target) + static_cast<uint32_t>(addend);
+    uint32_t half = (target & 0x0FFF) + (addend & 0x0FFF);
+    uint16_t result = static_cast<uint16_t>(full & 0xFFFF);
+    // Preserve S, Z, P/V; clear H, N, C, Y, X; recompute.
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));
+    if (full > 0xFFFF)            f |= F_C;
+    if (half > 0x0FFF)            f |= F_H;
+    if ((result >> 8) & 0x20)     f |= F_Y;
+    if ((result >> 8) & 0x08)     f |= F_X;
+    // N already cleared.
+    SetF(f);
+    return result;
+}
+
 // ---- CB-prefix rotate / shift helpers -------------------------------
 //
 // Z80 rotate / shift flag rules (Zilog UM008011 §5):
@@ -330,6 +350,10 @@ int Z80Cpu::ExecuteOne() {
         return 4;
     }
 
+    // ----- 0xDD / 0xFD prefix : IX / IY substitution ------------------
+    if (opcode == 0xDD) return ExecuteWithIndex(&IX);
+    if (opcode == 0xFD) return ExecuteWithIndex(&IY);
+
     // ----- 0x01 / 0x11 / 0x21 / 0x31 : LD rr, nn ----------------------
     // Pattern 00 pp 0001. pp: 00=BC 01=DE 10=HL 11=SP.
     if ((opcode & 0xCF) == 0x01) {
@@ -344,6 +368,22 @@ int Z80Cpu::ExecuteOne() {
         CycleCount += 10;
         InstructionCount += 1;
         return 10;
+    }
+
+    // ----- 0x09 / 0x19 / 0x29 / 0x39 : ADD HL, rr ---------------------
+    // Pattern 00 pp 1001. pp: 00=BC 01=DE 10=HL 11=SP.
+    // 11 T-states, flag rules in AddPair16. Note: 0x29 ADD HL,HL doubles HL.
+    if ((opcode & 0xCF) == 0x09) {
+        int pp = (opcode >> 4) & 0x03;
+        uint16_t addend = 0;
+        switch (pp) {
+        case 0: addend = BC; break;
+        case 1: addend = DE; break;
+        case 2: addend = HL; break;
+        case 3: addend = SP; break;
+        }
+        HL = AddPair16(HL, addend);
+        CycleCount += 11; InstructionCount++; return 11;
     }
 
     // ----- 0x03 / 0x13 / 0x23 / 0x33 : INC rr  (no flag effects) ------
@@ -716,4 +756,207 @@ int Z80Cpu::ExecuteOne() {
     // ----- unrecognised opcode: rollback PC, surface trap -------------
     PC = opcodePC;
     return 0;
+}
+
+// ---- DD / FD prefix dispatcher --------------------------------------
+//
+// Most DD-/FD-prefixed opcodes are "the same as the unprefixed opcode
+// but with HL replaced by IX (or IY)". (HL) memory accesses become
+// (IXY+d) with a signed 8-bit displacement byte that follows the
+// opcode. A small number of opcodes have entirely new shapes (DD CB
+// d xx 4-byte addressing for shift/BIT/SET/RES on (IXY+d)).
+//
+// This function is called AFTER ExecuteOne has read the DD/FD prefix
+// byte and bumped R for it. We fetch the suffix opcode, bump R again
+// (each prefix is its own M1 cycle), then dispatch.
+//
+// Returns total T-states INCLUDING the 4 T-states for the prefix M1
+// fetch — callers do not need to add anything.
+
+int Z80Cpu::ExecuteWithIndex(uint16_t* IXY) {
+    uint8_t opcode = FetchByte();
+    R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+
+    auto ea_of = [this, IXY]() -> uint16_t {
+        // Fetches the displacement byte (signed) and returns IXY + d.
+        int8_t d = static_cast<int8_t>(FetchByte());
+        return static_cast<uint16_t>(*IXY + d);
+    };
+
+    // 0x21 LD IXY, nn — 14 T (= 10 + 4 prefix)
+    if (opcode == 0x21) { *IXY = FetchWord(); CycleCount += 14; InstructionCount++; return 14; }
+    // 0x22 LD (nn), IXY — 20 T
+    if (opcode == 0x22) {
+        uint16_t nn = FetchWord();
+        Memory->WriteWord(nn, *IXY);
+        CycleCount += 20; InstructionCount++; return 20;
+    }
+    // 0x2A LD IXY, (nn) — 20 T
+    if (opcode == 0x2A) {
+        uint16_t nn = FetchWord();
+        *IXY = Memory->ReadWord(nn);
+        CycleCount += 20; InstructionCount++; return 20;
+    }
+    // 0x23 INC IXY — 10 T  (no flag effects)
+    if (opcode == 0x23) { *IXY = static_cast<uint16_t>(*IXY + 1); CycleCount += 10; InstructionCount++; return 10; }
+    // 0x2B DEC IXY — 10 T
+    if (opcode == 0x2B) { *IXY = static_cast<uint16_t>(*IXY - 1); CycleCount += 10; InstructionCount++; return 10; }
+
+    // 0x09 / 0x19 / 0x29 / 0x39 : ADD IXY, rr  — 15 T
+    //   pp == 10 (which would be HL in the plain form) → IXY here (so ADD IX, IX doubles IX).
+    if ((opcode & 0xCF) == 0x09) {
+        int pp = (opcode >> 4) & 0x03;
+        uint16_t addend = 0;
+        switch (pp) {
+        case 0: addend = BC;   break;
+        case 1: addend = DE;   break;
+        case 2: addend = *IXY; break;     // NOT HL — same register doubles
+        case 3: addend = SP;   break;
+        }
+        *IXY = AddPair16(*IXY, addend);
+        CycleCount += 15; InstructionCount++; return 15;
+    }
+
+    // 0xE5 PUSH IXY — 15 T
+    if (opcode == 0xE5) { Push16(*IXY); CycleCount += 15; InstructionCount++; return 15; }
+    // 0xE1 POP IXY — 14 T
+    if (opcode == 0xE1) { *IXY = Pop16(); CycleCount += 14; InstructionCount++; return 14; }
+    // 0xE9 JP (IXY) — 8 T (PC := IXY; no actual indirect)
+    if (opcode == 0xE9) { PC = *IXY; CycleCount += 8; InstructionCount++; return 8; }
+    // 0xF9 LD SP, IXY — 10 T
+    if (opcode == 0xF9) { SP = *IXY; CycleCount += 10; InstructionCount++; return 10; }
+
+    // ----- (HL)-substitution group: any operation whose unprefixed
+    // form touches (HL) gets the (IXY+d) treatment. The displacement
+    // byte is fetched IMMEDIATELY after the opcode, before any other
+    // operand.
+
+    // 0x36 LD (IXY+d), n — 19 T
+    if (opcode == 0x36) {
+        uint16_t ea = ea_of();
+        uint8_t n = FetchByte();
+        Memory->WriteByte(ea, n);
+        CycleCount += 19; InstructionCount++; return 19;
+    }
+    // 0x46 / 0x4E / 0x56 / 0x5E / 0x66 / 0x6E / 0x7E : LD r, (IXY+d) — 19 T
+    // Pattern 01 ddd 110, dst ≠ 6.
+    if ((opcode & 0xC7) == 0x46) {
+        int dst = (opcode >> 3) & 0x07;
+        uint16_t ea = ea_of();
+        uint8_t v = Memory->ReadByte(ea);
+        Reg8Write(dst, v);
+        CycleCount += 19; InstructionCount++; return 19;
+    }
+    // 0x70..0x77 : LD (IXY+d), r — 19 T  (excluding 0x76 which is HALT)
+    if ((opcode & 0xF8) == 0x70 && opcode != 0x76) {
+        int src = opcode & 0x07;
+        uint16_t ea = ea_of();
+        Memory->WriteByte(ea, Reg8Read(src));
+        CycleCount += 19; InstructionCount++; return 19;
+    }
+    // 0x34 INC (IXY+d) — 23 T (8-bit INC flag rules apply)
+    if (opcode == 0x34) {
+        uint16_t ea = ea_of();
+        uint8_t orig = Memory->ReadByte(ea);
+        uint8_t result = static_cast<uint8_t>(orig + 1);
+        Memory->WriteByte(ea, result);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x0F) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x80) f |= F_PV;
+        SetF(f);
+        CycleCount += 23; InstructionCount++; return 23;
+    }
+    // 0x35 DEC (IXY+d) — 23 T
+    if (opcode == 0x35) {
+        uint16_t ea = ea_of();
+        uint8_t orig = Memory->ReadByte(ea);
+        uint8_t result = static_cast<uint8_t>(orig - 1);
+        Memory->WriteByte(ea, result);
+        uint8_t f = static_cast<uint8_t>((F() & F_C) | F_N);
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x00) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x7F) f |= F_PV;
+        SetF(f);
+        CycleCount += 23; InstructionCount++; return 23;
+    }
+    // 0x86 / 0x8E / 0x96 / 0x9E / 0xA6 / 0xAE / 0xB6 / 0xBE : ALU A, (IXY+d) — 19 T
+    // Pattern 10 ooo 110.
+    if ((opcode & 0xC7) == 0x86) {
+        int op  = (opcode >> 3) & 0x07;
+        uint16_t ea = ea_of();
+        uint8_t val = Memory->ReadByte(ea);
+        bool cy = (F() & F_C) != 0;
+        uint8_t a = A();
+        switch (op) {
+        case 0: SetA(AluAdd(a, val, false)); break;
+        case 1: SetA(AluAdd(a, val, cy));    break;
+        case 2: SetA(AluSub(a, val, false)); break;
+        case 3: SetA(AluSub(a, val, cy));    break;
+        case 4: SetA(AluAnd(a, val));        break;
+        case 5: SetA(AluXor(a, val));        break;
+        case 6: SetA(AluOr (a, val));        break;
+        case 7: AluCp(a, val);               break;
+        }
+        CycleCount += 19; InstructionCount++; return 19;
+    }
+
+    // 0xCB : 4-byte DD CB d xx — shift / BIT / RES / SET on (IXY+d).
+    // Byte layout: prefix (DD/FD), CB, displacement d, operation byte xx.
+    // R increments TWICE for the prefix pair (DD and CB are each M1
+    // fetches); d and xx are operand bytes.
+    if (opcode == 0xCB) {
+        int8_t d = static_cast<int8_t>(FetchByte());
+        uint8_t cb = FetchByte();
+        R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+
+        uint16_t ea = static_cast<uint16_t>(*IXY + d);
+        uint8_t val = Memory->ReadByte(ea);
+        int op  = (cb >> 6) & 0x03;
+        int idx = (cb >> 3) & 0x07;
+        // NOTE: the `reg` (cb & 0x07) field in the standard CB form
+        // encodes a secondary register that real hardware also writes
+        // the result to ("DD CB undocumented register echo"). Phase
+        // 2.2 implements only the documented (IXY+d) side; the
+        // register echo is Phase 3 alongside zexall.
+        int cycles = 0;
+        switch (op) {
+        case 0: {
+            uint8_t r = val;
+            switch (idx) {
+            case 0: r = RotRLC(val); break;
+            case 1: r = RotRRC(val); break;
+            case 2: r = RotRL (val); break;
+            case 3: r = RotRR (val); break;
+            case 4: r = ShiftSLA(val); break;
+            case 5: r = ShiftSRA(val); break;
+            case 6: r = ShiftSLL(val); break;
+            case 7: r = ShiftSRL(val); break;
+            }
+            Memory->WriteByte(ea, r);
+            cycles = 23;
+            break;
+        }
+        case 1: OpBit(idx, val); cycles = 20; break;
+        case 2: Memory->WriteByte(ea, static_cast<uint8_t>(val & ~(1 << idx))); cycles = 23; break;
+        case 3: Memory->WriteByte(ea, static_cast<uint8_t>(val |  (1 << idx))); cycles = 23; break;
+        }
+        CycleCount += cycles; InstructionCount++; return cycles;
+    }
+
+    // Anything else under DD/FD that we don't yet recognise: treat the
+    // prefix as a NOP (which is what real Z80 hardware does for
+    // unimplemented prefixed opcodes — the prefix consumes 4 T-states
+    // and the next byte is re-decoded as if there were no prefix).
+    // We accomplish this by rewinding PC back past the suffix byte and
+    // returning just the prefix cost — the next ExecuteOne call will
+    // re-fetch the suffix as its own primary opcode.
+    PC = static_cast<uint16_t>(PC - 1);
+    CycleCount += 4; InstructionCount++; return 4;
 }
