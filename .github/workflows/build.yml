@@ -69,6 +69,27 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED"
 
+          # Docs-only short-circuit: if every changed file is *.md or
+          # LICENSE*, the build job is skipped entirely. This restores
+          # the original #40 bypass semantics that the per-plugin
+          # rewrite in #50 inadvertently lost for documentation files
+          # under plugin subdirectories (e.g. z80/docs/*.md, which #50
+          # would have classified as `z80=true` and built the plugin).
+          NON_DOCS=$(echo "$CHANGED" | grep -vE '(\.md$|^LICENSE)' || true)
+          if [ -z "$NON_DOCS" ]; then
+            echo "Docs-only PR — skipping all per-plugin builds"
+            {
+              echo "has_code=false"
+              echo "shared=false"
+              echo "mc6809=false"
+              echo "em8=false"
+              echo "mc68030=false"
+              echo "z8000=false"
+              echo "z80=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           detect() {
             # detect <pattern> — print "true" if any changed file matches.
             if echo "$CHANGED" | grep -qE "$1"; then
