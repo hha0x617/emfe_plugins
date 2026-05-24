@@ -1,6 +1,7 @@
 add_library(emfe_plugin_z80 SHARED
     plugin_z80.cpp
     Z80Cpu.cpp
+    Z80Disasm.cpp
     Z80Memory.cpp
     Z80Uart.cpp
     Z80Timer.cpp

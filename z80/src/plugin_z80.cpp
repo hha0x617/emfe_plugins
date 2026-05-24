@@ -13,6 +13,7 @@
 
 #include "emfe_plugin.h"
 #include "Z80Cpu.h"
+#include "Z80Disasm.h"
 #include "Z80Memory.h"
 #include "Z80Uart.h"
 #include "Z80Timer.h"
@@ -80,6 +81,16 @@ struct EmfeInstanceData {
     // emfe_get_register_defs. Strings live in static storage (literals)
     // so the vector can be copied / reset freely.
     std::vector<EmfeRegisterDef> regDefs;
+
+    // Disassembly result buffers — owned per-instance. Overwritten by
+    // each emfe_disassemble_one / emfe_disassemble_range call (the
+    // ABI contract says the strings are valid only until the next
+    // call into the same instance's disasm functions).
+    std::string disasmMnemonic;
+    std::string disasmOperands;
+    std::string disasmRawBytes;
+    std::vector<EmfeDisasmLine> disasmRangeLines;
+    std::vector<std::string>    disasmRangeStringPool;
 };
 
 static inline EmfeInstanceData* to_inst(EmfeInstance i) {
@@ -398,18 +409,90 @@ extern "C" EMFE_EXPORT uint64_t EMFE_CALL emfe_get_memory_size(EmfeInstance) {
 // ============================================================================
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_disassemble_one(
-        EmfeInstance, uint64_t, EmfeDisasmLine* /*out*/) {
-    return EMFE_ERR_UNSUPPORTED;
+        EmfeInstance instance, uint64_t address, EmfeDisasmLine* out_line) {
+    if (!instance || !out_line) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    auto res = Z80Disasm::Decode(&inst->memory, static_cast<uint16_t>(address & 0xFFFF));
+    inst->disasmMnemonic = std::move(res.mnemonic);
+    inst->disasmOperands = std::move(res.operands);
+    inst->disasmRawBytes = std::move(res.rawBytes);
+    out_line->address   = address & 0xFFFF;
+    out_line->raw_bytes = inst->disasmRawBytes.c_str();
+    out_line->mnemonic  = inst->disasmMnemonic.c_str();
+    out_line->operands  = inst->disasmOperands.c_str();
+    out_line->length    = static_cast<uint32_t>(res.length);
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_disassemble_range(
-        EmfeInstance, uint64_t, uint64_t, EmfeDisasmLine* /*out*/, int32_t /*max*/) {
-    return 0;
+        EmfeInstance instance, uint64_t start_address, uint64_t end_address,
+        EmfeDisasmLine* out_lines, int32_t max_lines) {
+    if (!instance || !out_lines || max_lines <= 0) return 0;
+    auto* inst = to_inst(instance);
+
+    // Re-build the per-call string pool so the c_str() pointers we
+    // hand back stay valid until the NEXT range call.
+    inst->disasmRangeLines.clear();
+    inst->disasmRangeStringPool.clear();
+    // Reserve generously: 3 strings per line (mnemonic / operands / raw).
+    inst->disasmRangeStringPool.reserve(static_cast<size_t>(max_lines) * 3);
+
+    uint16_t addr = static_cast<uint16_t>(start_address & 0xFFFF);
+    uint16_t end  = static_cast<uint16_t>(end_address & 0xFFFF);
+    int32_t count = 0;
+
+    while (count < max_lines) {
+        // End-exclusive semantics: include lines whose START address
+        // is < end_address. A line starting AT end_address is treated
+        // as outside the range. end < start signals "no upper bound,
+        // cap only via max_lines" (wraparound case).
+        if (end_address >= start_address && addr >= end) break;
+
+        auto res = Z80Disasm::Decode(&inst->memory, addr);
+        // Store the three strings into the pool so their lifetimes
+        // outlive this loop iteration.
+        inst->disasmRangeStringPool.push_back(std::move(res.mnemonic));
+        const char* mnem_p = inst->disasmRangeStringPool.back().c_str();
+        inst->disasmRangeStringPool.push_back(std::move(res.operands));
+        const char* ops_p  = inst->disasmRangeStringPool.back().c_str();
+        inst->disasmRangeStringPool.push_back(std::move(res.rawBytes));
+        const char* raw_p  = inst->disasmRangeStringPool.back().c_str();
+
+        EmfeDisasmLine line{};
+        line.address   = addr;
+        line.raw_bytes = raw_p;
+        line.mnemonic  = mnem_p;
+        line.operands  = ops_p;
+        line.length    = static_cast<uint32_t>(res.length);
+        out_lines[count++] = line;
+
+        // Defensive: avoid infinite loop if Decode reports length 0.
+        if (res.length <= 0) break;
+        addr = static_cast<uint16_t>(addr + res.length);
+    }
+
+    // String-pool pointers might be invalidated if the underlying
+    // vector reallocates during push_back. Reserve up-front above
+    // guarantees no reallocation. As a paranoia step, rebuild the
+    // c_str pointers from the now-final vector contents.
+    for (int32_t i = 0; i < count; ++i) {
+        out_lines[i].mnemonic  = inst->disasmRangeStringPool[i * 3 + 0].c_str();
+        out_lines[i].operands  = inst->disasmRangeStringPool[i * 3 + 1].c_str();
+        out_lines[i].raw_bytes = inst->disasmRangeStringPool[i * 3 + 2].c_str();
+    }
+
+    return count;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_get_program_range(
-        EmfeInstance, uint64_t* /*start*/, uint64_t* /*end*/) {
-    return EMFE_ERR_UNSUPPORTED;
+        EmfeInstance instance, uint64_t* out_start, uint64_t* out_end) {
+    // Z80 has flat 64 KiB memory and no "loaded program" concept yet —
+    // the host can use [0x0000, 0x10000) as the whole disassemblable
+    // range until file-load APIs land in a later phase.
+    if (!instance || !out_start || !out_end) return EMFE_ERR_INVALID;
+    *out_start = 0x0000;
+    *out_end   = 0x10000;
+    return EMFE_OK;
 }
 
 // ============================================================================
