@@ -946,6 +946,48 @@ int Z80Cpu::ExecuteOne() {
         return cycles;
     }
 
+    // ----- 0xF9 LD SP, HL (gap from Phase 1) ---------------------------
+    // Common Z80 instruction used by CCP / BDOS for stack switching.
+    // We had the DD/FD-prefixed LD SP,IXY but missed the plain form.
+    if (opcode == 0xF9) {
+        SP = HL;
+        CycleCount += 6; InstructionCount++; return 6;
+    }
+
+    // ----- EX / EXX family (gap from Phase 1) --------------------------
+    // These are core Z80 instructions that CCP / BDOS use heavily for
+    // pointer / accumulator shuffling. They were missed when the base
+    // ISA was wired up — caught during Phase 4 cold-boot bring-up when
+    // CP/M's BDOS got stuck at PC=0xEC11 on opcode 0xEB.
+    //
+    //   0x08  EX AF, AF'     4 T   swap AF with shadow
+    //   0xD9  EXX            4 T   swap BC/DE/HL with shadows
+    //   0xE3  EX (SP), HL    19 T  swap top-of-stack with HL
+    //   0xEB  EX DE, HL      4 T   swap DE with HL
+    //
+    // None affect flags except EX AF,AF' which swaps F itself.
+    if (opcode == 0x08) {
+        uint16_t t = AF; AF = AF_; AF_ = t;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+    if (opcode == 0xD9) {
+        uint16_t t;
+        t = BC; BC = BC_; BC_ = t;
+        t = DE; DE = DE_; DE_ = t;
+        t = HL; HL = HL_; HL_ = t;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+    if (opcode == 0xEB) {
+        uint16_t t = DE; DE = HL; HL = t;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+    if (opcode == 0xE3) {
+        uint16_t v = Memory->ReadWord(SP);
+        Memory->WriteWord(SP, HL);
+        HL = v;
+        CycleCount += 19; InstructionCount++; return 19;
+    }
+
     // ----- Phase 3.2: single-byte accumulator rotates + flag ops -------
     // 0x07 RLCA / 0x0F RRCA / 0x17 RLA / 0x1F RRA — 4 T each.
     // 0x27 DAA / 0x2F CPL / 0x37 SCF / 0x3F CCF      — 4 T each.

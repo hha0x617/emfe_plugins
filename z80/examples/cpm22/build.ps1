@@ -118,25 +118,53 @@ if (-not (Test-Path $Cpm22Src)) {
 }
 
 # -----------------------------------------------------------------------------
-# Assemble CPM22.Z80 with MEM EQU 64 substitution.
+# Assemble CPM22.Z80 with MEM EQU 64 substitution + HALT-label rename.
 #
-# The upstream source defaults to MEM EQU 62 (62-KiB system, ORG 0xDC00).
-# Our plugin's memory map (phase4_design.md §3.1) puts CCP at 0xE400, which
-# corresponds to MEM = 64. We substitute the value into a temporary copy so
-# the on-disk source under the companion stays verbatim (matching the
-# documented SHA-256 in provenance.md).
+# Two transformations applied to a temp copy (so the on-disk source under the
+# companion repo stays verbatim, matching the documented SHA-256 in
+# provenance.md):
+#
+#   1. MEM EQU 62  -> MEM EQU 64
+#      The upstream defaults to a 62-KiB system (ORG 0xDC00). Our plugin's
+#      memory map (phase4_design.md §3.1) puts CCP at 0xE400, which
+#      corresponds to MEM = 64.
+#
+#   2. HALT label  -> HALTRT  (in label definition AND JP/JR/CALL refs)
+#      Upstream CPM22.Z80 names a routine "HALT", which collides with the
+#      Z80 HALT mnemonic. pasmo (strict) refuses to parse "JP NZ,HALT" as
+#      a label reference. We rename the label everywhere it's read or
+#      written; comments mentioning "HALT" stay unchanged.
 # -----------------------------------------------------------------------------
 
 $Cpm22Tmp = Join-Path $ScriptRoot 'cbios/cpm22-mem64.z80'
 $Cpm22Bin = Join-Path $ScriptRoot 'cbios/cpm22-system.bin'
 
 $srcText = Get-Content $Cpm22Src -Raw
+
+# (1) MEM substitution.
 $patched = $srcText -replace '(?m)^(\s*MEM\s+EQU\s+)\d+', '${1}64'
 if ($patched -eq $srcText) {
     Write-Error "Could not find 'MEM EQU N' line in $Cpm22Src to patch — upstream layout may have changed."
     exit 1
 }
-Set-Content -LiteralPath $Cpm22Tmp -Value $patched -NoNewline
+
+# (2) HALT label rename. Two regexes:
+#     a) "^HALT:"        — label definition at start of line
+#     b) ",\s*HALT$"     — branch target after a "JP cc," or "JR cc," etc.
+#                          (uses (?-s:.) to avoid eating across lines)
+$patched2a = $patched  -replace '(?m)^HALT(:)', 'HALTRT$1'
+$patched2b = $patched2a -replace '(?m),(\s*)HALT(\s*(;|$))', ',${1}HALTRT${2}'
+if ($patched2b -eq $patched) {
+    Write-Error "HALT-label rename produced no change — upstream layout may have shifted; please re-audit."
+    exit 1
+}
+
+# (3) 8080-mnemonic leakage: a handful of "ADD A,M" and "SBC A,M"
+#     forms remain in the otherwise Z80-mnemonic source — "M" is 8080
+#     shorthand for "(HL)". pasmo (Z80-only) refuses these. Translate
+#     to the canonical Z80 form.
+$patched3 = $patched2b -replace '(\b(?:ADD|ADC|SUB|SBC|AND|OR|XOR|CP)\s+A),M\b', '$1,(HL)'
+Set-Content -LiteralPath $Cpm22Tmp -Value $patched3 -NoNewline
 
 Write-Host "Assembling $Cpm22Src (MEM=64) -> $Cpm22Bin"
 & $PasmoExe --bin $Cpm22Tmp $Cpm22Bin
@@ -182,16 +210,19 @@ $image[2] = 0xFA
 # (remaining 125 bytes of sector 0 stay 0xE5; the JP is all we need)
 
 # -- CCP + BDOS at LBA 1 onwards ------------------------------------------
-# The CPM22.Z80 source assembles to a single flat blob starting at ORG
-# 0xE400 (because we patched MEM EQU 64). Total size with both CCP +
-# BDOS is around 5632 bytes; cap at 44 sectors so it never overlaps
-# the CBIOS region the cold-boot loader will lay down at LBA 45+.
+# The CPM22.Z80 source assembles to a flat blob starting at ORG 0xE400
+# (because we patched MEM EQU 64). Calkins' reconstruction is ~5683 bytes
+# vs the textbook 5632. The TRAILING 51 bytes are the file's internal
+# "fake" BIOS jump table (literal "JP 0" entries at offset 5632..5682)
+# which our real CBIOS at 0xFA00 will overlay in RAM at boot — so the
+# disk image stores all 45 sectors but the plugin's BootFromDisk staging
+# only loads the first 44 (see ApplyBootFromDiskOnReset in plugin_z80.cpp).
 $payload = [System.IO.File]::ReadAllBytes($Cpm22Bin)
-if ($payload.Length -gt ($SectorSize * 44)) {
-    Write-Error ("CCP+BDOS payload is {0} bytes (> 44 sectors = {1}). " +
+if ($payload.Length -gt ($SectorSize * 45)) {
+    Write-Error ("CCP+BDOS payload is {0} bytes (> 45 sectors = {1}). " +
                  "Source layout may have changed — check CPM22.Z80 ORG vs " +
                  "WBOOT sector count in cbios.asm." -f
-                 $payload.Length, ($SectorSize * 44))
+                 $payload.Length, ($SectorSize * 45))
     exit 1
 }
 [Array]::Copy($payload, 0, $image, $SectorSize, $payload.Length)
@@ -199,7 +230,7 @@ if ($payload.Length -gt ($SectorSize * 44)) {
 # -- CBIOS at LBA after CCP+BDOS (NOT auto-loaded by WBOOT — see cbios.asm
 #    header comment for why) ----------------------------------------------
 $cbiosBytes = [System.IO.File]::ReadAllBytes($CbiosBin)
-$cbiosLba   = 45    # immediately after the 44 CCP+BDOS sectors
+$cbiosLba   = 46    # one sector past the 45-sector CCP+BDOS payload
 $cbiosOff   = $cbiosLba * $SectorSize
 if ($cbiosOff + $cbiosBytes.Length -gt $ImgSize) {
     Write-Error "CBIOS overruns disk image — image size needs to grow."

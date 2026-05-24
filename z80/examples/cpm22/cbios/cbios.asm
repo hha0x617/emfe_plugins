@@ -30,7 +30,24 @@
 
 CCP_BASE        EQU     0E400H          ; CCP entry
 BDOS_BASE       EQU     0EC00H          ; BDOS entry
-CBIOS_BASE      EQU     0FA00H          ; this file
+CBIOS_BASE      EQU     0FA00H          ; this file.
+                                        ;
+                                        ; This MUST match the BIOS-table
+                                        ; address that CPM22.Z80's BDOS
+                                        ; resolves internally (its own
+                                        ; fake "JP 0" table sits at the
+                                        ; very end of the assembled blob
+                                        ; at 0xFA00..0xFA32). On boot,
+                                        ; our CBIOS at 0xFA00 OVERLAYS
+                                        ; that fake table, so BDOS's
+                                        ; CALL CONOUT etc. lands in our
+                                        ; real handlers. Calkins'
+                                        ; CPM22.Z80 is 5683 bytes total
+                                        ; — the trailing 51 bytes are
+                                        ; precisely the fake BIOS table
+                                        ; (= 17 entries × 3 bytes), which
+                                        ; we MUST NOT load via WBOOT or
+                                        ; we'd overwrite our real CBIOS.
 DEFAULT_DMA     EQU     0080H           ; CP/M default DMA buffer
 
 ; BDOS entry is at BDOS_BASE + 6 (the first 6 bytes are a JMP to the
@@ -165,7 +182,13 @@ WBOOT:
                 ; which the cold-boot loader already placed.
                 LD      DE, 1           ; starting LBA
                 LD      HL, CCP_BASE    ; destination address
-                LD      B, 44           ; sector count
+                LD      B, 44           ; sector count — covers CCP+BDOS
+                                        ; code + storage variables, but
+                                        ; deliberately STOPS before LBA
+                                        ; 45 which contains CPM22.Z80's
+                                        ; fake BIOS jump table. Loading
+                                        ; that would overwrite our real
+                                        ; CBIOS at 0xFA00 and bootloop.
 WBLOOP:
                 PUSH    BC
                 PUSH    DE

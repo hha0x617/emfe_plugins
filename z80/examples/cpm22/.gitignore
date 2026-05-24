@@ -7,6 +7,10 @@ cbios/cbios.bin
 # assembled CCP+BDOS blob. Both are intermediate outputs.
 cbios/cpm22-mem64.z80
 cbios/cpm22-system.bin
+# Phase 4 verification scratch (pasmo symbol dumps + scratch .bin
+# left behind by ad-hoc invocations during cold-boot debugging).
+cbios/cpm22-syms.txt
+cbios/cpm22-tmp.bin
 *.img
 *.dsk
 *.cpm

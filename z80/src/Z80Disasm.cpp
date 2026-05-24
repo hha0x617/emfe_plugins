@@ -336,6 +336,12 @@ namespace {
         if (opcode == 0xF3) { mnem = "DI";   return; }
         if (opcode == 0xFB) { mnem = "EI";   return; }
 
+        // EX / EXX family (basic Z80, originally missed in Phase 1)
+        if (opcode == 0x08) { mnem = "EX"; ops = "AF, AF'";  return; }
+        if (opcode == 0xD9) { mnem = "EXX"; return; }
+        if (opcode == 0xE3) { mnem = "EX"; ops = "(SP), HL"; return; }
+        if (opcode == 0xEB) { mnem = "EX"; ops = "DE, HL";   return; }
+
         // Phase 3.2: single-byte accumulator rotates + DAA/CPL/SCF/CCF
         if (opcode == 0x07) { mnem = "RLCA"; return; }
         if (opcode == 0x0F) { mnem = "RRCA"; return; }
