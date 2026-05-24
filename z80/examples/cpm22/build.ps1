@@ -238,6 +238,76 @@ if ($cbiosOff + $cbiosBytes.Length -gt $ImgSize) {
 }
 [Array]::Copy($cbiosBytes, 0, $image, $cbiosOff, $cbiosBytes.Length)
 
+# -----------------------------------------------------------------------------
+# Phase 5.2: bake the 8 standard CP/M 2.2 utility binaries into the
+# disk image's filesystem. Pointer-shelf model per phase5_design.md
+# §1.1: user downloads cpm22-b.zip from cpm.z80.de, extracts the
+# .COM files into <companion>/cpm22/binary/utility/, this script
+# verifies each SHA-256 and writes them into the image as named
+# files via the cpmfs.ps1 module.
+# -----------------------------------------------------------------------------
+
+. (Join-Path $ScriptRoot 'cpmfs.ps1')
+
+$UtilityDir = Join-Path $CompanionPath 'cpm22/binary/utility'
+
+# Per-file SHA-256s from emfe_plugins_cpm_supplements/docs/provenance.md.
+# A mismatch means the user supplied a different build / OEM variant
+# of the utility — stop and re-check the source.
+$ExpectedSha256 = @{
+    'PIP.COM'    = '7F9E12A92E2BCFD814B5B680A2F7D5C2A2C50C9A5EF94A6891DCAA3527F08EC2'
+    'STAT.COM'   = '614D0B1D66466177E5B2BF585251D53D1E24EDA34ADA136B4AE178AB5944DC73'
+    'ED.COM'     = '0397B96B6D48BA92A0B41CDF974BF8AD31E4D49783F1FF7EED9E701B6A8870DB'
+    'SUBMIT.COM' = '4C3FEC22EBCA595B03C279EB21B19AA4B2DAB139741ED29172CA6FA4C43E7066'
+    'XSUB.COM'   = '817A16B595EA6DE8DF0DD5E808F89A49E85DEA546673283D759D01E960598BED'
+    'LOAD.COM'   = 'C885D061A5DCB3830AB1C29A13E34D3C0560CC3FAF569BC55B195C0330A9CBD6'
+    'DUMP.COM'   = '9A99911C0FE0AAEC22FDEC61B1B2B03DD012EA12D20CC17F21C6F6D9C5399FE3'
+    'DDT.COM'    = 'BC4B0F085F8D1E37CAF2A13850C70AFA07ACB626B22B1A7CB63368B3334DD448'
+}
+
+$missing = @()
+foreach ($name in $ExpectedSha256.Keys) {
+    if (-not (Test-Path (Join-Path $UtilityDir $name))) {
+        $missing += $name
+    }
+}
+
+if ($missing.Count -gt 0) {
+    Write-Host ""
+    Write-Host "(Phase 5.2 SKIP - CP/M utility binaries not found)"
+    Write-Host ""
+    Write-Host "  Missing: $($missing -join ', ')"
+    Write-Host "  Expected at: $UtilityDir"
+    Write-Host ""
+    Write-Host "  To enable utilities (DIR / PIP / STAT / ED / ...) in the disk image:"
+    Write-Host "    1. Download cpm22-b.zip from"
+    Write-Host "         http://www.cpm.z80.de/download/cpm22-b.zip"
+    Write-Host "    2. Verify its SHA-256 (see emfe_plugins_cpm_supplements/docs/provenance.md)."
+    Write-Host "    3. Extract the eight .COM files into:"
+    Write-Host "         $UtilityDir"
+    Write-Host "    4. Re-run this script."
+    Write-Host ""
+    Write-Host "  Building image WITHOUT utilities (blank CP/M filesystem)."
+    Write-Host ""
+} else {
+    Write-Host ""
+    Write-Host "Found all 8 utility binaries — baking into CP/M filesystem:"
+    $fsCtx = New-CpmFsContext -Image $image
+    foreach ($name in $ExpectedSha256.Keys | Sort-Object) {
+        $path = Join-Path $UtilityDir $name
+        $hash = (Get-FileHash $path -Algorithm SHA256).Hash
+        if ($hash -ne $ExpectedSha256[$name]) {
+            Write-Error ("SHA-256 mismatch for $name`n" +
+                         "  expected: $($ExpectedSha256[$name])`n" +
+                         "  got:      $hash`n" +
+                         "  Different build / OEM variant? See provenance.md.")
+            exit 1
+        }
+        Add-CpmFile -Ctx $fsCtx -HostPath $path -CpmName $name
+    }
+    Write-Host ""
+}
+
 # -- Write the image ------------------------------------------------------
 if (-not (Test-Path $DisksDir)) {
     New-Item -ItemType Directory -Path $DisksDir | Out-Null
@@ -249,6 +319,9 @@ Write-Host ("Disk image written: {0} ({1} bytes)" -f $ImageOut, $image.Length)
 Write-Host ("  boot stub:    LBA 0, {0} bytes" -f 3)
 Write-Host ("  CCP+BDOS:     LBA 1..{0}, {1} bytes total" -f (1 + [Math]::Ceiling($payload.Length / $SectorSize) - 1), $payload.Length)
 Write-Host ("  CBIOS:        LBA {0}+, {1} bytes" -f $cbiosLba, $cbiosBytes.Length)
+if ($missing.Count -eq 0) {
+    Write-Host ("  Utilities:    8 .COM files baked into the CP/M filesystem")
+}
 Write-Host ""
 Write-Host "Mount this image in the plugin via Settings -> DiskImagePath"
 Write-Host "(Phase 4.4 wiring) or via emfe_z80_mount_disk_image (Phase 4.1)."
