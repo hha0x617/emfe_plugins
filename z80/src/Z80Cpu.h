@@ -154,10 +154,46 @@ private:
     uint8_t ShiftSRL(uint8_t v);   // shift right logical
 
     // BIT b, v — test bit b of v, set flags only.
-    void    OpBit(int b, uint8_t v);
+    //
+    // `yx_source` supplies the byte from which the undocumented Y / X
+    // bits are copied:
+    //   BIT b, r              → yx_source = r (the operand itself)
+    //   BIT b, (HL)           → yx_source = H (i.e. HL >> 8) — a
+    //                           pragmatic approximation of the real
+    //                           Z80's WZ/MEMPTR-high behaviour that is
+    //                           good enough for zexall.
+    //   BIT b, (IX+d) / (IY+d)→ yx_source = (effective_address >> 8)
+    //
+    // Phase 3.2 swapped the old single-argument signature for the dual
+    // form; the rest of the flag rules are unchanged.
+    void    OpBit(int b, uint8_t v, uint8_t yx_source);
 
     // Shared flag setter for the rotate / shift family above.
     void    SetShiftRotateFlags(uint8_t result, bool carry_out);
+
+    // ---- Single-byte accumulator rotates (Phase 3.2) ----------------
+    // Distinct from the CB-prefixed RLC/RRC/RL/RR versions:
+    //   * S, Z, P/V are PRESERVED (the CB forms recompute them).
+    //   * Y / X come from the post-rotate value of A.
+    //   * H = 0, N = 0.
+    //   * C = the bit shifted OUT of A.
+    void OpRlca();   // 0x07 — rotate left circular
+    void OpRrca();   // 0x0F — rotate right circular
+    void OpRla();    // 0x17 — rotate left through carry
+    void OpRra();    // 0x1F — rotate right through carry
+
+    // ---- Misc accumulator / flag ops (Phase 3.2) --------------------
+    // OpDaa: decimal-adjust A after a BCD ADD/SUB. The correction
+    // depends on the post-op N (sub) / H (half-carry) / C flags.
+    // OpCpl: A := ~A. Flags: H = 1, N = 1, Y/X from new A, others
+    // preserved.
+    // OpScf: C = 1, N = 0, H = 0. Y/X = bits 5/3 of A (pragmatic
+    // "Q | A" approximation that suffices for zexall).
+    // OpCcf: C = !C, N = 0, H = old C. Y/X = bits 5/3 of A.
+    void OpDaa();    // 0x27
+    void OpCpl();    // 0x2F
+    void OpScf();    // 0x37
+    void OpCcf();    // 0x3F
 
     // ---- 16-bit ADD helper (ADD HL,rr / ADD IX,rr / ADD IY,rr) ------
     // Computes target + addend, sets F per Zilog UM008011 §5:

@@ -2723,8 +2723,312 @@ static void TestDisasmIxyHalves() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 3.2 tests — Y/X undocumented flag propagation
+//   * RLCA / RRCA / RLA / RRA (single-byte rotates — preserve S/Z/PV)
+//   * DAA / CPL / SCF / CCF (newly implemented + their flag rules)
+//   * BIT b, (HL) / BIT b, (IX+d) Y/X-source rule (from address high)
+// ---------------------------------------------------------------------
+
+static void TestRlcaRrcaPreserveSzpv() {
+    printf("TestRlcaRrcaPreserveSzpv...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // RLCA on A=0x85 (1000 0101) → 0x0B; old bit7=1 → C=1.
+    SetReg(inst, REG_A, 0x85);
+    // Seed S, Z, P/V so we can verify preservation; seed H/N so we can
+    // verify they get cleared.
+    SetReg(inst, REG_F, TF_S | TF_Z | TF_PV | TF_H | TF_N);
+    const uint8_t rlca[] = { 0x07 };
+    LoadProgram(inst, 0, rlca, sizeof(rlca));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x0B, "RLCA(0x85) = 0x0B");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_S)  != 0, "S preserved");
+    TEST_TRUE((f & TF_Z)  != 0, "Z preserved");
+    TEST_TRUE((f & TF_PV) != 0, "PV preserved");
+    TEST_TRUE((f & TF_H)  == 0, "H cleared");
+    TEST_TRUE((f & TF_N)  == 0, "N cleared");
+    TEST_TRUE((f & TF_C)  != 0, "C from old bit 7");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)4, "RLCA is 4 T");
+
+    // RRCA on A=0x01 → 0x80; old bit0=1 → C=1.
+    SetReg(inst, REG_A, 0x01);
+    SetReg(inst, REG_F, 0);
+    const uint8_t rrca[] = { 0x0F };
+    LoadProgram(inst, 0x10, rrca, sizeof(rrca));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x80, "RRCA(0x01) = 0x80");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) != 0, "C from old bit 0");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestRlaRraThroughCarry() {
+    printf("TestRlaRraThroughCarry...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // RLA on A=0x40 with C=1 → 0x81 ; new C from old bit 7 = 0.
+    SetReg(inst, REG_A, 0x40);
+    SetReg(inst, REG_F, TF_C);
+    const uint8_t rla[] = { 0x17 };
+    LoadProgram(inst, 0, rla, sizeof(rla));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x81, "RLA: 0x40 with C=1 → 0x81");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) == 0, "new C is 0 (old bit 7 was 0)");
+
+    // RRA on A=0x01 with C=0 → 0x00 ; new C from old bit 0 = 1.
+    // Note: RRA does NOT update Z (S/Z/PV preserved), so we don't
+    // assert on Z even though the value happens to be zero.
+    SetReg(inst, REG_A, 0x01);
+    SetReg(inst, REG_F, 0);
+    const uint8_t rra[] = { 0x1F };
+    LoadProgram(inst, 0x10, rra, sizeof(rra));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x00, "RRA: 0x01 with C=0 → 0x00");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_C) != 0, "new C is 1 (old bit 0 was 1)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDaaAfterAdd() {
+    // 0x15 + 0x27 = 0x3C binary ; DAA → 0x42 (15 + 27 = 42 BCD).
+    printf("TestDaaAfterAdd...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_A, 0x15);
+    SetReg(inst, REG_B, 0x27);
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog[] = { 0x80, 0x27 };       // ADD A, B ; DAA
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x3C, "binary ADD result");
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x42, "DAA → BCD 42");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_N) == 0, "N preserved from ADD (0)");
+    TEST_TRUE((f & TF_C) == 0, "no decimal carry");
+    TEST_TRUE((f & TF_Z) == 0, "Z clear");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDaaAfterAddWithDecimalCarry() {
+    // 0x99 + 0x01 = 0x9A binary ; DAA → 0x00 with C=1 (decimal carry).
+    printf("TestDaaAfterAddWithDecimalCarry...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_A, 0x99);
+    SetReg(inst, REG_B, 0x01);
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog[] = { 0x80, 0x27 };
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);   // ADD → 0x9A
+    emfe_step(inst);   // DAA
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x00, "99+01 BCD = 00 (carry)");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_C) != 0, "decimal carry set");
+    TEST_TRUE((f & TF_Z) != 0, "Z set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDaaAfterSub() {
+    // 0x35 - 0x17 = 0x1E binary ; DAA → 0x18 (35 - 17 = 18 BCD).
+    printf("TestDaaAfterSub...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_A, 0x35);
+    SetReg(inst, REG_B, 0x17);
+    SetReg(inst, REG_F, 0);
+    const uint8_t prog[] = { 0x90, 0x27 };       // SUB B ; DAA
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x1E, "binary SUB result");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_N) != 0, "N set by SUB");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_H) != 0, "H set by SUB nibble borrow");
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x18, "DAA → 18 BCD");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_N) != 0, "N preserved (still sub-mode)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCplFlags() {
+    printf("TestCplFlags...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_A, 0x5A);
+    SetReg(inst, REG_F, TF_S | TF_Z | TF_PV | TF_C);
+    const uint8_t cpl[] = { 0x2F };
+    LoadProgram(inst, 0, cpl, sizeof(cpl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0xA5, "A := ~A");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_H) != 0, "H := 1");
+    TEST_TRUE((f & TF_N) != 0, "N := 1");
+    TEST_TRUE((f & TF_S) != 0, "S preserved");
+    TEST_TRUE((f & TF_Z) != 0, "Z preserved");
+    TEST_TRUE((f & TF_PV) != 0, "PV preserved");
+    TEST_TRUE((f & TF_C) != 0, "C preserved");
+    // 0xA5 = 1010 0101 → bit 5 = 1, bit 3 = 0.
+    TEST_TRUE((f & TF_Y) != 0, "Y from new A bit 5");
+    TEST_TRUE((f & TF_X) == 0, "X from new A bit 3");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestScfFlags() {
+    printf("TestScfFlags...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_A, 0x28);                  // bit 5 = 1, bit 3 = 1
+    SetReg(inst, REG_F, TF_S | TF_Z | TF_PV | TF_H | TF_N);
+    const uint8_t scf[] = { 0x37 };
+    LoadProgram(inst, 0, scf, sizeof(scf));
+    emfe_step(inst);
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_C) != 0, "C := 1");
+    TEST_TRUE((f & TF_N) == 0, "N := 0");
+    TEST_TRUE((f & TF_H) == 0, "H := 0");
+    TEST_TRUE((f & TF_S) != 0, "S preserved");
+    TEST_TRUE((f & TF_Z) != 0, "Z preserved");
+    TEST_TRUE((f & TF_PV) != 0, "PV preserved");
+    TEST_TRUE((f & TF_Y) != 0, "Y from A bit 5");
+    TEST_TRUE((f & TF_X) != 0, "X from A bit 3");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCcfFlags() {
+    printf("TestCcfFlags...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // First CCF: old C = 1 → new C = 0, H := 1.
+    SetReg(inst, REG_A, 0x00);                  // Y/X both 0
+    SetReg(inst, REG_F, TF_C);
+    const uint8_t ccf[] = { 0x3F };
+    LoadProgram(inst, 0, ccf, sizeof(ccf));
+    emfe_step(inst);
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_C) == 0, "C flipped (was 1)");
+    TEST_TRUE((f & TF_H) != 0, "H := old C (1)");
+    TEST_TRUE((f & TF_N) == 0, "N := 0");
+    TEST_TRUE((f & TF_Y) == 0, "Y from A bit 5 (0)");
+    TEST_TRUE((f & TF_X) == 0, "X from A bit 3 (0)");
+
+    // Second CCF: old C = 0 → new C = 1, H := 0.
+    SetReg(inst, REG_A, 0x00);
+    SetReg(inst, REG_F, 0);
+    LoadProgram(inst, 0x10, ccf, sizeof(ccf));
+    emfe_step(inst);
+    f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_C) != 0, "C flipped from 0 to 1");
+    TEST_TRUE((f & TF_H) == 0, "H := old C (0)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestBitMemoryYxFromAddressHigh() {
+    // BIT 0, (HL): Y/X come from H (high byte of HL), NOT from val.
+    // Seed memory at HL such that a buggy implementation (Y/X from
+    // val) would visibly differ.
+    printf("TestBitMemoryYxFromAddressHigh...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // HL = 0x2800 — H = 0x28 → bit 5 = 1, bit 3 = 1.
+    // memory[HL] = 0x00 — if Y/X were from the value they'd both be 0.
+    SetReg(inst, REG_HL, 0x2800);
+    emfe_poke_byte(inst, 0x2800, 0x00);
+    SetReg(inst, REG_F, 0);
+    const uint8_t bit_hl[] = { 0xCB, 0x46 };       // BIT 0, (HL)
+    LoadProgram(inst, 0, bit_hl, sizeof(bit_hl));
+    emfe_step(inst);
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_Z) != 0, "Z set (bit 0 of 0x00 is clear)");
+    TEST_TRUE((f & TF_Y) != 0, "Y from H=0x28 bit 5");
+    TEST_TRUE((f & TF_X) != 0, "X from H=0x28 bit 3");
+
+    // BIT 7, (IX-2) with IX=0x2880 → EA=0x287E → high=0x28.
+    // memory[EA] = 0x80 (bit 7 set) so Z=0.
+    SetReg(inst, REG_IX, 0x2880);
+    emfe_poke_byte(inst, 0x287E, 0x80);
+    SetReg(inst, REG_F, 0);
+    const uint8_t bit_ixd[] = { 0xDD, 0xCB, 0xFE, 0x7E };   // BIT 7, (IX-2)
+    LoadProgram(inst, 0x10, bit_ixd, sizeof(bit_ixd));
+    emfe_step(inst);
+    f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_Z) == 0, "Z clear (bit 7 of 0x80 set)");
+    TEST_TRUE((f & TF_Y) != 0, "Y from EA high 0x28 bit 5");
+    TEST_TRUE((f & TF_X) != 0, "X from EA high 0x28 bit 3");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAdd16YxFromResultHigh() {
+    // ADD HL, BC: 0x2800 + 0x0800 = 0x3000 ; result high = 0x30 →
+    // bit 5 = 1 (Y), bit 3 = 0 (X clear).
+    printf("TestAdd16YxFromResultHigh...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    SetReg(inst, REG_HL, 0x2800);
+    SetReg(inst, REG_BC, 0x0800);
+    SetReg(inst, REG_F, 0);
+    const uint8_t add_hl_bc[] = { 0x09 };
+    LoadProgram(inst, 0, add_hl_bc, sizeof(add_hl_bc));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x3000, "HL := 0x3000");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_Y) != 0, "Y from 0x30 bit 5");
+    TEST_TRUE((f & TF_X) == 0, "X from 0x30 bit 3");
+    TEST_TRUE((f & TF_N) == 0, "N := 0");
+    TEST_TRUE((f & TF_C) == 0, "no carry");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmPhase32Opcodes() {
+    printf("TestDisasmPhase32Opcodes...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const struct { uint8_t op; const char* mnem; } table[] = {
+        { 0x07, "RLCA" }, { 0x0F, "RRCA" }, { 0x17, "RLA" }, { 0x1F, "RRA" },
+        { 0x27, "DAA"  }, { 0x2F, "CPL"  }, { 0x37, "SCF" }, { 0x3F, "CCF" },
+    };
+    for (size_t i = 0; i < sizeof(table)/sizeof(table[0]); ++i) {
+        uint16_t addr = static_cast<uint16_t>(0x0100 + 0x10 * i);
+        uint8_t bytes[1] = { table[i].op };
+        LoadProgram(inst, addr, bytes, 1);
+        AssertDisasm(inst, addr, table[i].mnem, "", 1, table[i].mnem);
+    }
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 3.1) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 3.2) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -2817,6 +3121,18 @@ int main() {
     TestIxyHalfAlu();
     TestDdPrefixedHaltRegression();
     TestDisasmIxyHalves();
+    // Phase 3.2
+    TestRlcaRrcaPreserveSzpv();
+    TestRlaRraThroughCarry();
+    TestDaaAfterAdd();
+    TestDaaAfterAddWithDecimalCarry();
+    TestDaaAfterSub();
+    TestCplFlags();
+    TestScfFlags();
+    TestCcfFlags();
+    TestBitMemoryYxFromAddressHigh();
+    TestAdd16YxFromResultHigh();
+    TestDisasmPhase32Opcodes();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

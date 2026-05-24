@@ -277,14 +277,14 @@ uint8_t Z80Cpu::ShiftSRL(uint8_t v) {
     return r;
 }
 
-void Z80Cpu::OpBit(int b, uint8_t v) {
-    // BIT b, r tests bit b of v and writes flags only.
+void Z80Cpu::OpBit(int b, uint8_t v, uint8_t yx_source) {
+    // BIT b, X tests bit b of v and writes flags only.
     //   Z, P/V := !bit;  H := 1; N := 0; C preserved.
     //   S := bit 7 (only relevant when b == 7).
-    //   Y / X come from bits 5 / 3 of the operand (matches CP's quirk;
-    //   for BIT b, (HL) the proper Z80 sources Y/X from the WZ
-    //   internal register's high byte — implementing that lands in
-    //   Phase 3 alongside zexall, where it matters).
+    //   Y / X come from bits 5 / 3 of `yx_source`. For BIT b, r the
+    //   caller passes v itself; for the memory variants the caller
+    //   passes the high byte of WZ (approximated as H for BIT b,(HL)
+    //   and as (effective_address >> 8) for BIT b,(IXY+d)).
     uint8_t mask = static_cast<uint8_t>(1 << b);
     uint8_t bit_set = static_cast<uint8_t>(v & mask);
     uint8_t f = static_cast<uint8_t>(F() & F_C);   // C preserved
@@ -294,8 +294,157 @@ void Z80Cpu::OpBit(int b, uint8_t v) {
         f |= F_PV;
     }
     if (bit_set & 0x80) f |= F_S;                  // S only when b == 7
-    if (v & 0x20) f |= F_Y;
-    if (v & 0x08) f |= F_X;
+    if (yx_source & 0x20) f |= F_Y;
+    if (yx_source & 0x08) f |= F_X;
+    SetF(f);
+}
+
+// ---- Phase 3.2: single-byte accumulator rotates + DAA/CPL/SCF/CCF ---
+//
+// The single-byte rotate forms (RLCA/RRCA/RLA/RRA, opcodes 0x07/0x0F/
+// 0x17/0x1F) differ from their CB-prefixed cousins (RLC/RRC/RL/RR) in
+// one important way: S, Z and P/V are PRESERVED rather than recomputed
+// from the post-rotate value. Y / X come from the post-rotate A
+// (matching all other ops that touch A). H and N are cleared; C
+// receives the bit shifted out of A.
+
+void Z80Cpu::OpRlca() {
+    uint8_t a = A();
+    bool carry = (a & 0x80) != 0;
+    uint8_t result = static_cast<uint8_t>((a << 1) | (carry ? 1 : 0));
+    SetA(result);
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));   // preserve
+    if (result & 0x20) f |= F_Y;
+    if (result & 0x08) f |= F_X;
+    if (carry)         f |= F_C;
+    SetF(f);
+}
+
+void Z80Cpu::OpRrca() {
+    uint8_t a = A();
+    bool carry = (a & 0x01) != 0;
+    uint8_t result = static_cast<uint8_t>((a >> 1) | (carry ? 0x80 : 0));
+    SetA(result);
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));
+    if (result & 0x20) f |= F_Y;
+    if (result & 0x08) f |= F_X;
+    if (carry)         f |= F_C;
+    SetF(f);
+}
+
+void Z80Cpu::OpRla() {
+    uint8_t a = A();
+    bool old_c = (F() & F_C) != 0;
+    bool new_c = (a & 0x80) != 0;
+    uint8_t result = static_cast<uint8_t>((a << 1) | (old_c ? 1 : 0));
+    SetA(result);
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));
+    if (result & 0x20) f |= F_Y;
+    if (result & 0x08) f |= F_X;
+    if (new_c)         f |= F_C;
+    SetF(f);
+}
+
+void Z80Cpu::OpRra() {
+    uint8_t a = A();
+    bool old_c = (F() & F_C) != 0;
+    bool new_c = (a & 0x01) != 0;
+    uint8_t result = static_cast<uint8_t>((a >> 1) | (old_c ? 0x80 : 0));
+    SetA(result);
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));
+    if (result & 0x20) f |= F_Y;
+    if (result & 0x08) f |= F_X;
+    if (new_c)         f |= F_C;
+    SetF(f);
+}
+
+// DAA — decimal-adjust A. The correction added (or subtracted, after
+// a previous SUB/SBC/NEG/DEC indicated by N=1) depends on:
+//   * whether the previous op left a half-carry (H), and / or
+//   * whether the previous op left a carry (C),
+//   * the current decimal value of each nibble.
+//
+// New flags:
+//   S/Z/Y/X from new A;
+//   P/V from parity(new A);
+//   N preserved (the kind-of-correction is the same shape as the
+//     original op);
+//   H from the half-carry of the correction;
+//   C := old_C OR (the high-nibble correction implied a carry).
+void Z80Cpu::OpDaa() {
+    uint8_t a = A();
+    uint8_t old_f = F();
+    bool h_in = (old_f & F_H) != 0;
+    bool c_in = (old_f & F_C) != 0;
+    bool sub  = (old_f & F_N) != 0;
+
+    uint8_t correction = 0;
+    bool new_c = c_in;
+    if (h_in || (!sub && (a & 0x0F) > 0x09))           correction |= 0x06;
+    if (c_in || (!sub && a > 0x99))                  { correction |= 0x60; new_c = true; }
+
+    uint8_t new_a;
+    bool new_h;
+    if (sub) {
+        new_a = static_cast<uint8_t>(a - correction);
+        // H after subtractive DAA: borrow from bit 4 occurred iff the
+        // input had H set AND the low nibble was less than 6.
+        new_h = h_in && ((a & 0x0F) < 0x06);
+    } else {
+        new_a = static_cast<uint8_t>(a + correction);
+        // H after additive DAA: carry into bit 4 occurred iff the
+        // low nibble was greater than 9.
+        new_h = ((a & 0x0F) > 0x09);
+    }
+    SetA(new_a);
+
+    uint8_t f = static_cast<uint8_t>(old_f & F_N);    // preserve N
+    if (new_a & 0x80)     f |= F_S;
+    if (new_a == 0)       f |= F_Z;
+    if (new_a & 0x20)     f |= F_Y;
+    if (new_h)            f |= F_H;
+    if (new_a & 0x08)     f |= F_X;
+    if (parity8(new_a))   f |= F_PV;
+    if (new_c)            f |= F_C;
+    SetF(f);
+}
+
+void Z80Cpu::OpCpl() {
+    uint8_t a = static_cast<uint8_t>(~A());
+    SetA(a);
+    // S, Z, P/V, C preserved. H := 1, N := 1. Y/X copied from new A.
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV | F_C));
+    f |= F_H;
+    f |= F_N;
+    if (a & 0x20) f |= F_Y;
+    if (a & 0x08) f |= F_X;
+    SetF(f);
+}
+
+void Z80Cpu::OpScf() {
+    // C := 1, N := 0, H := 0. S/Z/P/V preserved. Y/X take bits 5/3 of
+    // A — a pragmatic approximation of the real Z80 rule (which uses
+    // "Q | A" where Q is the F-state recorded at the start of the last
+    // flag-modifying op). The simplified A-only form is what z80ex /
+    // fuse use; zexall passes with this approximation.
+    uint8_t a = A();
+    uint8_t f = static_cast<uint8_t>(F() & (F_S | F_Z | F_PV));
+    if (a & 0x20) f |= F_Y;
+    if (a & 0x08) f |= F_X;
+    f |= F_C;
+    SetF(f);
+}
+
+void Z80Cpu::OpCcf() {
+    // C := !C, H := old_C, N := 0. S/Z/P/V preserved. Y/X from A.
+    uint8_t a = A();
+    uint8_t old_f = F();
+    bool old_c = (old_f & F_C) != 0;
+    uint8_t f = static_cast<uint8_t>(old_f & (F_S | F_Z | F_PV));
+    if (a & 0x20) f |= F_Y;
+    if (a & 0x08) f |= F_X;
+    if (old_c)    f |= F_H;
+    if (!old_c)   f |= F_C;
     SetF(f);
 }
 
@@ -771,8 +920,13 @@ int Z80Cpu::ExecuteOne() {
             cycles = is_hl ? 15 : 8;
             break;
         }
-        case 1: {   // BIT b, r — flags only
-            OpBit(idx, val);
+        case 1: {   // BIT b, r / BIT b, (HL) — flags only
+            // For BIT b, (HL) the Y/X bits come from the high byte of
+            // WZ; we approximate that as H (the high byte of HL),
+            // which is what fuse / z80ex do and is sufficient for
+            // zexall. For BIT b, r the Y/X source is r itself.
+            uint8_t yx_source = is_hl ? static_cast<uint8_t>(HL >> 8) : val;
+            OpBit(idx, val, yx_source);
             cycles = is_hl ? 12 : 8;
             break;
         }
@@ -791,6 +945,18 @@ int Z80Cpu::ExecuteOne() {
         InstructionCount += 1;
         return cycles;
     }
+
+    // ----- Phase 3.2: single-byte accumulator rotates + flag ops -------
+    // 0x07 RLCA / 0x0F RRCA / 0x17 RLA / 0x1F RRA — 4 T each.
+    // 0x27 DAA / 0x2F CPL / 0x37 SCF / 0x3F CCF      — 4 T each.
+    if (opcode == 0x07) { OpRlca(); CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x0F) { OpRrca(); CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x17) { OpRla();  CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x1F) { OpRra();  CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x27) { OpDaa();  CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x2F) { OpCpl();  CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x37) { OpScf();  CycleCount += 4; InstructionCount++; return 4; }
+    if (opcode == 0x3F) { OpCcf();  CycleCount += 4; InstructionCount++; return 4; }
 
     // ----- IN A, (n) / OUT (n), A  (immediate-port I/O) ----------------
     // 0xDB IN  A, (n) : A := port[n] — 11 T
@@ -1001,7 +1167,14 @@ int Z80Cpu::ExecuteWithIndex(uint16_t* IXY) {
             cycles = 23;
             break;
         }
-        case 1: OpBit(idx, val); cycles = 20; break;
+        case 1: {
+            // BIT b, (IXY+d): Y/X come from the high byte of the
+            // computed effective address — NOT from the memory value.
+            uint8_t yx_source = static_cast<uint8_t>(ea >> 8);
+            OpBit(idx, val, yx_source);
+            cycles = 20;
+            break;
+        }
         case 2: Memory->WriteByte(ea, static_cast<uint8_t>(val & ~(1 << idx))); cycles = 23; break;
         case 3: Memory->WriteByte(ea, static_cast<uint8_t>(val |  (1 << idx))); cycles = 23; break;
         }
