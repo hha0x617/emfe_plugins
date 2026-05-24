@@ -17,10 +17,10 @@
 # the license posture is unambiguous.
 #
 # Usage:
-#   # default sibling layout (D:\projects\emfe_plugins  +  D:\projects\emfe_plugin_z80_cpm22)
+#   # default sibling layout (D:\projects\emfe_plugins  +  D:\projects\emfe_plugins_cpm_supplements)
 #   pwsh ./build.ps1
 #   # explicit companion path
-#   pwsh ./build.ps1 -CompanionPath D:\path\to\emfe_plugin_z80_cpm22
+#   pwsh ./build.ps1 -CompanionPath D:\path\to\emfe_plugins_cpm_supplements
 #   # explicit pasmo path (otherwise looked up in PATH)
 #   pwsh ./build.ps1 -PasmoExe C:\tools\pasmo.exe
 # -----------------------------------------------------------------------------
@@ -89,7 +89,7 @@ if (-not $CompanionPath) {
     # parent of emfe_plugins, then check for the canonical sibling name.
     $emfePluginsRoot = (Resolve-Path (Join-Path $ScriptRoot '../../..')).Path
     $parent = Split-Path $emfePluginsRoot -Parent
-    $CompanionPath  = Join-Path $parent 'emfe_plugin_z80_cpm22'
+    $CompanionPath  = Join-Path $parent 'emfe_plugins_cpm_supplements'
 }
 $CompanionPath = (Resolve-Path -LiteralPath $CompanionPath -ErrorAction SilentlyContinue) ?
     (Resolve-Path -LiteralPath $CompanionPath).Path :
@@ -110,9 +110,9 @@ if (-not (Test-Path $Cpm22Src)) {
     Write-Host ""
     Write-Host "  Populate the companion repo with CPM22.Z80 from cpm2-asm.zip"
     Write-Host "  on 'The Unofficial CP/M Web Site' — see"
-    Write-Host "    emfe_plugin_z80_cpm22/cpm22/source/README.md"
+    Write-Host "    emfe_plugins_cpm_supplements/cpm22/source/README.md"
     Write-Host "  and"
-    Write-Host "    emfe_plugin_z80_cpm22/docs/provenance.md"
+    Write-Host "    emfe_plugins_cpm_supplements/docs/provenance.md"
     Write-Host "  for the canonical source and SHA-256. Then re-run this script."
     exit 0
 }

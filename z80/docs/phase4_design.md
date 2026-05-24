@@ -1,7 +1,7 @@
 # Phase 4 — CP/M 2.2 boot design
 
 Status: **Design draft** — review-ready, no implementation yet.
-Companion: [`emfe_plugin_z80_cpm22`](https://github.com/hha0x617/emfe_plugin_z80_cpm22)
+Companion: [`emfe_plugins_cpm_supplements`](https://github.com/hha0x617/emfe_plugins_cpm_supplements)
 (private as of 2026-05-24).
 
 This document fills in the level of detail that
@@ -171,7 +171,7 @@ The reset vector at `0x0000` is special: CCP cold start.
 The flow:
 
 ```
-emfe_plugin_z80_cpm22/cpm22/source/   (CP/M-licensed, upstream)
+emfe_plugins_cpm_supplements/cpm22/source/   (CP/M-licensed, upstream)
             │
             ▼  z80asm / pasmo
        (assemble CCP, BDOS)
@@ -187,7 +187,7 @@ emfe_plugins/z80/examples/cpm22/Makefile  (or build.ps1, MIT)
             │
             ▼  combine + write disk image
             ▼
-emfe_plugin_z80_cpm22/disks/cpm22-sssd.img   (CP/M-licensed, output)
+emfe_plugins_cpm_supplements/disks/cpm22-sssd.img   (CP/M-licensed, output)
 ```
 
 The Makefile (or PowerShell equivalent — TBD; PowerShell is more

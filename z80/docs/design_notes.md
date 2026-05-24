@@ -157,7 +157,7 @@ stress-test corpus. For Z80 the corpus is split into two licence zones
 | `examples/monitor/` | original | MIT (this repo) | Custom ROM monitor for the emfe Z80 plugin: LD/DUMP/GO/DISASM. Educational, mirrors what `mc6809/examples/` ships |
 | `examples/tinybasic/` | original (long-term) | MIT (this repo) | Z80 port of Tiny BASIC, again following the `mc6809` examples-tier pattern |
 
-### Companion repository — [`emfe_plugin_z80_cpm22`](#7-licence-strategy)
+### Companion repository — [`emfe_plugins_cpm_supplements`](#7-licence-strategy)
 
 | Item | Origin | Licence |
 |---|---|---|
@@ -169,7 +169,7 @@ stress-test corpus. For Z80 the corpus is split into two licence zones
 
 The build recipe and CBIOS source — though they consume CP/M source —
 are themselves original work, so they live in this MIT-licensed
-repository. The recipe reads inputs from a sibling `emfe_plugin_z80_cpm22`
+repository. The recipe reads inputs from a sibling `emfe_plugins_cpm_supplements`
 clone (or via an environment variable) and writes the resulting
 disk images back into that clone.
 
@@ -194,7 +194,7 @@ plugin:
 
 2. **Companion repository** (chosen, "B plan") — original work stays in
    this MIT/Apache repo, CP/M-derived material lives in a dedicated
-   sibling repository (`emfe_plugin_z80_cpm22`) carrying only the
+   sibling repository (`emfe_plugins_cpm_supplements`) carrying only the
    Sparks-letter licence.
 
 Result:
@@ -242,7 +242,7 @@ to Phase-3 roadmap.
 | **7** *(optional)* | Cycle-accurate T-state mode | retro game ROMs with cycle-sensitive code |
 
 Phases 1–3 are self-contained in this repository.
-Phase 4 begins the cross-repo coupling with `emfe_plugin_z80_cpm22`.
+Phase 4 begins the cross-repo coupling with `emfe_plugins_cpm_supplements`.
 
 ## 10. Open questions
 

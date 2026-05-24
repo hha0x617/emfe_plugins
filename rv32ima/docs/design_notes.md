@@ -268,7 +268,7 @@ Phase 7 does not add interpreter LoC; it adds curated demo content and
 recipes. The actual binaries / images that ship are stored in a
 **companion repository** (see §10) to keep this plugin's MIT/Apache
 tree clean of upstream-licensed payloads — same pattern as the Z80
-plugin's `emfe_plugin_z80_cpm22` companion.
+plugin's `emfe_plugins_cpm_supplements` companion.
 
 ## 9. Open questions
 
@@ -289,7 +289,7 @@ plugin's `emfe_plugin_z80_cpm22` companion.
       sub-directory under one repo, or split across multiple companions?
       First answer: single repo, sub-directories — keeps the Phase 7
       portfolio discoverable in one place; precedent is
-      `emfe_plugin_z80_cpm22` doing the analogous thing for one license
+      `emfe_plugins_cpm_supplements` doing the analogous thing for one license
       zone.
 
 ## 10. Companion repository
@@ -311,7 +311,7 @@ emfe_plugin_rv32ima_demos/
 ```
 
 The companion-repo pattern is the same one used by the Z80 plugin's
-`emfe_plugin_z80_cpm22` (CP/M-only payloads under a separate license).
+`emfe_plugins_cpm_supplements` (CP/M-only payloads under a separate license).
 Here the motivation is mixed-license payloads from a variety of
 upstream projects rather than a single restrictive license, but the
 solution structure is identical.

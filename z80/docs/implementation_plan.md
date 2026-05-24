@@ -110,7 +110,7 @@ interactive over the plugin's UART.
 |---|---|
 | 4.1 | Disk-controller MMIO spec finalised in `docs/phase4_design.md` §1 (PR #69) and implemented as `Z80DiskDevice` (8 ports `0xF0..0xF7`, 24-bit LBA, 16-bit buffer pointer, READ/WRITE/NOP commands, sticky ERROR + WRITE_PROTECT + IMAGE_LOADED status, fixed 128 B CP/M-native sector size). Vendor-prefixed `emfe_z80_mount_disk_image` host hook exposes mount for tests; Settings wiring lands in Phase 4.4 |
 | 4.2 | Custom CBIOS in `examples/cpm22/cbios/cbios.asm` (MIT, original work). 17-entry BIOS jump table mapping CONOUT/CONIN/CONST to UART (0xFE/0xFF), READ/WRITE to the sector-device MMIO (0xF0..0xF7), single-drive SSSD-256K geometry, DPH+DPB+DIRBUF+ALV+CSV laid out. Originates at 0xFA00. README documents the layout, license split, and Phase 4.3 build-pipeline hand-off |
-| 4.3 | `examples/cpm22/build.ps1`: PowerShell driver that invokes `pasmo` on `cbios.asm`, locates the sibling `emfe_plugin_z80_cpm22/` clone, **assembles CCP+BDOS from the companion's `cpm22/source/CPM22.Z80`** (substituting `MEM EQU 64` into a temp copy so the on-disk source stays verbatim), builds the SSSD-256K layout (boot stub at LBA 0, CCP+BDOS at LBA 1.., CBIOS at LBA 45+, rest filled with `0xE5`), and writes the result to `<companion>/disks/cpm22-sssd.img`. SKIPs cleanly when the companion isn't populated yet, mirroring the zexdoc / eForth pattern |
+| 4.3 | `examples/cpm22/build.ps1`: PowerShell driver that invokes `pasmo` on `cbios.asm`, locates the sibling `emfe_plugins_cpm_supplements/` clone, **assembles CCP+BDOS from the companion's `cpm22/source/CPM22.Z80`** (substituting `MEM EQU 64` into a temp copy so the on-disk source stays verbatim), builds the SSSD-256K layout (boot stub at LBA 0, CCP+BDOS at LBA 1.., CBIOS at LBA 45+, rest filled with `0xE5`), and writes the result to `<companion>/disks/cpm22-sssd.img`. SKIPs cleanly when the companion isn't populated yet, mirroring the zexdoc / eForth pattern |
 | 4.4 | Settings keys wired to mount/unmount the disk image via `emfe_reset`. Three new keys in the "Disk" group: `DiskImagePath` (FILE, REQUIRES_RESET — empty unmounts), `DiskImageWriteProtect` (BOOL, REQUIRES_RESET — drives the status bit), `BootFromDisk` (BOOL, REQUIRES_RESET — Phase 4.5 will flip the cold-boot path). `ApplyDiskImageOnReset` reads the file from disk inside `emfe_reset`; missing files leave the device unmounted (IMAGE_LOADED clear) without surfacing an error. The vendor-prefixed `emfe_z80_mount_disk_image` hook from 4.1 remains as a direct mount path for tests and out-of-Settings host integrations |
 | 4.5 | Plugin `ApplyBootFromDiskOnReset` stages the canonical system tracks (LBA 0 → 0x0000 boot stub; LBA 1..44 → 0xE400 CCP+BDOS; LBA 45..56 → 0xFA00 CBIOS) into RAM when `BootFromDisk=true` AND an image is mounted, then sets PC=0. `TestBootFromDiskStagesRam` verifies the staging with a synthetic in-memory image (always runs in CI). `TestCpmBootIfPresent` looks for `examples/cpm22/cpm22-sssd.img` (the `build.ps1` output) and asserts the captured UART output contains `A>` + the CBIOS sign-on marker; SKIPs cleanly when the image is absent (matching the zexdoc / eForth pattern). Also tightened `ApplyDiskImageOnReset` so empty `DiskImagePath` no longer auto-unmounts vendor-mounted images — Settings and the vendor hook now coexist without clobbering each other |
 
@@ -121,7 +121,7 @@ populating the companion repo + installing `pasmo` sees
 SKIP path until a usable image exists in the test working directory.
 
 This is the first phase that crosses the repository boundary into
-`emfe_plugin_z80_cpm22`. Files inside this repo (the CBIOS source, the
+`emfe_plugins_cpm_supplements`. Files inside this repo (the CBIOS source, the
 build recipe) stay MIT. Files written into the sibling clone (CP/M
 binaries, assembled disk image) inherit the CP/M licence.
 
@@ -132,7 +132,7 @@ binaries, assembled disk image) inherit the CP/M licence.
 
 ### Phase 5 prep (2026-05-24, pre-PR-75)
 
-- Companion repo `emfe_plugin_z80_cpm22` populated with
+- Companion repo `emfe_plugins_cpm_supplements` populated with
   `cpm22/source/CPM22.Z80` (verbatim mirror of the Z80-mnemonic CCP+BDOS
   disassembly from `cpm2-asm.zip`) + `docs/provenance.md` recording the
   upstream URL, SHA-256, and license posture. Committed locally to the
@@ -208,7 +208,7 @@ Final test count should land in the same neighbourhood as `em8` /
 | Undocumented flag rules (`Y` / `X` propagation) | Phase 3 `zexall` parity is tough | Land documented flag rules cleanly in Phase 2; treat Phase 3 as a focused "diff against `zexall` results" pass |
 | `IM 2` vector-fetch timing | Interrupt edge cases | CP/M 2.2 only uses `IM 1`, so Phase 4 can ignore this. Refine in Phase 6 |
 | Custom CBIOS fails to boot CP/M | Phase 4 stalls | Cross-check both against the upstream CP/M reference BIOS *and* against the chosen behaviour-reference (`z80ex` or similar) to isolate "ours vs CP/M's vs CBIOS's" failures |
-| Companion repo (`emfe_plugin_z80_cpm22`) source-asset capture not done by Phase 4 | Phase 4 blocked on data | Start the companion's Phase 1 (source capture) in parallel during this plugin's Phase 2 |
+| Companion repo (`emfe_plugins_cpm_supplements`) source-asset capture not done by Phase 4 | Phase 4 blocked on data | Start the companion's Phase 1 (source capture) in parallel during this plugin's Phase 2 |
 
 ## 14. Getting started
 
@@ -223,6 +223,6 @@ Order of work to begin the plugin today:
 4. Proceed with Phase 1.2 (memory + UART) on a new branch following
    the same pattern: small, reviewable, builds clean.
 
-In parallel, advance `emfe_plugin_z80_cpm22` to Phase 1 (source-asset
+In parallel, advance `emfe_plugins_cpm_supplements` to Phase 1 (source-asset
 capture from "The Unofficial CP/M Web Site") so that Phase 4 of this
 plugin does not stall waiting for data.

@@ -8,15 +8,15 @@ BDOS into a bootable disk image.
 
 The CP/M-derived material itself (CCP source, BDOS source, reference
 binaries, finished disk images) lives in the companion repository
-[`emfe_plugin_z80_cpm22`](https://github.com/hha0x617/emfe_plugin_z80_cpm22)
+[`emfe_plugins_cpm_supplements`](https://github.com/hha0x617/emfe_plugins_cpm_supplements)
 under the Bryan Sparks 2022 license letter. The split keeps each
 repository under a single license:
 
 | Repo | License | Contents |
 |---|---|---|
 | `emfe_plugins/z80/examples/cpm22/` (here) | MIT / Apache-2.0 | CBIOS, build script, design notes |
-| `emfe_plugin_z80_cpm22/cpm22/` | CP/M (2022 Sparks letter) | CCP source / binary, BDOS source / binary |
-| `emfe_plugin_z80_cpm22/disks/` | CP/M | Finished bootable images (output of the build) |
+| `emfe_plugins_cpm_supplements/cpm22/` | CP/M (2022 Sparks letter) | CCP source / binary, BDOS source / binary |
+| `emfe_plugins_cpm_supplements/disks/` | CP/M | Finished bootable images (output of the build) |
 
 See [`../../docs/phase4_design.md`](../../docs/phase4_design.md) for
 the full design (MMIO contract, memory layout, build pipeline,
@@ -39,7 +39,7 @@ acceptance criterion).
 pwsh ./build.ps1
 
 # Explicit companion location
-pwsh ./build.ps1 -CompanionPath D:\path\to\emfe_plugin_z80_cpm22
+pwsh ./build.ps1 -CompanionPath D:\path\to\emfe_plugins_cpm_supplements
 
 # Explicit pasmo (otherwise looked up in PATH)
 pwsh ./build.ps1 -PasmoExe C:\tools\pasmo.exe
@@ -57,7 +57,7 @@ The script:
    substitute the call.
 2. Assembles `cbios/cbios.asm` → `cbios/cbios.bin` (flat binary,
    `pasmo --bin`).
-3. Resolves the companion repo (`emfe_plugin_z80_cpm22`) as a
+3. Resolves the companion repo (`emfe_plugins_cpm_supplements`) as a
    sibling directory next to `emfe_plugins`. If absent or not
    populated with `cpm22/source/CPM22.Z80`, prints a SKIP message
    and exits 0 — same "user-supplied source" pattern as zexdoc
