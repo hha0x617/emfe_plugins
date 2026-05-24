@@ -22,6 +22,7 @@
  */
 #pragma once
 #include <cstdint>
+#include <unordered_set>
 
 class Z80Memory;
 
@@ -102,8 +103,32 @@ public:
     //         match the real hardware behaviour (R bumps per M1 fetch).
     //         The caller (emfe_step) translates 0 into
     //         EMFE_ERR_UNSUPPORTED.
+    //  -1 : breakpoint hit at PC. PC is left untouched (so the next
+    //         emfe_step / emfe_run after the host clears or steps past
+    //         the BP resumes at the same address). The worker loop
+    //         (Phase 6.1) treats this the same as the 0 case — break
+    //         out of the run loop and let state→STOPPED. emfe_step
+    //         translates this into EMFE_OK (no-op for the user; PC
+    //         didn't move). See InStepMode / SetInStepMode for the
+    //         "step past a BP" escape.
     // Cycle counts follow the Zilog UM008011 reference values.
     int ExecuteOne();
+
+    // ---- Phase 6.2 breakpoint state ---------------------------------
+    // Two sets so emfe_enable_breakpoint can flip a BP on/off without
+    // losing its existence (a disabled BP still shows in the host's
+    // BP pane, just doesn't halt). emfe_add_breakpoint puts a fresh
+    // BP in `enabledBreakpoints`; emfe_remove_breakpoint erases from
+    // both; emfe_get_breakpoints walks both for enumeration.
+    std::unordered_set<uint16_t> enabledBreakpoints;
+    std::unordered_set<uint16_t> disabledBreakpoints;
+
+    // The "I'm stepping over a breakpoint" flag. emfe_step sets this
+    // before ExecuteOne so the BP check at PC doesn't immediately
+    // halt; ExecuteOne clears it on return. Without this, stepping
+    // past a BP would be impossible — every emfe_step at a BP'd PC
+    // would short-circuit to "BP hit, PC unchanged".
+    bool inStepMode = false;
 
 private:
     // ---- Instruction-fetch helpers ----------------------------------

@@ -4320,8 +4320,195 @@ static void TestDestroyMidRun() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 6.2 tests — PC breakpoints
+// ---------------------------------------------------------------------
+
+static void TestBreakpointHaltsOnHit() {
+    // Set a BP at the second instruction of a tight loop. emfe_run
+    // spawns the worker; the worker executes the first NOP, hits
+    // the BP at the second NOP, ExecuteOne returns -1, worker
+    // breaks, state→STOPPED, PC sits at the BP address.
+    printf("TestBreakpointHaltsOnHit...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x0000, 0x00);    // NOP
+    emfe_poke_byte(inst, 0x0001, 0x00);    // NOP (BP target)
+    emfe_poke_byte(inst, 0x0002, 0x18);    // JR -2 (tight loop)
+    emfe_poke_byte(inst, 0x0003, 0xFC);
+    SetReg(inst, REG_PC, 0x0000);
+
+    TEST_EQ(emfe_add_breakpoint(inst, 0x0001), EMFE_OK, "add BP at 0x0001");
+    TEST_EQ(emfe_run(inst), EMFE_OK, "run OK");
+    // Wait briefly for the worker to hit the BP and exit.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED,
+            "auto-halted on BP hit");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0001,
+            "PC parked at BP address (instruction not executed)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepPastBreakpoint() {
+    // BP at 0x0000. emfe_step must EXECUTE that instruction (not
+    // stall), advancing PC. The inStepMode flag is what makes this
+    // work — without it, emfe_step would short-circuit forever.
+    printf("TestStepPastBreakpoint...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x0000, 0x00);    // NOP
+    emfe_poke_byte(inst, 0x0001, 0x00);    // NOP
+    SetReg(inst, REG_PC, 0x0000);
+
+    TEST_EQ(emfe_add_breakpoint(inst, 0x0000), EMFE_OK, "add BP at PC");
+    TEST_EQ(emfe_step(inst), EMFE_OK, "step past BP OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0001,
+            "PC advanced past the BP'd instruction");
+
+    // Stepping again with PC now at 0x0001 (no BP) should also work.
+    TEST_EQ(emfe_step(inst), EMFE_OK, "step at non-BP address OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0002, "PC advanced again");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestRemoveBreakpoint() {
+    printf("TestRemoveBreakpoint...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x0000, 0x00);
+    emfe_poke_byte(inst, 0x0001, 0x18);
+    emfe_poke_byte(inst, 0x0002, 0xFD);    // JR -3 → loop back to 0x0000
+
+    emfe_add_breakpoint(inst, 0x0001);
+    emfe_remove_breakpoint(inst, 0x0001);
+    SetReg(inst, REG_PC, 0x0000);
+
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Removed BP must NOT halt the worker; the tight loop runs
+    // indefinitely until emfe_stop.
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_RUNNING,
+            "still RUNNING (BP was removed)");
+    emfe_stop(inst);
+
+    // Removing a non-existent BP is OK (idempotent).
+    TEST_EQ(emfe_remove_breakpoint(inst, 0xBEEF), EMFE_OK,
+            "remove of non-existent BP OK");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestEnableDisableBreakpoint() {
+    printf("TestEnableDisableBreakpoint...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x0000, 0x00);
+    emfe_poke_byte(inst, 0x0001, 0x18);
+    emfe_poke_byte(inst, 0x0002, 0xFD);    // JR -3 → loop
+
+    emfe_add_breakpoint(inst, 0x0001);
+    // Disable the BP — worker should not halt at 0x0001.
+    TEST_EQ(emfe_enable_breakpoint(inst, 0x0001, false), EMFE_OK,
+            "disable BP OK");
+    SetReg(inst, REG_PC, 0x0000);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_RUNNING,
+            "disabled BP doesn't halt");
+    emfe_stop(inst);
+
+    // Re-enable and run again — should halt now.
+    TEST_EQ(emfe_enable_breakpoint(inst, 0x0001, true), EMFE_OK,
+            "re-enable BP OK");
+    SetReg(inst, REG_PC, 0x0000);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED,
+            "re-enabled BP halts");
+
+    // Enabling a non-existent BP returns NOTFOUND.
+    TEST_EQ(emfe_enable_breakpoint(inst, 0xBEEF, true),
+            EMFE_ERR_NOTFOUND,
+            "enable non-existent BP rejects");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestGetBreakpointsEnumeration() {
+    printf("TestGetBreakpointsEnumeration...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // No BPs initially.
+    EmfeBreakpointInfo buf[8]{};
+    int32_t n = emfe_get_breakpoints(inst, buf, 8);
+    TEST_EQ(n, 0, "no BPs initially");
+
+    // Add 3 BPs, disable one.
+    emfe_add_breakpoint(inst, 0x0100);
+    emfe_add_breakpoint(inst, 0x0200);
+    emfe_add_breakpoint(inst, 0x0300);
+    emfe_enable_breakpoint(inst, 0x0200, false);
+
+    n = emfe_get_breakpoints(inst, buf, 8);
+    TEST_EQ(n, 3, "3 BPs returned");
+    int enabledCount = 0, disabledCount = 0;
+    bool sawAddr[4] = { false, false, false, false };  // index = 0x0100/0x0100,...
+    for (int32_t i = 0; i < n; ++i) {
+        if (buf[i].address == 0x0100) sawAddr[0] = true;
+        if (buf[i].address == 0x0200) sawAddr[1] = true;
+        if (buf[i].address == 0x0300) sawAddr[2] = true;
+        if (buf[i].enabled) ++enabledCount; else ++disabledCount;
+    }
+    TEST_TRUE(sawAddr[0] && sawAddr[1] && sawAddr[2],
+              "all three addresses present");
+    TEST_EQ(enabledCount,  2, "2 enabled");
+    TEST_EQ(disabledCount, 1, "1 disabled");
+
+    // Clear all.
+    TEST_EQ(emfe_clear_breakpoints(inst), EMFE_OK, "clear OK");
+    n = emfe_get_breakpoints(inst, buf, 8);
+    TEST_EQ(n, 0, "cleared");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestAddBreakpointIdempotent() {
+    printf("TestAddBreakpointIdempotent...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_add_breakpoint(inst, 0x0042);
+    emfe_add_breakpoint(inst, 0x0042);    // duplicate — no-op
+    EmfeBreakpointInfo buf[4]{};
+    int32_t n = emfe_get_breakpoints(inst, buf, 4);
+    TEST_EQ(n, 1, "duplicate add doesn't create a second entry");
+
+    // Adding when the BP is already in the disabled set is also a
+    // no-op (it stays disabled — caller must enable it explicitly).
+    emfe_enable_breakpoint(inst, 0x0042, false);
+    emfe_add_breakpoint(inst, 0x0042);
+    n = emfe_get_breakpoints(inst, buf, 4);
+    TEST_EQ(n, 1, "add over disabled BP still one entry");
+    TEST_TRUE(!buf[0].enabled, "stays disabled (re-add doesn't auto-enable)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 6.1) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 6.2) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -4459,6 +4646,13 @@ int main() {
     TestRunStopsOnUnsupported();
     TestRunStopIdempotent();
     TestDestroyMidRun();
+    // Phase 6.2
+    TestBreakpointHaltsOnHit();
+    TestStepPastBreakpoint();
+    TestRemoveBreakpoint();
+    TestEnableDisableBreakpoint();
+    TestGetBreakpointsEnumeration();
+    TestAddBreakpointIdempotent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

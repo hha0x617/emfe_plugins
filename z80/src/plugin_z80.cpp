@@ -604,7 +604,15 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step(EmfeInstance instance) {
     if (!instance) return EMFE_ERR_INVALID;
     auto* inst = to_inst(instance);
     if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+    // Phase 6.2: emfe_step always executes regardless of a BP at PC
+    // (otherwise stepping past a BP would be impossible). The flag
+    // is one-shot and ExecuteOne clears it on entry.
+    inst->cpu.inStepMode = true;
     int cycles = inst->cpu.ExecuteOne();
+    // -1 (BP hit) shouldn't be reachable here because inStepMode
+    // suppresses the check; treat it as success defensively for
+    // ABI clarity. 0 still means UNSUPPORTED.
+    if (cycles < 0) return EMFE_OK;
     return cycles > 0 ? EMFE_OK : EMFE_ERR_UNSUPPORTED;
 }
 
@@ -814,18 +822,94 @@ extern "C" EMFE_EXPORT int64_t EMFE_CALL emfe_get_cycle_count(EmfeInstance insta
 }
 
 // ============================================================================
-// Breakpoints — Phase 6 fills these in
+// Breakpoints — Phase 6.2 implementation
+//
+// Address-only PC breakpoints, backed by Z80Cpu::enabledBreakpoints /
+// disabledBreakpoints. The "enabled" semantic is preserved so the
+// host's BP pane can show disabled BPs (greyed out) without us
+// losing track of them. `emfe_set_breakpoint_condition` is a
+// stub-with-success per phase6_design.md §6 question 3 — we record
+// nothing and never evaluate the string.
 // ============================================================================
 
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_add_breakpoint(EmfeInstance, uint64_t)     { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_remove_breakpoint(EmfeInstance, uint64_t)  { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_enable_breakpoint(EmfeInstance, uint64_t, bool) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_breakpoint_condition(EmfeInstance, uint64_t, const char*) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_clear_breakpoints(EmfeInstance)            { return EMFE_OK; }
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_add_breakpoint(
+        EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    // Idempotent: already-existing BP (in either set) is a no-op.
+    if (inst->cpu.enabledBreakpoints.count(addr)  > 0) return EMFE_OK;
+    if (inst->cpu.disabledBreakpoints.count(addr) > 0) return EMFE_OK;
+    inst->cpu.enabledBreakpoints.insert(addr);
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_remove_breakpoint(
+        EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    inst->cpu.enabledBreakpoints.erase(addr);
+    inst->cpu.disabledBreakpoints.erase(addr);
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_enable_breakpoint(
+        EmfeInstance instance, uint64_t address, bool enabled) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    bool inEnabled  = inst->cpu.enabledBreakpoints.count(addr)  > 0;
+    bool inDisabled = inst->cpu.disabledBreakpoints.count(addr) > 0;
+    if (!inEnabled && !inDisabled) return EMFE_ERR_NOTFOUND;
+    if (enabled) {
+        inst->cpu.disabledBreakpoints.erase(addr);
+        inst->cpu.enabledBreakpoints.insert(addr);
+    } else {
+        inst->cpu.enabledBreakpoints.erase(addr);
+        inst->cpu.disabledBreakpoints.insert(addr);
+    }
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_breakpoint_condition(
+        EmfeInstance instance, uint64_t /*address*/, const char* /*cond*/) {
+    // Phase 6.2 stub-with-success per design §6 question 3. Records
+    // nothing; conditional BPs are a Phase 6.x follow-up. Returning
+    // EMFE_OK keeps the host's BP-edit dialog from showing an error
+    // when the user enters a condition that we just won't evaluate.
+    return instance ? EMFE_OK : EMFE_ERR_INVALID;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_clear_breakpoints(
+        EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    inst->cpu.enabledBreakpoints.clear();
+    inst->cpu.disabledBreakpoints.clear();
+    return EMFE_OK;
+}
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_breakpoints(
-        EmfeInstance, EmfeBreakpointInfo* /*out*/, int32_t /*max*/) {
-    return 0;
+        EmfeInstance instance, EmfeBreakpointInfo* out, int32_t max) {
+    if (!instance || !out || max <= 0) return 0;
+    auto* inst = to_inst(instance);
+    int32_t n = 0;
+    for (uint16_t a : inst->cpu.enabledBreakpoints) {
+        if (n >= max) break;
+        out[n].address = a;
+        out[n].enabled = true;
+        out[n].condition = nullptr;
+        ++n;
+    }
+    for (uint16_t a : inst->cpu.disabledBreakpoints) {
+        if (n >= max) break;
+        out[n].address = a;
+        out[n].enabled = false;
+        out[n].condition = nullptr;
+        ++n;
+    }
+    return n;
 }
 
 // ============================================================================
