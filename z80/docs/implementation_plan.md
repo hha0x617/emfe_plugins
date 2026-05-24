@@ -127,10 +127,22 @@ binaries, assembled disk image) inherit the CP/M licence.
 
 ## 7. Phase 5 — CP/M smoke (3–5 days)
 
-- `DIR`, `PIP`, `STAT`, `ED` and other standard CP/M tools run.
-- Optional: Turbo Pascal 3.0 / Hi-Tech C compile a Hello World.
+Full design lives in [`phase5_design.md`](phase5_design.md). Sub-phase
+breakdown:
 
-### Phase 5 prep (2026-05-24, pre-PR-75)
+| # | Theme |
+|---|---|
+| 5.1 | Mirror CP/M utility binaries (`PIP.COM`, `STAT.COM`, `ED.COM`, ...) from `D:/projects/cpm/CP_M 2.2/22src1.img` into companion's `cpm22/binary/utility/` + extend `provenance.md`. Includes a tiny PowerShell CP/M filesystem **reader** to do the extraction |
+| 5.2 | Extend `build.ps1` (via new `cpmfs.ps1` module) to bake utility .COM files onto the disk image — directory entries + block allocation + file data writes |
+| 5.3 | `CpmSession` REPL-driven smoke harness in `tests/test_z80.cpp` — input echo, line-end conventions, prompt detection, per-command output capture |
+| 5.4 | Per-tool smoke tests — `DIR / PIP / STAT / ED` are MVP; `SUBMIT / DUMP / DDT` are stretch in the same PR |
+| 5.5 (stretch) | Turbo Pascal 3.0 / Hi-Tech C path — deferred pending license posture review |
+
+**Phase 5 done when**: `DIR / PIP / STAT / ED` smoke tests all pass
+locally on a fresh `build.ps1` output; CI sees them SKIP cleanly until
+the user runs the build.
+
+### Phase 5 prep (2026-05-24, landed in PR #75 / verified in PR #77)
 
 - Companion repo `emfe_plugins_cpm_supplements` populated with
   `cpm22/source/CPM22.Z80` (verbatim mirror of the Z80-mnemonic CCP+BDOS
@@ -138,13 +150,13 @@ binaries, assembled disk image) inherit the CP/M licence.
   upstream URL, SHA-256, and license posture. Committed locally to the
   companion (still no remote — published when Phase 1 of `docs/scope.md`
   is complete).
-- `examples/cpm22/build.ps1` now reads `CPM22.Z80` rather than requiring
-  pre-built `ccp.bin` / `bdos.bin` — single-tool dependency
-  (`pasmo` only) for the user-side end-to-end build.
-- User-side gate to unlock Phase 5: install `pasmo`, run
-  `pwsh ./build.ps1` — Phase 4.5's `TestCpmBootIfPresent` should then
-  flip from SKIP to PASS with the captured `A>` prompt, at which point
-  Phase 5's smoke tests can be authored on top.
+- `examples/cpm22/build.ps1` reads `CPM22.Z80` and assembles it with
+  pasmo; single-tool dependency for the user-side end-to-end build.
+- **Phase 4 acceptance was verified end-to-end on 2026-05-24** (PR #77)
+  with a real `a>` capture from cold boot. Six bugs were fixed during
+  bring-up (HALT-label collision, ADD/SBC A,M leakage, CBIOS overlay
+  layout, EX/EXX family missing, LD SP,HL missing, test prompt case-
+  sensitivity). Phase 5 now has a verified foundation to build on.
 
 ## 8. Phase 6 — Settings UI + debugger integration (~1 week)
 
