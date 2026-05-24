@@ -5,6 +5,7 @@ add_library(emfe_plugin_z80 SHARED
     Z80Memory.cpp
     Z80Uart.cpp
     Z80Timer.cpp
+    Z80DiskDevice.cpp
 )
 
 target_include_directories(emfe_plugin_z80 PRIVATE

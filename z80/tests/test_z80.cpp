@@ -3219,8 +3219,249 @@ static void TestEForthIfPresent() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 4.1 tests — sector-device disk MMIO (ports 0xF0..0xF7)
+// See z80/docs/phase4_design.md §1.
+// ---------------------------------------------------------------------
+
+// Vendor-prefixed mount API (declared in plugin_z80.cpp). Settings-
+// based mounting is Phase 4.4; for now the unit tests poke an image
+// through this dedicated hook.
+extern "C" EmfeResult emfe_z80_mount_disk_image(
+    EmfeInstance instance, const uint8_t* bytes, uint32_t size_bytes,
+    int32_t write_protect);
+
+// Tiny IN-port / OUT-port helpers used by the disk-device tests. They
+// run one-byte programs at address 0; each call resets PC to 0 so
+// successive INs/OUTs are independent.
+static uint8_t InPort(EmfeInstance inst, uint8_t port) {
+    const uint8_t prog[] = { 0xDB, port };       // IN A, (port)
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+    return static_cast<uint8_t>(GetReg(inst, REG_A));
+}
+static void OutPort(EmfeInstance inst, uint8_t port, uint8_t value) {
+    SetReg(inst, REG_A, value);
+    const uint8_t prog[] = { 0xD3, port };       // OUT (port), A
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    SetReg(inst, REG_PC, 0);
+    emfe_step(inst);
+}
+
+static void TestDiskStatusUnmounted() {
+    printf("TestDiskStatusUnmounted...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // No image mounted — READY set, IMAGE_LOADED clear, ERROR clear.
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x01) != 0, "READY set on power-up");
+    TEST_TRUE((s & 0x08) == 0, "IMAGE_LOADED clear when nothing mounted");
+    TEST_TRUE((s & 0x02) == 0, "ERROR clear initially");
+
+    // READ command with no image must set ERROR.
+    OutPort(inst, 0xF5, 0x01);
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) != 0, "ERROR set after READ with no image");
+
+    // NOP command clears the sticky error.
+    OutPort(inst, 0xF5, 0x00);
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) == 0, "NOP clears sticky ERROR");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskLbaRegisterRoundTrip() {
+    printf("TestDiskLbaRegisterRoundTrip...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    OutPort(inst, 0xF0, 0xAB);
+    OutPort(inst, 0xF1, 0xCD);
+    OutPort(inst, 0xF2, 0x12);
+    TEST_EQ(InPort(inst, 0xF0), (uint64_t)0xAB, "LBA[0] round-trip");
+    TEST_EQ(InPort(inst, 0xF1), (uint64_t)0xCD, "LBA[1] round-trip");
+    TEST_EQ(InPort(inst, 0xF2), (uint64_t)0x12, "LBA[2] round-trip");
+
+    OutPort(inst, 0xF3, 0x34);
+    OutPort(inst, 0xF4, 0x80);
+    TEST_EQ(InPort(inst, 0xF3), (uint64_t)0x34, "buf[0] round-trip");
+    TEST_EQ(InPort(inst, 0xF4), (uint64_t)0x80, "buf[1] round-trip");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskReadSector() {
+    printf("TestDiskReadSector...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Two-sector image: sector 0 = 0xAA pattern, sector 1 = 0x55 pattern.
+    std::vector<uint8_t> image(256, 0);
+    for (int i = 0; i < 128; ++i) image[i]       = 0xAA;
+    for (int i = 0; i < 128; ++i) image[128 + i] = 0x55;
+    TEST_EQ(emfe_z80_mount_disk_image(inst, image.data(),
+                                      static_cast<uint32_t>(image.size()), 0),
+            EMFE_OK, "mount OK");
+
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) != 0, "IMAGE_LOADED set after mount");
+    TEST_TRUE((s & 0x04) == 0, "WRITE_PROTECT clear (mounted RW)");
+
+    // Read sector 1 into guest RAM at 0x8000.
+    OutPort(inst, 0xF0, 0x01);
+    OutPort(inst, 0xF1, 0x00);
+    OutPort(inst, 0xF2, 0x00);
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0x80);
+    OutPort(inst, 0xF5, 0x01);
+
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) == 0, "no ERROR on valid read");
+
+    for (int i = 0; i < 128; ++i) {
+        if (emfe_peek_byte(inst, static_cast<uint16_t>(0x8000 + i)) != 0x55) {
+            fprintf(stderr, "  FAIL: byte %d != 0x55\n", i);
+            g_fail++;
+            emfe_destroy(inst);
+            return;
+        }
+    }
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0x8080)),
+            static_cast<uint64_t>(0x00),
+            "next byte past sector boundary untouched");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskWriteSectorRw() {
+    // RW image: write a guest pattern, read it back, verify round-trip.
+    printf("TestDiskWriteSectorRw...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    std::vector<uint8_t> image(128, 0);
+    emfe_z80_mount_disk_image(inst, image.data(),
+                              static_cast<uint32_t>(image.size()), 0);
+
+    for (int i = 0; i < 128; ++i) {
+        emfe_poke_byte(inst, static_cast<uint16_t>(0x9000 + i),
+                       static_cast<uint8_t>(0xC0 | (i & 0x3F)));
+    }
+    OutPort(inst, 0xF0, 0x00);
+    OutPort(inst, 0xF1, 0x00);
+    OutPort(inst, 0xF2, 0x00);
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0x90);
+    OutPort(inst, 0xF5, 0x02);
+
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) == 0, "no ERROR on valid write");
+
+    // Read back into a different RAM region and verify round-trip.
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0xA0);
+    OutPort(inst, 0xF5, 0x01);
+    for (int i = 0; i < 128; ++i) {
+        uint8_t want = static_cast<uint8_t>(0xC0 | (i & 0x3F));
+        if (emfe_peek_byte(inst, static_cast<uint16_t>(0xA000 + i)) != want) {
+            fprintf(stderr, "  FAIL: write/readback byte %d mismatch\n", i);
+            g_fail++;
+            emfe_destroy(inst);
+            return;
+        }
+    }
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskWriteRejectedOnRoImage() {
+    // RO image: write attempt sets ERROR, does NOT modify the image
+    // (reading back gives the pre-mount bytes, not the guest pattern).
+    printf("TestDiskWriteRejectedOnRoImage...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Pre-seed the image with a known fingerprint so a successful
+    // (and therefore buggy) write would be detectable on readback.
+    std::vector<uint8_t> image(128);
+    for (int i = 0; i < 128; ++i) image[i] = static_cast<uint8_t>(0x42 ^ i);
+    emfe_z80_mount_disk_image(inst, image.data(),
+                              static_cast<uint32_t>(image.size()), 1);
+
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x04) != 0, "WRITE_PROTECT set on RO mount");
+    TEST_TRUE((s & 0x08) != 0, "IMAGE_LOADED set on RO mount");
+
+    // Fill guest RAM at 0xB000 with junk and attempt to WRITE it.
+    for (int i = 0; i < 128; ++i) {
+        emfe_poke_byte(inst, static_cast<uint16_t>(0xB000 + i), 0xEE);
+    }
+    OutPort(inst, 0xF0, 0x00);
+    OutPort(inst, 0xF1, 0x00);
+    OutPort(inst, 0xF2, 0x00);
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0xB0);
+    OutPort(inst, 0xF5, 0x02);
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) != 0, "ERROR set on write to RO image");
+
+    // Read sector 0 back via the device into 0xC000; bytes must still
+    // match the original fingerprint (the failed write was a no-op).
+    OutPort(inst, 0xF5, 0x00);   // clear sticky ERROR
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0xC0);
+    OutPort(inst, 0xF5, 0x01);
+    for (int i = 0; i < 128; ++i) {
+        uint8_t want = static_cast<uint8_t>(0x42 ^ i);
+        if (emfe_peek_byte(inst, static_cast<uint16_t>(0xC000 + i)) != want) {
+            fprintf(stderr, "  FAIL: RO write leaked into image at byte %d "
+                            "(got 0x%02X, want 0x%02X)\n",
+                    i, emfe_peek_byte(inst, static_cast<uint16_t>(0xC000 + i)), want);
+            g_fail++;
+            emfe_destroy(inst);
+            return;
+        }
+    }
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskOutOfRangeReadSetsError() {
+    printf("TestDiskOutOfRangeReadSetsError...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Single-sector image. LBA=1 is past the end.
+    std::vector<uint8_t> image(128, 0);
+    emfe_z80_mount_disk_image(inst, image.data(),
+                              static_cast<uint32_t>(image.size()), 0);
+
+    OutPort(inst, 0xF0, 0x01);
+    OutPort(inst, 0xF1, 0x00);
+    OutPort(inst, 0xF2, 0x00);
+    OutPort(inst, 0xF5, 0x01);
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) != 0, "ERROR set on out-of-range READ");
+
+    OutPort(inst, 0xF5, 0x00);
+    OutPort(inst, 0xF5, 0x77);   // bogus command
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x02) != 0, "ERROR set on unknown command");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 3.4) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 4.1) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3330,6 +3571,13 @@ int main() {
     TestDisasmEdUnassignedAsNopStar();
     // Phase 3.4
     TestEForthIfPresent();
+    // Phase 4.1
+    TestDiskStatusUnmounted();
+    TestDiskLbaRegisterRoundTrip();
+    TestDiskReadSector();
+    TestDiskWriteSectorRw();
+    TestDiskWriteRejectedOnRoImage();
+    TestDiskOutOfRangeReadSetsError();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

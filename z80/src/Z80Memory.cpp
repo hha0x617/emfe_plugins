@@ -7,6 +7,7 @@
 #include "Z80Memory.h"
 #include "Z80Uart.h"
 #include "Z80Timer.h"
+#include "Z80DiskDevice.h"
 
 void Z80Memory::Reset() {
     Ram.fill(0);
@@ -37,6 +38,10 @@ uint8_t Z80Memory::ReadIo(uint8_t port) {
     if (Uart && (port == 0xFE || port == 0xFF)) {
         return Uart->Read(port);
     }
+    // Disk MMIO: ports 0xF0..0xF7. See docs/phase4_design.md §1.
+    if (Disk && port >= 0xF0 && port <= 0xF7) {
+        return Disk->ReadIo(port);
+    }
     // Unmapped ports read 0xFF (the canonical "nothing here" bus value).
     return 0xFF;
 }
@@ -44,6 +49,10 @@ uint8_t Z80Memory::ReadIo(uint8_t port) {
 void Z80Memory::WriteIo(uint8_t port, uint8_t val) {
     if (Uart && (port == 0xFE || port == 0xFF)) {
         Uart->Write(port, val);
+        return;
+    }
+    if (Disk && port >= 0xF0 && port <= 0xF7) {
+        Disk->WriteIo(port, val);
         return;
     }
     // Unmapped ports: drop the byte silently.
