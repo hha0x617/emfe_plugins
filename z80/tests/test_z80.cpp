@@ -3780,12 +3780,25 @@ struct CpmSession {
 
     // CCP expects a CR-terminated line (NOT CR+LF). Pushing characters
     // into the UART RX FIFO via emfe_send_string queues them for the
-    // next CONIN spin-loop poll; the caller drives the CPU forward via
-    // WaitForPrompt so CCP can drain them.
+    // next CONIN spin-loop poll; the caller drives the CPU forward
+    // between bytes so CCP/ED can drain the 8-byte FIFO without
+    // overflowing (Z80Uart's RX is bounded — see Z80Uart.h FIFO_SIZE).
+    //
+    // The per-byte drain budget (2000 instructions) is generous —
+    // CCP's CONIN spin handles a byte in ~50 instructions; we leave
+    // headroom for any in-progress BDOS work between key polls.
     void TypeLine(const std::string& cmd) {
         std::string line = cmd;
         line += '\r';
-        emfe_send_string(inst, line.c_str());
+        for (char c : line) {
+            char buf[2] = { c, '\0' };
+            emfe_send_string(inst, buf);
+            RunSteps(2000);
+        }
+    }
+
+    void RunSteps(int64_t n) {
+        for (int64_t i = 0; i < n; ++i) (void)emfe_step(inst);
     }
 
     // Step the CPU until the captured tail ends with "[a-p]>" — CCP's
@@ -3800,6 +3813,22 @@ struct CpmSession {
             }
         }
         return TailMatchesPrompt();
+    }
+
+    // Step until `needle` appears in the captured stream at-or-after
+    // `searchFrom`. Used for non-CCP prompts (ED's `*`, etc.) and
+    // generic substring waits.
+    bool WaitForSubstr(const std::string& needle, int64_t stepCap,
+                       size_t searchFrom = 0) {
+        for (int64_t i = 0; i < stepCap; ++i) {
+            (void)emfe_step(inst);
+            if ((i & 0x3FFF) == 0x3FFF) {
+                if (ctx.captured.find(needle, searchFrom) != std::string::npos) {
+                    return true;
+                }
+            }
+        }
+        return ctx.captured.find(needle, searchFrom) != std::string::npos;
     }
 
 private:
@@ -3944,8 +3973,228 @@ static void TestCpmDirIfPresent() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 5.4 — per-tool CP/M smoke tests
+//
+// Built on the Phase 5.3 CpmSession harness. Each test boots a fresh
+// session (cheap-ish at ~5 M instructions cold-boot) so a hang in one
+// test doesn't corrupt the next. All SKIP cleanly when the image is
+// missing.
+//
+// Pattern:
+//   1. LoadCpmImageIfPresent + early-return SKIP
+//   2. BootCpmSession; bail if boot didn't reach the prompt
+//   3. Mark capture, TypeLine(cmd), WaitForPrompt/Substr
+//   4. Substring assertions on the captured tail
+// ---------------------------------------------------------------------
+
+// Shared helper: emit a clear diagnostic + fail with the last 400
+// chars of captured output (or whatever's available). Used by all
+// Phase 5.4 tests to keep failure transcripts uniform.
+static void FailWithTail(const char* what, const std::string& captured,
+                         const std::string& assertion) {
+    fprintf(stderr, "  FAIL[%s]: %s\n  Captured tail (last 400):\n%s\n",
+            what, assertion.c_str(),
+            captured.substr(captured.size() > 400
+                            ? captured.size() - 400 : 0).c_str());
+    // Lone CRs and other non-printables can hide what CCP / ED really
+    // emit (DRI software loves "\r" without "\n" for in-place updates).
+    // Hex dump the last 200 bytes to make those visible.
+    fprintf(stderr, "  Captured tail (hex, last 200 bytes):\n  ");
+    size_t start = captured.size() > 200 ? captured.size() - 200 : 0;
+    for (size_t i = start; i < captured.size(); ++i) {
+        fprintf(stderr, "%02X ", (uint8_t)captured[i]);
+        if (((i - start + 1) % 16) == 0) fprintf(stderr, "\n  ");
+    }
+    fprintf(stderr, "\n");
+    g_fail++;
+}
+
+static void TestCpmStatIfPresent() {
+    printf("TestCpmStatIfPresent...\n");
+    const char* fp = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&fp);
+    if (bytes.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found)\n");
+        g_pass++;
+        return;
+    }
+
+    auto sess = BootCpmSession(bytes);
+    if (!sess->active) {
+        FailWithTail("STAT", sess->ctx.captured,
+                     "cold boot didn't reach prompt");
+        return;
+    }
+
+    size_t mark = sess->Mark();
+    sess->TypeLine("STAT");
+    if (!sess->WaitForPrompt(5000000)) {
+        FailWithTail("STAT", sess->ctx.captured,
+                     "no prompt return after STAT within 5M steps");
+        return;
+    }
+    std::string out = sess->CaptureSince(mark);
+    printf("  STAT output: %zu chars\n", out.size());
+
+    // Stock CP/M 2.2 STAT (no args) prints a disk-usage line like
+    //   "A: R/W, Space:  218K"
+    // — accept either "K" or "k" since some variants lowercase it.
+    bool sawA  = (out.find("A:")  != std::string::npos);
+    bool sawK  = (out.find('K')   != std::string::npos) ||
+                 (out.find('k')   != std::string::npos);
+    if (!sawA || !sawK) {
+        FailWithTail("STAT", out,
+                     "expected substring 'A:' and a 'K'/'k' KB marker");
+        return;
+    }
+    g_pass++;
+}
+
+static void TestCpmPipIfPresent() {
+    // PIP NEW.TXT=DUMP.COM  — copies the smallest file on the disk
+    // (DUMP.COM, 512 B / 1 block) to a new name. Then DIR must list
+    // both files.
+    printf("TestCpmPipIfPresent...\n");
+    const char* fp = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&fp);
+    if (bytes.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found)\n");
+        g_pass++;
+        return;
+    }
+
+    auto sess = BootCpmSession(bytes);
+    if (!sess->active) {
+        FailWithTail("PIP", sess->ctx.captured,
+                     "cold boot didn't reach prompt");
+        return;
+    }
+
+    sess->TypeLine("PIP NEW.TXT=DUMP.COM");
+    if (!sess->WaitForPrompt(10000000)) {
+        FailWithTail("PIP", sess->ctx.captured,
+                     "no prompt return after PIP within 10M steps");
+        return;
+    }
+
+    size_t mark = sess->Mark();
+    sess->TypeLine("DIR");
+    if (!sess->WaitForPrompt(5000000)) {
+        FailWithTail("PIP", sess->ctx.captured,
+                     "no prompt return after follow-up DIR");
+        return;
+    }
+    std::string dirOut = sess->CaptureSince(mark);
+    printf("  follow-up DIR output: %zu chars\n", dirOut.size());
+
+    // The new file should show up in DIR. CCP renders 8.3 names
+    // separated by spaces — substring 'NEW' (the filename) is enough.
+    if (dirOut.find("NEW") == std::string::npos) {
+        FailWithTail("PIP", dirOut,
+                     "DIR after PIP didn't list 'NEW'");
+        return;
+    }
+    g_pass++;
+}
+
+static void TestCpmEdIfPresent() {
+    // ED FOO.TXT  (creates an empty workspace, since FOO.TXT doesn't
+    // exist), then Q to quit without saving. Tests that ED loads,
+    // accepts a command-mode keystroke, and returns to CCP cleanly.
+    //
+    // Inserting text + saving (the design doc's longer scenario) is
+    // deferred to a Phase 5.5+ extension — quitting alone is a strong
+    // signal that BDOS / BIOS / console wiring all hold up under
+    // ED's I/O style.
+    printf("TestCpmEdIfPresent...\n");
+    const char* fp = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&fp);
+    if (bytes.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found)\n");
+        g_pass++;
+        return;
+    }
+
+    auto sess = BootCpmSession(bytes);
+    if (!sess->active) {
+        FailWithTail("ED", sess->ctx.captured,
+                     "cold boot didn't reach prompt");
+        return;
+    }
+
+    // Note on Mark + TypeLine + WaitForSubstr ordering: ALWAYS mark
+    // BEFORE TypeLine, because TypeLine's per-char drain steps can
+    // (and for fast-responding programs like ED, DO) cause the
+    // expected response substring to land in the capture WHILE
+    // TypeLine is still running. If we marked after TypeLine we'd
+    // search past the response and time out spuriously.
+    size_t edMark = sess->Mark();
+    sess->TypeLine("ED FOO.TXT");
+    if (!sess->WaitForSubstr("*", 10000000, edMark)) {
+        FailWithTail("ED", sess->ctx.captured,
+                     "ED never printed its '*' command prompt");
+        return;
+    }
+
+    // Q asks for confirmation in DRI ED 2.x: "Q-(Y/N)?" — answer Y.
+    size_t qMark = sess->Mark();
+    sess->TypeLine("Q");
+    if (!sess->WaitForSubstr("?", 5000000, qMark)) {
+        FailWithTail("ED", sess->ctx.captured,
+                     "ED Q didn't elicit the Y/N confirmation prompt");
+        return;
+    }
+    sess->TypeLine("Y");
+    if (!sess->WaitForPrompt(5000000)) {
+        FailWithTail("ED", sess->ctx.captured,
+                     "no CCP prompt return after ED Q + Y within 5M steps");
+        return;
+    }
+    g_pass++;
+}
+
+static void TestCpmDumpIfPresent() {
+    // DUMP DUMP.COM — the smallest utility (512 B) is also a sane
+    // target for the DUMP hex-dumper itself; output should be ASCII
+    // hex pairs. Substring assertion is just "0000" (the address
+    // header for the first byte).
+    printf("TestCpmDumpIfPresent...\n");
+    const char* fp = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&fp);
+    if (bytes.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found)\n");
+        g_pass++;
+        return;
+    }
+
+    auto sess = BootCpmSession(bytes);
+    if (!sess->active) {
+        FailWithTail("DUMP", sess->ctx.captured,
+                     "cold boot didn't reach prompt");
+        return;
+    }
+
+    size_t mark = sess->Mark();
+    sess->TypeLine("DUMP DUMP.COM");
+    if (!sess->WaitForPrompt(20000000)) {
+        FailWithTail("DUMP", sess->ctx.captured,
+                     "no prompt return after DUMP within 20M steps");
+        return;
+    }
+    std::string out = sess->CaptureSince(mark);
+    printf("  DUMP output: %zu chars\n", out.size());
+
+    if (out.find("0000") == std::string::npos) {
+        FailWithTail("DUMP", out,
+                     "DUMP output missing the '0000' address header");
+        return;
+    }
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 5.3) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 5.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -4073,6 +4322,11 @@ int main() {
     TestCpmBootIfPresent();
     // Phase 5.3
     TestCpmDirIfPresent();
+    // Phase 5.4
+    TestCpmStatIfPresent();
+    TestCpmPipIfPresent();
+    TestCpmEdIfPresent();
+    TestCpmDumpIfPresent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
