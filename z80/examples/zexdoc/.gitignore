@@ -1,0 +1,5 @@
+# Drop a public-domain zexdoc.com (Frank Cringle, 1994) here to enable
+# TestZexdocIfPresent. The .COM binary is not redistributed by this
+# repository; sourcing instructions are in README.md.
+zexdoc.com
+zexall.com
