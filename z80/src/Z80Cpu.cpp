@@ -483,6 +483,20 @@ void Z80Cpu::AluCp(uint8_t a, uint8_t b) {
 int Z80Cpu::ExecuteOne() {
     if (!Memory) return 0;
 
+    // --- Phase 6.2 breakpoint check --------------------------------
+    // Check BEFORE interrupt acceptance and HALT handling so a BP
+    // set on an instruction that would otherwise be skipped (e.g.
+    // the first instruction after an HALT) still fires. The check
+    // is suppressed when emfe_step set inStepMode (so the user can
+    // step past a BP on the current PC). The flag is one-shot:
+    // cleared here, so subsequent ExecuteOne calls during a run
+    // honour the BP again.
+    if (inStepMode) {
+        inStepMode = false;
+    } else if (enabledBreakpoints.count(PC) > 0) {
+        return -1;     // BP hit; PC unchanged, caller decides what next
+    }
+
     // --- Interrupt acceptance --------------------------------------
     // NMI is non-maskable and always wins. INT (maskable) only fires
     // when IFF1 is set. The Zilog "EI delay" suppresses INT for the
