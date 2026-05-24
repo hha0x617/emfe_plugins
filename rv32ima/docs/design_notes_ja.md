@@ -258,7 +258,7 @@ spec-correct であることが証明される。
 Phase 7 はインタープリタ LoC を増やさず、curated demo content と
 recipe を追加する。実際の binary / image は **companion repository**
 (§10) に置き、本プラグインの MIT/Apache ツリーを upstream ライセンス
-ペイロードで汚さない方針 — Z80 plugin の `emfe_plugin_z80_cpm22`
+ペイロードで汚さない方針 — Z80 plugin の `emfe_plugins_cpm_supplements`
 companion と同じパターン。
 
 ## 9. 未決事項
@@ -268,7 +268,7 @@ companion と同じパターン。
 - [ ] ブロックデバイス (rootfs 用 virtio-blk 相当) を Phase 5 に含めるか Phase 7 (Linux nommu demo の一部) に回すか
 - [ ] ELF ローダ対応 (`mc68030` の作法と整合させるか、raw binary load のみで十分か)
 - [ ] Phase 1 中、挙動 cross-reference として参照すべき既存実装はどれか — mini-rv32ima が最も近い、QEMU や Spike は CSR セマンティクス / trap 配信などの難所で参考になる
-- [ ] Phase 7 portfolio 用 companion-repo の命名。仮名: `emfe_plugin_rv32ima_demos`。stress-target カテゴリごとに subdirectory にするか、複数 companion に分けるか — 第一案は単一 repo + subdir 構成 (Phase 7 portfolio が 1 箇所で discoverable)、`emfe_plugin_z80_cpm22` が単一ライセンスゾーン用にとった同様パターンが先例
+- [ ] Phase 7 portfolio 用 companion-repo の命名。仮名: `emfe_plugin_rv32ima_demos`。stress-target カテゴリごとに subdirectory にするか、複数 companion に分けるか — 第一案は単一 repo + subdir 構成 (Phase 7 portfolio が 1 箇所で discoverable)、`emfe_plugins_cpm_supplements` が単一ライセンスゾーン用にとった同様パターンが先例
 
 ## 10. Companion リポジトリ
 
@@ -287,7 +287,7 @@ emfe_plugin_rv32ima_demos/
 └── baremetal-c/             — picolibc ベース例 (BSD + 自作)
 ```
 
-companion-repo パターンは Z80 plugin の `emfe_plugin_z80_cpm22` で
+companion-repo パターンは Z80 plugin の `emfe_plugins_cpm_supplements` で
 取った方針 (CP/M-only ペイロードを別ライセンスで隔離) と同じ。本件
 は単一 restrictive license ではなく複数 upstream の mixed-license
 ペイロードを束ねる動機だが、構造的解は同一。

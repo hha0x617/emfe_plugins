@@ -159,7 +159,7 @@ Z80 ではライセンスゾーンを 2 つに分離する (§7 参照)。
 | `examples/monitor/` | 自作 | MIT (本 repo) | emfe Z80 plugin 用 ROM monitor: LD/DUMP/GO/DISASM、`mc6809/examples/` と同パターン |
 | `examples/tinybasic/` | 自作 (長期) | MIT (本 repo) | Tiny BASIC の Z80 移植、同上 |
 
-### 別 repo — [`emfe_plugin_z80_cpm22`](#7-ライセンス戦略)
+### 別 repo — [`emfe_plugins_cpm_supplements`](#7-ライセンス戦略)
 
 | 項目 | 出典 | ライセンス |
 |---|---|---|
@@ -171,7 +171,7 @@ Z80 ではライセンスゾーンを 2 つに分離する (§7 参照)。
 
 build recipe と CBIOS は **CP/M source を消費するが** original work で
 あるため、MIT の本 repo に置く。recipe は兄弟ディレクトリの
-`emfe_plugin_z80_cpm22` clone (もしくは環境変数指定) から source を読み、
+`emfe_plugins_cpm_supplements` clone (もしくは環境変数指定) から source を読み、
 build 結果のディスクイメージを再度そちらの `disks/` に書き出す。
 
 ## 7. ライセンス戦略
@@ -191,7 +191,7 @@ Z80 plugin に CP/M 素材を同梱する 2 案検討:
    ため、casual な読者を誤誘導する
 
 2. **別 repo (B 案、採用)** — original work は MIT/Apache の本 repo、
-   CP/M 派生材料は専用の sister repo `emfe_plugin_z80_cpm22` に Sparks
+   CP/M 派生材料は専用の sister repo `emfe_plugins_cpm_supplements` に Sparks
    letter 単一ライセンスで配置
 
 結果:
@@ -237,7 +237,7 @@ JIT 路線 (`mc68030` 類似) は実現可能だが Phase 1–3 のロードマ�
 | **7** *(オプション)* | サイクル正確 T-state モード | サイクル依存 retro game ROM |
 
 Phase 1–3 は本 repo 単独で完結。Phase 4 から
-`emfe_plugin_z80_cpm22` との cross-repo 連携が始まる。
+`emfe_plugins_cpm_supplements` との cross-repo 連携が始まる。
 
 ## 10. オープン課題
 
