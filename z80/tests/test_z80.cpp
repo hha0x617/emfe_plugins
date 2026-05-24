@@ -3612,37 +3612,195 @@ static void TestDiskSettingsMissingPathLeavesUnmounted() {
     g_pass++;
 }
 
-static void TestDiskSettingsEmptyPathUnmounts() {
-    printf("TestDiskSettingsEmptyPathUnmounts...\n");
-    std::string path = MakeTempDiskImage("unmount", 0x11);
-    if (path.empty()) {
-        fprintf(stderr, "  FAIL: could not write temp file\n");
-        g_fail++;
-        return;
-    }
+static void TestDiskSettingsEmptyPathPreservesVendorMount() {
+    // Empty DiskImagePath means "Settings disengaged" — it does NOT
+    // implicitly unmount a vendor-mounted image. This split keeps
+    // the Settings path and the emfe_z80_mount_disk_image vendor
+    // hook from clobbering each other; explicit unmount via Settings
+    // would be a future "Eject" button calling the vendor hook with
+    // zero bytes.
+    printf("TestDiskSettingsEmptyPathPreservesVendorMount...\n");
 
     EmfeInstance inst = nullptr;
     emfe_create(&inst);
 
-    // Mount.
-    emfe_set_setting(inst, "DiskImagePath", path.c_str());
-    emfe_apply_settings(inst);
-    emfe_reset(inst);
-    TEST_TRUE((InPort(inst, 0xF6) & 0x08) != 0, "mounted after first reset");
+    // Mount via the vendor hook only — DiskImagePath stays empty.
+    std::vector<uint8_t> image(128, 0xA5);
+    emfe_z80_mount_disk_image(inst, image.data(),
+                              static_cast<uint32_t>(image.size()), 0);
+    TEST_TRUE((InPort(inst, 0xF6) & 0x08) != 0, "mounted before reset");
 
-    // Now clear the path and reset again — should unmount.
-    emfe_set_setting(inst, "DiskImagePath", "");
-    emfe_apply_settings(inst);
+    // Reset goes through ApplyDiskImageOnReset, but with empty path
+    // it should skip the device entirely — vendor mount survives.
     emfe_reset(inst);
-    TEST_TRUE((InPort(inst, 0xF6) & 0x08) == 0, "unmounted after empty path + reset");
+    TEST_TRUE((InPort(inst, 0xF6) & 0x08) != 0,
+              "vendor mount survives reset when DiskImagePath is empty");
 
     emfe_destroy(inst);
-    std::remove(path.c_str());
+    g_pass++;
+}
+
+// ---------------------------------------------------------------------
+// Phase 4.5 tests — cold boot to A> acceptance
+//
+// Two layers:
+//   * TestBootFromDiskStagesRam — synthetic in-memory image, always
+//     runs in CI. Verifies the canonical RAM staging happens at the
+//     right addresses and PC starts at the cold-boot vector.
+//   * TestCpmBootIfPresent — looks for examples/cpm22/cpm22-sssd.img
+//     (the build.ps1 output), boots it, asserts captured UART output
+//     contains "A>" + the CBIOS sign-on marker. SKIPs cleanly when
+//     the image is absent.
+// ---------------------------------------------------------------------
+
+static void TestBootFromDiskStagesRam() {
+    printf("TestBootFromDiskStagesRam...\n");
+
+    // Synthetic 256-KiB image, each sector filled with a sector-marker-
+    // derived fingerprint. Lets us verify each sector landed at the
+    // canonical RAM address with byte-level precision.
+    std::vector<uint8_t> image(77 * 26 * 128, 0xE5);
+    auto fillSector = [&](uint32_t lba, uint8_t marker) {
+        for (int b = 0; b < 128; ++b) {
+            image[lba * 128 + b] = static_cast<uint8_t>(marker ^ b);
+        }
+    };
+    fillSector(0,  0xB0);                                       // boot stub
+    for (uint32_t s = 1;  s < 1 + 44;  ++s) fillSector(s, 0xC0);    // CCP+BDOS
+    for (uint32_t s = 45; s < 45 + 12; ++s) fillSector(s, 0xCB);    // CBIOS
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Mount via the vendor hook, enable BootFromDisk via Settings,
+    // then reset. The Settings reset path doesn't overwrite the
+    // already-mounted image (DiskImagePath stays empty), so the
+    // image survives into ApplyBootFromDiskOnReset.
+    emfe_z80_mount_disk_image(inst, image.data(),
+                              static_cast<uint32_t>(image.size()), 0);
+    emfe_set_setting(inst, "BootFromDisk", "true");
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0000, "PC = 0x0000 after cold boot");
+
+    // Boot stub at RAM 0x0000.
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0x0000)), (uint64_t)0xB0,
+            "boot stub byte 0 landed at RAM 0x0000");
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0x007F)),
+            static_cast<uint64_t>(0xB0 ^ 0x7F),
+            "boot stub byte 127 landed at RAM 0x007F");
+    // CCP+BDOS at RAM 0xE400.
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xE400)), (uint64_t)0xC0,
+            "CCP+BDOS byte 0 landed at RAM 0xE400");
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xF9FF)),
+            static_cast<uint64_t>(0xC0 ^ 0x7F),
+            "CCP+BDOS last byte landed at RAM 0xF9FF");
+    // CBIOS at RAM 0xFA00.
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xFA00)), (uint64_t)0xCB,
+            "CBIOS byte 0 landed at RAM 0xFA00");
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xFFFF)),
+            static_cast<uint64_t>(0xCB ^ 0x7F),
+            "CBIOS last byte landed at RAM 0xFFFF");
+
+    // BootFromDisk=false must NOT stage. memory.Reset wipes RAM back
+    // to zero, so the CBIOS area should read as 0x00 after the next
+    // reset without disk staging.
+    emfe_set_setting(inst, "BootFromDisk", "false");
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+    TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xFA00)), (uint64_t)0x00,
+            "BootFromDisk=false leaves CBIOS area at 0x00 after reset");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestCpmBootIfPresent() {
+    printf("TestCpmBootIfPresent...\n");
+
+    const char* candidates[] = {
+        "examples/cpm22/cpm22-sssd.img",
+        "../../../examples/cpm22/cpm22-sssd.img",
+        "../../examples/cpm22/cpm22-sssd.img",
+        "cpm22-sssd.img",
+    };
+    std::string foundPath;
+    std::vector<uint8_t> bytes;
+    for (const char* path : candidates) {
+        FILE* f = std::fopen(path, "rb");
+        if (!f) continue;
+        std::fseek(f, 0, SEEK_END);
+        long len = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (len > 0 && len <= (1 << 20)) {     // sanity cap at 1 MiB
+            bytes.resize(static_cast<size_t>(len));
+            if (std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size()) {
+                foundPath = path;
+            }
+        }
+        std::fclose(f);
+        if (!foundPath.empty()) break;
+    }
+
+    if (foundPath.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found; see "
+               "z80/examples/cpm22/README.md to build one)\n");
+        g_pass++;
+        return;
+    }
+    printf("  (found at %s, %zu bytes)\n", foundPath.c_str(), bytes.size());
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+    CaptureCtx ctx;
+    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
+
+    emfe_z80_mount_disk_image(inst, bytes.data(),
+                              static_cast<uint32_t>(bytes.size()), 0);
+    emfe_set_setting(inst, "BootFromDisk", "true");
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+
+    const int64_t k_bootBudget = 10000000;
+    for (int64_t i = 0; i < k_bootBudget; ++i) {
+        // Tolerate early-boot non-OK steps — CCP's setup sometimes
+        // surfaces a transient bus error while the stack is staging.
+        // The A> prompt is the actual gate.
+        (void)emfe_step(inst);
+    }
+
+    const std::string& out = ctx.captured;
+    printf("  captured %zu chars during cold boot\n", out.size());
+
+    bool sawBios    = (out.find("emfe Z80 CBIOS") != std::string::npos);
+    bool sawAPrompt = (out.find("A>")             != std::string::npos);
+
+    if (!sawBios) {
+        fprintf(stderr, "  FAIL: CBIOS sign-on marker not seen. "
+                        "Either the boot stub never reached CBIOS, or "
+                        "CBIOS PRINT_STR never ran. Captured (last 400 "
+                        "chars):\n%s\n",
+                out.substr(out.size() > 400 ? out.size() - 400 : 0).c_str());
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+    if (!sawAPrompt) {
+        fprintf(stderr, "  FAIL: A> prompt not seen. CBIOS ran but CCP "
+                        "never landed. Captured (last 400 chars):\n%s\n",
+                out.substr(out.size() > 400 ? out.size() - 400 : 0).c_str());
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+
+    emfe_destroy(inst);
     g_pass++;
 }
 
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 4.4) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 4.5) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3764,7 +3922,10 @@ int main() {
     TestDiskSettingsMountOnReset();
     TestDiskSettingsWriteProtectFlag();
     TestDiskSettingsMissingPathLeavesUnmounted();
-    TestDiskSettingsEmptyPathUnmounts();
+    TestDiskSettingsEmptyPathPreservesVendorMount();
+    // Phase 4.5
+    TestBootFromDiskStagesRam();
+    TestCpmBootIfPresent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

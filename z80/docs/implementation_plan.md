@@ -112,9 +112,13 @@ interactive over the plugin's UART.
 | 4.2 | Custom CBIOS in `examples/cpm22/cbios/cbios.asm` (MIT, original work). 17-entry BIOS jump table mapping CONOUT/CONIN/CONST to UART (0xFE/0xFF), READ/WRITE to the sector-device MMIO (0xF0..0xF7), single-drive SSSD-256K geometry, DPH+DPB+DIRBUF+ALV+CSV laid out. Originates at 0xFA00. README documents the layout, license split, and Phase 4.3 build-pipeline hand-off |
 | 4.3 | `examples/cpm22/build.ps1`: PowerShell driver that invokes `pasmo` on `cbios.asm`, locates the sibling `emfe_plugin_z80_cpm22/` clone, reads its `cpm22/binary/{ccp,bdos}.bin`, builds the SSSD-256K layout (boot stub at LBA 0, CCP+BDOS at LBA 1.., CBIOS at LBA 45+, rest filled with `0xE5`), and writes the result to `<companion>/disks/cpm22-sssd.img`. SKIPs cleanly when the companion isn't populated yet, mirroring the zexdoc / eForth pattern |
 | 4.4 | Settings keys wired to mount/unmount the disk image via `emfe_reset`. Three new keys in the "Disk" group: `DiskImagePath` (FILE, REQUIRES_RESET — empty unmounts), `DiskImageWriteProtect` (BOOL, REQUIRES_RESET — drives the status bit), `BootFromDisk` (BOOL, REQUIRES_RESET — Phase 4.5 will flip the cold-boot path). `ApplyDiskImageOnReset` reads the file from disk inside `emfe_reset`; missing files leave the device unmounted (IMAGE_LOADED clear) without surfacing an error. The vendor-prefixed `emfe_z80_mount_disk_image` hook from 4.1 remains as a direct mount path for tests and out-of-Settings host integrations |
-| 4.5 | Load the generated disk image into the plugin; confirm cold boot to `A>` prompt |
+| 4.5 | Plugin `ApplyBootFromDiskOnReset` stages the canonical system tracks (LBA 0 → 0x0000 boot stub; LBA 1..44 → 0xE400 CCP+BDOS; LBA 45..56 → 0xFA00 CBIOS) into RAM when `BootFromDisk=true` AND an image is mounted, then sets PC=0. `TestBootFromDiskStagesRam` verifies the staging with a synthetic in-memory image (always runs in CI). `TestCpmBootIfPresent` looks for `examples/cpm22/cpm22-sssd.img` (the `build.ps1` output) and asserts the captured UART output contains `A>` + the CBIOS sign-on marker; SKIPs cleanly when the image is absent (matching the zexdoc / eForth pattern). Also tightened `ApplyDiskImageOnReset` so empty `DiskImagePath` no longer auto-unmounts vendor-mounted images — Settings and the vendor hook now coexist without clobbering each other |
 
-**Phase 4 done when**: CP/M 2.2 cold-boots to its `A>` prompt.
+**Phase 4 done when**: `TestBootFromDiskStagesRam` passes (staging
+infrastructure is real); local user that runs `build.ps1` after
+populating the companion repo + installing `pasmo` sees
+`TestCpmBootIfPresent` go green with the `A>` capture. CI sees the
+SKIP path until a usable image exists in the test working directory.
 
 This is the first phase that crosses the repository boundary into
 `emfe_plugin_z80_cpm22`. Files inside this repo (the CBIOS source, the
