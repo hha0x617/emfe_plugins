@@ -23,6 +23,8 @@
 #include <atomic>
 #include <mutex>
 #include <new>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 // ============================================================================
@@ -91,6 +93,27 @@ struct EmfeInstanceData {
     std::string disasmRawBytes;
     std::vector<EmfeDisasmLine> disasmRangeLines;
     std::vector<std::string>    disasmRangeStringPool;
+
+    // Settings (Phase 2.6 — minimal placeholder set so the host's
+    // Settings dialog renders non-empty and z80 has family parity with
+    // em8 / z8000 / mc68030 / mc6809. Full settings UI is Phase 6.)
+    // - settingDefs    : defs handed back via emfe_get_setting_defs
+    // - stagedSettings : edits accumulate here until emfe_apply_settings
+    // - settings       : "current" working copy (applied + REQUIRES_RESET
+    //                    staged values combined)
+    // - appliedSettings: only the non-REQUIRES_RESET keys reach this
+    //                    map on emfe_apply_settings; the REQUIRES_RESET
+    //                    keys move on the next emfe_reset.
+    // - settingFlags   : per-key flag bitmask, mirrors what is in defs
+    // - settingValueBuf / appliedSettingValueBuf: returned char-pointer
+    //                    storage for emfe_get_setting / get_applied_setting
+    std::vector<EmfeSettingDef> settingDefs;
+    std::unordered_map<std::string, std::string> stagedSettings;
+    std::unordered_map<std::string, std::string> settings;
+    std::unordered_map<std::string, std::string> appliedSettings;
+    std::unordered_map<std::string, uint32_t>    settingFlags;
+    std::string settingValueBuf;
+    std::string appliedSettingValueBuf;
 };
 
 static inline EmfeInstanceData* to_inst(EmfeInstance i) {
@@ -173,6 +196,45 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
         EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
     add(REG_INSTRUCTIONS, "Instructions", "Counters", 64,
         EMFE_REG_FLAG_READONLY | EMFE_REG_FLAG_HIDDEN);
+
+    // Minimal Settings (Phase 2.6). Strings are literals so the def
+    // table stays valid for the instance's lifetime. RR = requires
+    // reset to take effect on hardware.
+    const uint32_t RR = EMFE_SETTING_FLAG_REQUIRES_RESET;
+    auto addSetting = [inst](const char* key, const char* label,
+                             const char* group, EmfeSettingType type,
+                             const char* defVal,
+                             const char* constraints,
+                             uint32_t flags) {
+        inst->settingDefs.push_back({
+            key, label, group, type, defVal, constraints,
+            nullptr, nullptr, flags
+        });
+        inst->settingFlags[key] = flags;
+        inst->stagedSettings [key] = defVal;
+        inst->settings        [key] = defVal;
+        inst->appliedSettings [key] = defVal;
+    };
+
+    // General tab — emulator-wide knobs. Z80 RAM is always 64 KiB; the
+    // entry is informational (constraint locks the range to a single
+    // value) and exists so the dialog shows what the user is running.
+    addSetting("MemorySize", "Memory Size (KiB)", "General",
+               EMFE_SETTING_INT, "64", "64|64", RR);
+    addSetting("ResetVector", "Reset Vector (PC on reset)", "General",
+               EMFE_SETTING_INT, "0", "0|65535", RR);
+    addSetting("ClearRamOnReset", "Clear RAM on reset", "General",
+               EMFE_SETTING_BOOL, "true", nullptr, 0);
+
+    // Console tab — UART display preferences. Match em8's keys so
+    // host code that consumes these settings can do so uniformly
+    // across plugins.
+    addSetting("ConsoleColumns", "Columns", "Console",
+               EMFE_SETTING_INT, "80", "40|320", 0);
+    addSetting("ConsoleRows", "Rows", "Console",
+               EMFE_SETTING_INT, "25", "10|100", 0);
+    addSetting("ConsoleScrollbackLines", "Scrollback Lines", "Console",
+               EMFE_SETTING_INT, "2000", "0|100000", 0);
 
     *out_instance = reinterpret_cast<EmfeInstance>(inst);
     return EMFE_OK;
@@ -526,6 +588,16 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     if (!instance) return EMFE_ERR_INVALID;
     auto* inst = to_inst(instance);
+    // Reset is also the point at which REQUIRES_RESET settings commit
+    // from staging into the applied-to-hardware map. Non-REQUIRES_RESET
+    // keys were already committed on emfe_apply_settings.
+    for (const auto& [key, val] : inst->stagedSettings) {
+        auto fit = inst->settingFlags.find(key);
+        uint32_t flags = (fit != inst->settingFlags.end()) ? fit->second : 0;
+        if (flags & EMFE_SETTING_FLAG_REQUIRES_RESET) {
+            inst->appliedSettings[key] = val;
+        }
+    }
     inst->cpu.Reset();
     inst->memory.Reset();
     inst->uart.Reset();
@@ -639,15 +711,57 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_send_string(EmfeInstance instan
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_data_dir(const char*) { return EMFE_OK; }
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_setting_defs(
-        EmfeInstance, const EmfeSettingDef** out_defs) {
-    if (out_defs) *out_defs = nullptr;
-    return 0;
+        EmfeInstance instance, const EmfeSettingDef** out_defs) {
+    if (!instance || !out_defs) return 0;
+    auto* inst = to_inst(instance);
+    *out_defs = inst->settingDefs.data();
+    return static_cast<int32_t>(inst->settingDefs.size());
 }
 
-extern "C" EMFE_EXPORT const char* EMFE_CALL emfe_get_setting(EmfeInstance, const char*)              { return nullptr; }
-extern "C" EMFE_EXPORT EmfeResult  EMFE_CALL emfe_set_setting(EmfeInstance, const char*, const char*) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult  EMFE_CALL emfe_apply_settings(EmfeInstance)                        { return EMFE_OK; }
-extern "C" EMFE_EXPORT const char* EMFE_CALL emfe_get_applied_setting(EmfeInstance, const char*)      { return nullptr; }
+extern "C" EMFE_EXPORT const char* EMFE_CALL emfe_get_setting(
+        EmfeInstance instance, const char* key) {
+    if (!instance || !key) return "";
+    auto* inst = to_inst(instance);
+    auto it = inst->stagedSettings.find(key);
+    if (it == inst->stagedSettings.end()) return "";
+    inst->settingValueBuf = it->second;
+    return inst->settingValueBuf.c_str();
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_setting(
+        EmfeInstance instance, const char* key, const char* value) {
+    if (!instance || !key || !value) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    inst->stagedSettings[key] = value;
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_apply_settings(EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    // Bring `settings` (working copy) fully up to staged. For the
+    // applied-to-hardware map, only non-REQUIRES_RESET keys move now;
+    // REQUIRES_RESET keys wait for emfe_reset.
+    inst->settings = inst->stagedSettings;
+    for (const auto& [key, val] : inst->stagedSettings) {
+        auto fit = inst->settingFlags.find(key);
+        uint32_t flags = (fit != inst->settingFlags.end()) ? fit->second : 0;
+        if (!(flags & EMFE_SETTING_FLAG_REQUIRES_RESET)) {
+            inst->appliedSettings[key] = val;
+        }
+    }
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT const char* EMFE_CALL emfe_get_applied_setting(
+        EmfeInstance instance, const char* key) {
+    if (!instance || !key) return "";
+    auto* inst = to_inst(instance);
+    auto it = inst->appliedSettings.find(key);
+    if (it == inst->appliedSettings.end()) return "";
+    inst->appliedSettingValueBuf = it->second;
+    return inst->appliedSettingValueBuf.c_str();
+}
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_list_item_defs(
         EmfeInstance, const char* /*list_key*/, const EmfeListItemDef** out_defs) {

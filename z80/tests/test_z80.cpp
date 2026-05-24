@@ -2221,8 +2221,103 @@ static void TestDisasmRangeAndProgramRange() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.6 tests — minimal Settings
+// ---------------------------------------------------------------------
+
+static void TestSettingsDefsPresent() {
+    printf("TestSettingsDefsPresent...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const EmfeSettingDef* defs = nullptr;
+    int32_t n = emfe_get_setting_defs(inst, &defs);
+    TEST_TRUE(n >= 6, "≥ 6 setting defs (non-empty dialog)");
+    TEST_TRUE(defs != nullptr, "defs pointer non-null");
+
+    bool sawMemorySize = false, sawResetVector = false, sawClearRam = false;
+    bool sawCols = false, sawRows = false, sawScrollback = false;
+    for (int32_t i = 0; i < n; ++i) {
+        const auto& d = defs[i];
+        if (std::strcmp(d.key, "MemorySize") == 0) {
+            sawMemorySize = (std::strcmp(d.group, "General") == 0);
+        } else if (std::strcmp(d.key, "ResetVector") == 0) {
+            sawResetVector = (std::strcmp(d.group, "General") == 0);
+        } else if (std::strcmp(d.key, "ClearRamOnReset") == 0) {
+            sawClearRam = (std::strcmp(d.group, "General") == 0
+                           && d.type == EMFE_SETTING_BOOL);
+        } else if (std::strcmp(d.key, "ConsoleColumns") == 0) {
+            sawCols = (std::strcmp(d.group, "Console") == 0);
+        } else if (std::strcmp(d.key, "ConsoleRows") == 0) {
+            sawRows = (std::strcmp(d.group, "Console") == 0);
+        } else if (std::strcmp(d.key, "ConsoleScrollbackLines") == 0) {
+            sawScrollback = (std::strcmp(d.group, "Console") == 0);
+        }
+    }
+    TEST_TRUE(sawMemorySize,  "MemorySize under General");
+    TEST_TRUE(sawResetVector, "ResetVector under General");
+    TEST_TRUE(sawClearRam,    "ClearRamOnReset under General (BOOL)");
+    TEST_TRUE(sawCols,        "ConsoleColumns under Console");
+    TEST_TRUE(sawRows,        "ConsoleRows under Console");
+    TEST_TRUE(sawScrollback,  "ConsoleScrollbackLines under Console");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestSettingsGetSetApply() {
+    printf("TestSettingsGetSetApply...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const char* v = emfe_get_setting(inst, "ConsoleColumns");
+    TEST_TRUE(std::strcmp(v, "80") == 0, "default ConsoleColumns is 80");
+
+    TEST_EQ(emfe_set_setting(inst, "ConsoleColumns", "132"), EMFE_OK, "set OK");
+    v = emfe_get_setting(inst, "ConsoleColumns");
+    TEST_TRUE(std::strcmp(v, "132") == 0, "staged value visible");
+
+    // Until apply, applied is still the default.
+    const char* av = emfe_get_applied_setting(inst, "ConsoleColumns");
+    TEST_TRUE(std::strcmp(av, "80") == 0, "applied still default");
+
+    TEST_EQ(emfe_apply_settings(inst), EMFE_OK, "apply OK");
+    av = emfe_get_applied_setting(inst, "ConsoleColumns");
+    TEST_TRUE(std::strcmp(av, "132") == 0, "applied now == staged");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestSettingsRequiresResetDeferral() {
+    printf("TestSettingsRequiresResetDeferral...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ResetVector is REQUIRES_RESET.
+    TEST_EQ(emfe_set_setting(inst, "ResetVector", "256"), EMFE_OK, "stage");
+    TEST_EQ(emfe_apply_settings(inst), EMFE_OK, "apply");
+    const char* staged  = emfe_get_setting(inst, "ResetVector");
+    const char* applied = emfe_get_applied_setting(inst, "ResetVector");
+    TEST_TRUE(std::strcmp(staged,  "256") == 0, "staged updated");
+    TEST_TRUE(std::strcmp(applied, "0")   == 0, "applied still 0 (deferred)");
+
+    TEST_EQ(emfe_reset(inst), EMFE_OK, "reset OK");
+    applied = emfe_get_applied_setting(inst, "ResetVector");
+    TEST_TRUE(std::strcmp(applied, "256") == 0, "applied reflects reset commit");
+
+    // Invalid args.
+    TEST_EQ(emfe_set_setting(nullptr, "X", "Y"), EMFE_ERR_INVALID, "rejects null instance");
+    TEST_EQ(emfe_set_setting(inst, nullptr, "Y"), EMFE_ERR_INVALID, "rejects null key");
+    TEST_TRUE(std::strcmp(emfe_get_setting(inst, "NonexistentKey"), "") == 0,
+              "unknown key returns empty string");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.5) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.6) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -2302,6 +2397,10 @@ int main() {
     TestDisasmEdPrefix();
     TestDisasmHelloWorldROM();
     TestDisasmRangeAndProgramRange();
+    // Phase 2.6
+    TestSettingsDefsPresent();
+    TestSettingsGetSetApply();
+    TestSettingsRequiresResetDeferral();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
