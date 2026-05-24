@@ -160,10 +160,21 @@ the user runs the build.
 
 ## 8. Phase 6 — Settings UI + debugger integration (~1 week)
 
-- Settings dialog: RAM size, ROM image path, disk image paths,
-  default interrupt mode.
-- Debugger pane parity with `mc6809`: breakpoints, watchpoints,
-  disassembly view, register / memory view.
+Full design lives in [`phase6_design.md`](phase6_design.md). Sub-phase
+breakdown:
+
+| # | Theme |
+|---|---|
+| 6.1 | `emfe_run` + `emfe_stop` worker-thread lifecycle (currently stubbed) |
+| 6.2 | Breakpoint primitives — `unordered_set<uint16_t>` in `Z80Cpu`, check on every `ExecuteOne`, `-1` sentinel return on hit |
+| 6.3 | Watchpoint primitives — `vector<Watchpoint>` in `Z80Memory`, check on `ReadByte` / `WriteByte` for READ / WRITE / READWRITE |
+| 6.4 | `step_over` / `step_out` — detect CALL/RST + run-to-expected-return; SP-tracking for step-out; `STEP_LIMIT` ~10 M with timeout |
+| 6.5 | Settings parity catch-up — add `BoardType` + `Theme` keys to match mc6809 |
+
+**Phase 6 done when** the host debugger pane can do everything against
+z80 that it can against mc6809 (BPs, WPs, single-step / step-over /
+step-out, run-to-cursor); Settings dialog has the shared `BoardType`
++ `Theme` keys; new CI tests cover BP / WP / run lifecycle.
 
 ## 9. Phase 7 (optional) — Cycle accuracy
 
