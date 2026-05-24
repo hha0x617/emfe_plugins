@@ -3027,8 +3027,83 @@ static void TestDisasmPhase32Opcodes() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 3.3 tests — ED-prefix undocumented NOPs
+//
+// Real Z80 hardware treats every unrecognised ED-prefix opcode as a
+// 2-byte 8 T-state NOP (prefix 4 T + suffix 4 T, suffix dropped).
+// The CPU side has always done this; Phase 3.3 also re-renders the
+// disasm to call them out as "NOP*" instead of the previous "DB"
+// rendering, which made these slots look like raw data bytes.
+// ---------------------------------------------------------------------
+
+static void TestEdNopBehaviour() {
+    printf("TestEdNopBehaviour...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Sample suffixes from each unassigned region:
+    //   0x00 — bottom of the ED 00..3F unassigned block
+    //   0x37 — top of the same block
+    //   0xC0 — unassigned in the ED 80..BF area outside block ops
+    //   0xFF — top of the table, never assigned
+    const uint8_t suffixes[] = { 0x00, 0x37, 0xC0, 0xFF };
+    for (size_t i = 0; i < sizeof(suffixes); ++i) {
+        uint16_t addr = static_cast<uint16_t>(0x1000 + 0x10 * i);
+        SetReg(inst, REG_PC, addr);
+        emfe_poke_byte(inst, addr,                   0xED);
+        emfe_poke_byte(inst, static_cast<uint16_t>(addr + 1), suffixes[i]);
+
+        int64_t cyc_before = emfe_get_cycle_count(inst);
+        int64_t ins_before = emfe_get_instruction_count(inst);
+        emfe_step(inst);
+
+        TEST_EQ(GetReg(inst, REG_PC),
+                static_cast<uint64_t>(addr + 2),
+                "PC advances by 2 (both prefix + suffix consumed)");
+        TEST_EQ(emfe_get_cycle_count(inst) - cyc_before, (int64_t)8,
+                "ED NOP* is 8 T-states");
+        TEST_EQ(emfe_get_instruction_count(inst) - ins_before, (int64_t)1,
+                "counted as one instruction");
+    }
+
+    // ED 00 must not surface as EMFE_ERR_UNSUPPORTED. emfe_step
+    // returning OK is the gate here — TEST_EQ above on PC/cycles
+    // would fail with rc != OK anyway, but assert explicitly to make
+    // intent clear if the API ever changes.
+    SetReg(inst, REG_PC, 0x2000);
+    emfe_poke_byte(inst, 0x2000, 0xED);
+    emfe_poke_byte(inst, 0x2001, 0x00);
+    TEST_EQ(emfe_step(inst), EMFE_OK, "ED 00 reports OK, not UNSUPPORTED");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmEdUnassignedAsNopStar() {
+    printf("TestDisasmEdUnassignedAsNopStar...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const uint8_t suffixes[] = { 0x00, 0x37, 0xC0, 0xFF };
+    for (size_t i = 0; i < sizeof(suffixes); ++i) {
+        uint16_t addr = static_cast<uint16_t>(0x0400 + 0x10 * i);
+        emfe_poke_byte(inst, addr,                   0xED);
+        emfe_poke_byte(inst, static_cast<uint16_t>(addr + 1), suffixes[i]);
+        AssertDisasm(inst, addr, "NOP*", "", 2, "ED unassigned");
+    }
+
+    // Sanity: documented ED opcodes are NOT rewritten as NOP*.
+    emfe_poke_byte(inst, 0x0500, 0xED);
+    emfe_poke_byte(inst, 0x0501, 0x44);
+    AssertDisasm(inst, 0x0500, "NEG", "", 2, "documented ED still NEG");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 3.2) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 3.3) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3133,6 +3208,9 @@ int main() {
     TestBitMemoryYxFromAddressHigh();
     TestAdd16YxFromResultHigh();
     TestDisasmPhase32Opcodes();
+    // Phase 3.3
+    TestEdNopBehaviour();
+    TestDisasmEdUnassignedAsNopStar();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
