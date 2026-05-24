@@ -331,6 +331,16 @@ namespace {
         if (opcode == 0xF3) { mnem = "DI";   return; }
         if (opcode == 0xFB) { mnem = "EI";   return; }
 
+        // Phase 3.2: single-byte accumulator rotates + DAA/CPL/SCF/CCF
+        if (opcode == 0x07) { mnem = "RLCA"; return; }
+        if (opcode == 0x0F) { mnem = "RRCA"; return; }
+        if (opcode == 0x17) { mnem = "RLA";  return; }
+        if (opcode == 0x1F) { mnem = "RRA";  return; }
+        if (opcode == 0x27) { mnem = "DAA";  return; }
+        if (opcode == 0x2F) { mnem = "CPL";  return; }
+        if (opcode == 0x37) { mnem = "SCF";  return; }
+        if (opcode == 0x3F) { mnem = "CCF";  return; }
+
         // 0x01/11/21/31 LD rr, nn
         if ((opcode & 0xCF) == 0x01) {
             uint16_t nn = r.fetchWord();

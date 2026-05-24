@@ -97,7 +97,7 @@ Phase 3, but is not blocked on by CI since the binary is user-supplied.
 | # | Theme |
 |---|---|
 | 3.1 | 8-bit operations on `IXH`, `IXL`, `IYH`, `IYL`: INC / DEC / `LD r,n` for the halves, `LD r, IXY{H,L}` and `LD IXY{H,L}, r` (with `(HL)` left untouched), and ALU `A, IXY{H,L}`. Also fix a latent `DD 76` / `FD 76` bug — those must execute as plain `HALT`, not `LD (HL), (IX+d)` |
-| 3.2 | Undocumented flag propagation (`Y`, `X` bit propagation from `BIT` / `SCF` / `CCF` / 16-bit ops) |
+| 3.2 | Undocumented flag propagation (`Y`, `X` bit propagation from `BIT b,(HL)` / `BIT b,(IX+d)` / `SCF` / `CCF` / 16-bit `ADD HL,rr`) **plus** the eight single-byte accumulator / flag ops that were missing entirely from Phase 1: `RLCA` / `RRCA` / `RLA` / `RRA` (0x07/0x0F/0x17/0x1F, preserve S/Z/PV), `DAA` (0x27), `CPL` (0x2F), `SCF` (0x37), `CCF` (0x3F). The bundle is justified by the fact that the new ops' flag behaviour *is* the Y/X-propagation story for this sub-phase |
 | 3.3 | `ED`-prefix undocumented NOPs of various lengths |
 | 3.4 | Add `examples/eforth/` from Bill Muench's public-domain eForth-Z80; confirm REPL operation over UART |
 
