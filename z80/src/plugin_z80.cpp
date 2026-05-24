@@ -621,12 +621,129 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step(EmfeInstance instance) {
     return cycles > 0 ? EMFE_OK : EMFE_ERR_UNSUPPORTED;
 }
 
+// Phase 6.4: emfe_step_over / emfe_step_out per phase6_design.md §3.4.
+//
+// step_over: detect CALL / CALL cc / RST n at PC; record the address
+// the call would return to; run ExecuteOne in a bounded loop until
+// PC reaches that address OR a BP/WP fires. For any other opcode
+// (non-CALL/RST), degenerate to emfe_step — caller can dispatch
+// step_over unconditionally without inspecting opcodes.
+//
+// step_out: capture entry SP; run until SP > entry SP OR BP/WP fires.
+// A RET (or RET cc taken) pops 2 bytes off the stack, raising SP by
+// 2 — so SP > entry SP detects the exit cleanly. Nested CALLs push
+// deeper (SP shrinks); they don't trip the exit early.
+//
+// Both bounded by STEP_LIMIT = 10 M instructions per phase6_design
+// §6 Q6 lean. Exceeding the budget returns EMFE_OK (defensive — host
+// can poll state to detect the run took unusually long) rather than
+// a new TIMEOUT code, to keep the ABI surface small.
+
+namespace {
+
+constexpr int64_t k_stepOverLimit = 10'000'000;
+
+// Returns the length of the instruction at `pc` IF it is a call-
+// flavor opcode that step_over should "skip over". Returns 0 for
+// any non-call opcode (caller falls back to single-step).
+//
+// Recognised:
+//   CD nn nn         CALL nn        (3 bytes)
+//   C4/CC/D4/DC/...  CALL cc, nn    (3 bytes)
+//   C7/CF/D7/DF/...  RST n          (1 byte)
+//
+// Notes:
+// - The conditional CALL pattern is (opcode & 0xC7) == 0xC4 — that
+//   matches 0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC.
+// - The unconditional CALL is 0xCD only.
+// - RST n pattern: (opcode & 0xC7) == 0xC7 — matches 0xC7, 0xCF,
+//   0xD7, 0xDF, 0xE7, 0xEF, 0xF7, 0xFF.
+int CallOpcodeLen(uint8_t op) {
+    if (op == 0xCD)            return 3;     // CALL nn
+    if ((op & 0xC7) == 0xC4)   return 3;     // CALL cc, nn
+    if ((op & 0xC7) == 0xC7)   return 1;     // RST n
+    return 0;
+}
+
+} // namespace
+
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step_over(EmfeInstance instance) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    uint16_t startPc = inst->cpu.PC;
+    uint8_t  op      = inst->memory.Peek(startPc);
+    int      callLen = CallOpcodeLen(op);
+
+    // Non-CALL opcode: degenerate to single-step. emfe_step handles
+    // inStepMode + WP drain.
+    if (callLen == 0) return emfe_step(instance);
+
+    // Call-flavour: skip to expected return PC.
+    uint16_t expectedRet = static_cast<uint16_t>(startPc + callLen);
+
+    // Execute the call instruction itself first (inStepMode so a BP
+    // on the call's PC doesn't short-circuit).
+    inst->cpu.inStepMode = true;
+    int cycles = inst->cpu.ExecuteOne();
+    if (cycles <= 0) {
+        // BP / UNSUPPORTED before the call even ran. Drain the WP
+        // flag and return — caller sees state didn't advance to
+        // the call target.
+        (void)inst->memory.TakeWatchpointHit();
+        return EMFE_OK;
+    }
+    if (inst->memory.TakeWatchpointHit()) return EMFE_OK;
+
+    // If we're already at expectedRet, the conditional CALL was
+    // NOT taken (or it was a 1-byte RST n that returned via the
+    // call mechanism — but RST always takes). PC after a not-taken
+    // CALL cc, nn IS expectedRet. Done.
+    if (inst->cpu.PC == expectedRet) return EMFE_OK;
+
+    // The call was taken — drive the CPU until we return to
+    // expectedRet OR something halts us.
+    for (int64_t i = 0; i < k_stepOverLimit; ++i) {
+        int c = inst->cpu.ExecuteOne();
+        if (c <= 0) return EMFE_OK;                          // BP / UNSUPPORTED
+        if (inst->memory.TakeWatchpointHit()) return EMFE_OK; // WP fired
+        if (inst->cpu.PC == expectedRet) return EMFE_OK;     // back from CALL
+    }
+    // STEP_LIMIT exceeded — return OK; the host can re-check state.
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step_out(EmfeInstance instance) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    if (inst->state.load() == EMFE_STATE_RUNNING) return EMFE_ERR_STATE;
+
+    // Capture entry SP. A subsequent RET (or RET cc taken) pops 2
+    // bytes → SP increases by 2 → the exit condition fires.
+    //
+    // Wraparound subtlety: the Z80 SP is 16-bit. If entry SP is
+    // 0xFFFE and a RET pops, SP becomes 0x0000 — the unsigned
+    // comparison `SP > startSp` is FALSE (0 < 0xFFFE) so the
+    // naive check never trips. Cast the difference to int16_t to
+    // get a signed delta that handles wraparound correctly: +2
+    // (positive) after RET regardless of startSp value, vs
+    // negative when SP went DOWN (e.g. a CALL during step_out).
+    uint16_t startSp = inst->cpu.SP;
+    auto spRose = [&]() {
+        return static_cast<int16_t>(
+            inst->cpu.SP - startSp) > 0;
+    };
+
+    for (int64_t i = 0; i < k_stepOverLimit; ++i) {
+        if (i == 0) inst->cpu.inStepMode = true;  // suppress BP at PC
+                                                  // on first iteration
+        int c = inst->cpu.ExecuteOne();
+        if (c <= 0) return EMFE_OK;                          // BP / UNSUPPORTED
+        if (inst->memory.TakeWatchpointHit()) return EMFE_OK; // WP fired
+        if (spRose()) return EMFE_OK;                        // RET popped
+    }
+    return EMFE_OK;
 }
 
 // Phase 6.1: emfe_run + emfe_stop worker-thread lifecycle.
