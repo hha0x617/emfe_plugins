@@ -2490,8 +2490,241 @@ static void TestZexdocIfPresent() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 3.1 tests — IX/IY 8-bit halves (IXH/IXL/IYH/IYL)
+// ---------------------------------------------------------------------
+
+static void TestIxyHalfIncDecLdN() {
+    printf("TestIxyHalfIncDecLdN...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // LD IXH, $34  : DD 26 34  →  IX becomes $3400 (low byte 0)
+    SetReg(inst, REG_IX, 0x0000);
+    const uint8_t ld_ixh[] = { 0xDD, 0x26, 0x34 };
+    LoadProgram(inst, 0, ld_ixh, sizeof(ld_ixh));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x3400, "LD IXH, $34");
+    TEST_EQ(emfe_get_cycle_count(inst), (int64_t)11, "LD IXH, n is 11 T");
+
+    // LD IXL, $5A  : DD 2E 5A  →  IX becomes $345A
+    const uint8_t ld_ixl[] = { 0xDD, 0x2E, 0x5A };
+    LoadProgram(inst, 0x10, ld_ixl, sizeof(ld_ixl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x345A, "LD IXL, $5A keeps IXH");
+
+    // INC IXH (DD 24): low byte preserved, high byte += 1
+    const uint8_t inc_ixh[] = { 0xDD, 0x24 };
+    LoadProgram(inst, 0x20, inc_ixh, sizeof(inc_ixh));
+    int64_t before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x355A, "INC IXH ticks high byte");
+    TEST_EQ(emfe_get_cycle_count(inst) - before, (int64_t)8, "INC IXH is 8 T");
+
+    // DEC IYL (FD 2D): exercise IY path + flag rules. With IY=$0100,
+    // DEC IYL goes 00 → FF, so H is set (low nibble borrow) and N is
+    // set; C is preserved.
+    SetReg(inst, REG_IY, 0x0100);
+    SetReg(inst, REG_F, TF_C);
+    const uint8_t dec_iyl[] = { 0xFD, 0x2D };
+    LoadProgram(inst, 0x30, dec_iyl, sizeof(dec_iyl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IY), (uint64_t)0x01FF, "DEC IYL underflows low byte only");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_N) != 0, "DEC sets N");
+    TEST_TRUE((f & TF_H) != 0, "DEC underflow sets H");
+    TEST_TRUE((f & TF_S) != 0, "result $FF sets S");
+    TEST_TRUE((f & TF_C) != 0, "C preserved");
+    TEST_TRUE((f & TF_Z) == 0, "Z clear (result != 0)");
+
+    // INC IXL wraps with PV (0x7F → 0x80)
+    SetReg(inst, REG_IX, 0xAA7F);
+    SetReg(inst, REG_F, 0);
+    const uint8_t inc_ixl[] = { 0xDD, 0x2C };
+    LoadProgram(inst, 0x40, inc_ixl, sizeof(inc_ixl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0xAA80, "INC IXL: $7F → $80, IXH untouched");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_PV) != 0, "INC PV on signed overflow");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_S)  != 0, "INC sign set");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestIxyHalfLdRegReg() {
+    printf("TestIxyHalfLdRegReg...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // LD B, IXH (DD 44) — copy IX high byte to B without touching H.
+    SetReg(inst, REG_IX, 0xABCD);
+    SetReg(inst, REG_HL, 0x1111);
+    const uint8_t ld_b_ixh[] = { 0xDD, 0x44 };
+    LoadProgram(inst, 0, ld_b_ixh, sizeof(ld_b_ixh));
+    int64_t before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_B),  (uint64_t)0xAB,   "B := IXH");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x1111, "HL untouched");
+    TEST_EQ(emfe_get_cycle_count(inst) - before, (int64_t)8, "LD r, IXH is 8 T");
+
+    // LD C, IXL (DD 4D)
+    const uint8_t ld_c_ixl[] = { 0xDD, 0x4D };
+    LoadProgram(inst, 0x10, ld_c_ixl, sizeof(ld_c_ixl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_C),  (uint64_t)0xCD,   "C := IXL");
+
+    // LD IXH, E (DD 63) with E = 0x5C and IX = 0x99XX
+    SetReg(inst, REG_IX, 0x9988);
+    SetReg(inst, REG_E,  0x5C);
+    const uint8_t ld_ixh_e[] = { 0xDD, 0x63 };
+    LoadProgram(inst, 0x20, ld_ixh_e, sizeof(ld_ixh_e));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0x5C88, "IXH := E, IXL untouched");
+
+    // LD IXL, IXH (DD 6C) — same-register swap variant
+    SetReg(inst, REG_IX, 0xBE7F);
+    const uint8_t ld_ixl_ixh[] = { 0xDD, 0x6C };
+    LoadProgram(inst, 0x30, ld_ixl_ixh, sizeof(ld_ixl_ixh));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IX), (uint64_t)0xBEBE, "IXL := IXH (both halves equal)");
+
+    // FD-prefix variant on the IY side: LD IYH, A (FD 67)
+    SetReg(inst, REG_IY, 0x1122);
+    SetReg(inst, REG_A,  0xF0);
+    const uint8_t ld_iyh_a[] = { 0xFD, 0x67 };
+    LoadProgram(inst, 0x40, ld_iyh_a, sizeof(ld_iyh_a));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IY), (uint64_t)0xF022, "IYH := A");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestIxyHalfAlu() {
+    printf("TestIxyHalfAlu...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ADD A, IXH (DD 84): A=$10, IX=$23xx → A=$33
+    SetReg(inst, REG_A,  0x10);
+    SetReg(inst, REG_IX, 0x2399);
+    SetReg(inst, REG_F,  0);
+    const uint8_t add_a_ixh[] = { 0xDD, 0x84 };
+    LoadProgram(inst, 0, add_a_ixh, sizeof(add_a_ixh));
+    int64_t before = emfe_get_cycle_count(inst);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x33, "A := A + IXH");
+    TEST_EQ(emfe_get_cycle_count(inst) - before, (int64_t)8, "ADD A, IXH is 8 T");
+
+    // SUB IYL (FD 95): A=$05, IY=$??03 → A=$02
+    SetReg(inst, REG_A,  0x05);
+    SetReg(inst, REG_IY, 0x7703);
+    SetReg(inst, REG_F,  0);
+    const uint8_t sub_iyl[] = { 0xFD, 0x95 };
+    LoadProgram(inst, 0x10, sub_iyl, sizeof(sub_iyl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x02, "A := A - IYL");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_N) != 0, "N set after SUB");
+
+    // CP IXL (DD BD): A=$80, IXL=$80 → Z=1 and A unchanged
+    SetReg(inst, REG_A,  0x80);
+    SetReg(inst, REG_IX, 0x0080);
+    SetReg(inst, REG_F,  0);
+    const uint8_t cp_ixl[] = { 0xDD, 0xBD };
+    LoadProgram(inst, 0x20, cp_ixl, sizeof(cp_ixl));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x80, "CP does not modify A");
+    TEST_TRUE((GetReg(inst, REG_F) & TF_Z) != 0, "CP Z set on equality");
+
+    // AND IYH (FD A4): A=$F0, IYH=$0F → A=0, H=1, N=0
+    SetReg(inst, REG_A,  0xF0);
+    SetReg(inst, REG_IY, 0x0FAA);
+    SetReg(inst, REG_F,  TF_C);
+    const uint8_t and_iyh[] = { 0xFD, 0xA4 };
+    LoadProgram(inst, 0x30, and_iyh, sizeof(and_iyh));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0x00, "AND IYH yields 0");
+    uint8_t f = (uint8_t)GetReg(inst, REG_F);
+    TEST_TRUE((f & TF_Z) != 0, "Z set");
+    TEST_TRUE((f & TF_H) != 0, "H set on AND (Zilog quirk)");
+    TEST_TRUE((f & TF_C) == 0, "C cleared on AND");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDdPrefixedHaltRegression() {
+    // DD 76 (and FD 76) must execute as plain HALT, NOT as
+    // "LD (HL), (IX+d)" (which the old (opcode & 0xC7) == 0x46
+    // guard would have matched). The fix is in ExecuteWithIndex —
+    // this test catches a regression if it ever creeps back.
+    printf("TestDdPrefixedHaltRegression...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Seed memory at HL so any accidental write would be observable.
+    SetReg(inst, REG_HL, 0x4000);
+    SetReg(inst, REG_IX, 0x2000);
+    emfe_poke_byte(inst, 0x4000, 0x55);
+    emfe_poke_byte(inst, 0x2003, 0xAA);   // would land at (HL) if buggy
+
+    const uint8_t dd_halt[] = { 0xDD, 0x76 };
+    LoadProgram(inst, 0, dd_halt, sizeof(dd_halt));
+    // Two steps: first the DD-prefix NOP, then the plain HALT pickup.
+    emfe_step(inst);
+    emfe_step(inst);
+    TEST_EQ(emfe_peek_byte(inst, 0x4000), 0x55, "(HL) untouched by DD HALT");
+    TEST_EQ(GetReg(inst, REG_IFF1), (uint64_t)0, "HALT does not enable interrupts");
+    // After HALT, PC points one past 0x76 — i.e. address 2.
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0002, "PC parked past HALT byte");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmIxyHalves() {
+    printf("TestDisasmIxyHalves...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // INC IXH (DD 24) ; DEC IYL (FD 2D)
+    const uint8_t inc_ixh[] = { 0xDD, 0x24 };
+    LoadProgram(inst, 0x0000, inc_ixh, sizeof(inc_ixh));
+    AssertDisasm(inst, 0x0000, "INC", "IXH", 2, "DD INC IXH");
+    const uint8_t dec_iyl[] = { 0xFD, 0x2D };
+    LoadProgram(inst, 0x0010, dec_iyl, sizeof(dec_iyl));
+    AssertDisasm(inst, 0x0010, "DEC", "IYL", 2, "FD DEC IYL");
+
+    // LD IXH, $5A (DD 26 5A) ; LD IYL, $C0 (FD 2E C0)
+    const uint8_t ld_ixh[] = { 0xDD, 0x26, 0x5A };
+    LoadProgram(inst, 0x0020, ld_ixh, sizeof(ld_ixh));
+    AssertDisasm(inst, 0x0020, "LD", "IXH, $5A", 3, "DD LD IXH,n");
+    const uint8_t ld_iyl[] = { 0xFD, 0x2E, 0xC0 };
+    LoadProgram(inst, 0x0030, ld_iyl, sizeof(ld_iyl));
+    AssertDisasm(inst, 0x0030, "LD", "IYL, $C0", 3, "FD LD IYL,n");
+
+    // LD B, IXH (DD 44) ; LD IXL, IXH (DD 6C)
+    const uint8_t ld_b_ixh[] = { 0xDD, 0x44 };
+    LoadProgram(inst, 0x0040, ld_b_ixh, sizeof(ld_b_ixh));
+    AssertDisasm(inst, 0x0040, "LD", "B, IXH", 2, "DD LD B,IXH");
+    const uint8_t ld_ixl_ixh[] = { 0xDD, 0x6C };
+    LoadProgram(inst, 0x0050, ld_ixl_ixh, sizeof(ld_ixl_ixh));
+    AssertDisasm(inst, 0x0050, "LD", "IXL, IXH", 2, "DD LD IXL,IXH");
+
+    // ADD A, IXH (DD 84) ; SUB IYL (FD 95)
+    const uint8_t add_a_ixh[] = { 0xDD, 0x84 };
+    LoadProgram(inst, 0x0060, add_a_ixh, sizeof(add_a_ixh));
+    AssertDisasm(inst, 0x0060, "ADD", "A, IXH", 2, "DD ADD A,IXH");
+    const uint8_t sub_iyl[] = { 0xFD, 0x95 };
+    LoadProgram(inst, 0x0070, sub_iyl, sizeof(sub_iyl));
+    AssertDisasm(inst, 0x0070, "SUB", "IYL", 2, "FD SUB IYL");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.7) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 3.1) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -2578,6 +2811,12 @@ int main() {
     // Phase 2.7
     TestCpmStubHarness();
     TestZexdocIfPresent();
+    // Phase 3.1
+    TestIxyHalfIncDecLdN();
+    TestIxyHalfLdRegReg();
+    TestIxyHalfAlu();
+    TestDdPrefixedHaltRegression();
+    TestDisasmIxyHalves();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -894,8 +894,11 @@ int Z80Cpu::ExecuteWithIndex(uint16_t* IXY) {
         CycleCount += 19; InstructionCount++; return 19;
     }
     // 0x46 / 0x4E / 0x56 / 0x5E / 0x66 / 0x6E / 0x7E : LD r, (IXY+d) — 19 T
-    // Pattern 01 ddd 110, dst ≠ 6.
-    if ((opcode & 0xC7) == 0x46) {
+    // Pattern 01 ddd 110, dst ≠ 6. (0x76 fits the bit pattern but is
+    // HALT — real hardware ignores the prefix and just halts, so we
+    // exclude it here and let the NOP-prefix fallback rewind PC and
+    // re-decode 0x76 as plain HALT.)
+    if ((opcode & 0xC7) == 0x46 && opcode != 0x76) {
         int dst = (opcode >> 3) & 0x07;
         uint16_t ea = ea_of();
         uint8_t v = Memory->ReadByte(ea);
@@ -1003,6 +1006,120 @@ int Z80Cpu::ExecuteWithIndex(uint16_t* IXY) {
         case 3: Memory->WriteByte(ea, static_cast<uint8_t>(val |  (1 << idx))); cycles = 23; break;
         }
         CycleCount += cycles; InstructionCount++; return cycles;
+    }
+
+    // ----- Phase 3.1: 8-bit halves of IXY (undocumented but widely used) ----
+    //
+    // The DD/FD prefix re-routes any 8-bit register reference to H or L
+    // (3-bit codes 4 and 5) so it instead reads / writes the upper or
+    // lower half of IXY. The substitution does NOT happen when the
+    // opcode also references (HL) via code 6 — in that case (HL) is
+    // promoted to (IX+d) and the other H/L operand is left as plain
+    // H/L. Those "mixed" forms are already handled by the (HL)-
+    // substitution paths above. What follows is the remaining surface:
+    //
+    //   INC IXYH / IXYL              0x24 / 0x2C        8 T
+    //   DEC IXYH / IXYL              0x25 / 0x2D        8 T
+    //   LD  IXYH, n / LD IXYL, n     0x26 nn / 0x2E nn  11 T
+    //   LD  r, IXYH/IXYL             0x44/0x45/0x4C/... 8 T
+    //   LD  IXYH/IXYL, r             0x60/0x61/.../0x6F 8 T
+    //   ALU A, IXYH/IXYL             0x84/0x85/0x8C/... 8 T
+    //
+    // Helpers: read / write H or L of IXY directly.
+    auto ixyH = [IXY]() -> uint8_t { return static_cast<uint8_t>(*IXY >> 8); };
+    auto ixyL = [IXY]() -> uint8_t { return static_cast<uint8_t>(*IXY & 0xFF); };
+    auto setIxyH = [IXY](uint8_t v) {
+        *IXY = static_cast<uint16_t>((*IXY & 0x00FF) | (uint16_t(v) << 8));
+    };
+    auto setIxyL = [IXY](uint8_t v) {
+        *IXY = static_cast<uint16_t>((*IXY & 0xFF00) | v);
+    };
+    // Reg8 read/write that maps code 4 → IXYH and code 5 → IXYL, with
+    // all other codes falling through to the normal Reg8Read/Write.
+    auto readRegIxy = [&](int code) -> uint8_t {
+        if (code == 4) return ixyH();
+        if (code == 5) return ixyL();
+        return Reg8Read(code);
+    };
+    auto writeRegIxy = [&](int code, uint8_t v) {
+        if (code == 4)      setIxyH(v);
+        else if (code == 5) setIxyL(v);
+        else                Reg8Write(code, v);
+    };
+
+    // INC / DEC on IXYH or IXYL — share the 8-bit INC/DEC flag rules.
+    if (opcode == 0x24 || opcode == 0x2C) {
+        bool hi = (opcode == 0x24);
+        uint8_t orig = hi ? ixyH() : ixyL();
+        uint8_t result = static_cast<uint8_t>(orig + 1);
+        if (hi) setIxyH(result); else setIxyL(result);
+        uint8_t f = static_cast<uint8_t>(F() & F_C);   // preserve C
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x0F) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x80) f |= F_PV;
+        SetF(f);
+        CycleCount += 8; InstructionCount++; return 8;
+    }
+    if (opcode == 0x25 || opcode == 0x2D) {
+        bool hi = (opcode == 0x25);
+        uint8_t orig = hi ? ixyH() : ixyL();
+        uint8_t result = static_cast<uint8_t>(orig - 1);
+        if (hi) setIxyH(result); else setIxyL(result);
+        uint8_t f = static_cast<uint8_t>((F() & F_C) | F_N);
+        if (result & 0x80) f |= F_S;
+        if (result == 0)   f |= F_Z;
+        if (result & 0x20) f |= F_Y;
+        if ((orig & 0x0F) == 0x00) f |= F_H;
+        if (result & 0x08) f |= F_X;
+        if (result == 0x7F) f |= F_PV;
+        SetF(f);
+        CycleCount += 8; InstructionCount++; return 8;
+    }
+    // LD IXYH, n / LD IXYL, n — 11 T total (4 prefix + 7).
+    if (opcode == 0x26) { setIxyH(FetchByte()); CycleCount += 11; InstructionCount++; return 11; }
+    if (opcode == 0x2E) { setIxyL(FetchByte()); CycleCount += 11; InstructionCount++; return 11; }
+
+    // LD r, r' subgroup with H/L → IXYH/IXYL substitution.
+    // Conditions: 01 ddd sss with neither field equal to 6 (so no (HL))
+    // and the opcode is not HALT (0x76). At least one of dst/src must
+    // be 4 or 5, otherwise the prefix has no effect and we fall through
+    // to the generic NOP-prefix path.
+    if ((opcode & 0xC0) == 0x40 && opcode != 0x76) {
+        int dst = (opcode >> 3) & 0x07;
+        int src = opcode & 0x07;
+        if (dst != 6 && src != 6 && (dst == 4 || dst == 5 || src == 4 || src == 5)) {
+            uint8_t v = readRegIxy(src);
+            writeRegIxy(dst, v);
+            CycleCount += 8; InstructionCount++; return 8;
+        }
+    }
+
+    // ALU A, IXYH / IXYL — pattern 10 ooo 100/101. src == 6 (ALU on
+    // (HL)) is already handled by the (IXY+d) ALU path above; everything
+    // else just executes a normal A-vs-r ALU with the source taken from
+    // IXYH or IXYL.
+    if ((opcode & 0xC0) == 0x80) {
+        int src = opcode & 0x07;
+        if (src == 4 || src == 5) {
+            int op  = (opcode >> 3) & 0x07;
+            uint8_t val = (src == 4) ? ixyH() : ixyL();
+            bool cy = (F() & F_C) != 0;
+            uint8_t a = A();
+            switch (op) {
+            case 0: SetA(AluAdd(a, val, false)); break;
+            case 1: SetA(AluAdd(a, val, cy));    break;
+            case 2: SetA(AluSub(a, val, false)); break;
+            case 3: SetA(AluSub(a, val, cy));    break;
+            case 4: SetA(AluAnd(a, val));        break;
+            case 5: SetA(AluXor(a, val));        break;
+            case 6: SetA(AluOr (a, val));        break;
+            case 7: AluCp(a, val);               break;
+            }
+            CycleCount += 8; InstructionCount++; return 8;
+        }
     }
 
     // Anything else under DD/FD that we don't yet recognise: treat the
