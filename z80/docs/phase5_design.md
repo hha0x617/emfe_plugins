@@ -71,45 +71,94 @@ console line-editing wiring). The remaining four are stretch
 goals — if `PIP` works the others almost certainly do too, but
 asserting on each is cheap.
 
-### 1.1 Sourcing options
+### 1.1 Sourcing (settled 2026-05-24)
 
-| Source | Pro | Con |
-|---|---|---|
-| **A. Extract from `D:/projects/cpm/CP_M 2.2/22src1.img`** (an existing CP/M-formatted disk in the local scratchpad) | Already on the dev host; bytes are verified DRI distribution; matches Sparks-letter scope unambiguously | Requires a CP/M filesystem reader to extract |
-| **B. Use `cpmtools` (cpm8680.com) directly** to read 22src1.img and write a fresh image | Industry-standard tool; handles directory walk + extent allocation; one tool to learn | External dependency the user has to install; PowerShell-native pipeline drifts toward "needs WSL or cygwin" |
-| **C. Re-assemble from upstream `*.ASM` sources** (cpm22pat.zip contains some patches but not full utilities) | Full source provenance | Source for most CP/M 2.2 utilities is *not* freely available even from DRI's archives; would need asl / mac for each utility |
-| **D. Use pre-built binaries from a Z80 retrocomputing project** (e.g., RC2014 distribution, joyce, mame's cpm images) | Often well-curated, easy to drop in | Each distribution has its own license posture re-statement; need per-source review |
+**Source: `cpm22-b.zip` from <http://www.cpm.z80.de/download/cpm22-b.zip>**
+(the Xerox 1800 system distribution of CP/M 2.2). The archive
+contains all eight transient utilities plus a few bonuses
+(`ASM.COM`, `DSKMAINT.COM`, `CPM.SYS`, Xerox 1800 CBIOS source).
 
-**Lean: A** (extract from 22src1.img). Reasons: bytes are upstream
-DRI; license is unambiguously under the Sparks 2022 letter via the
-same chain CPM22.Z80 already uses; no new external tool needed if
-we write a tiny CP/M filesystem reader in PowerShell.
+**Posture: pointer shelf, NOT mirror.** The companion repo's
+`cpm22/binary/utility/` records the canonical URL + per-file
+SHA-256s in `provenance.md` but does NOT redistribute the
+binaries. The user downloads the ZIP themselves, verifies the
+SHA-256, extracts the eight `.COM` files into
+`cpm22/binary/utility/`, and re-runs the build pipeline. The
+shelf has a local `.gitignore` matching `*.COM` so user-dropped
+binaries never land in the repo.
 
-Open question: do we write the FS reader inline in `build.ps1`,
-or factor to a separate `cpmfs.ps1` module? The reader is also
-useful for **verifying** images later (Phase 5.5). Lean:
-separate module so the read + write helpers share types.
+Why not mirror (the companion's
+[`cpm22/binary/utility/README.md`](https://github.com/hha0x617/emfe_plugins_cpm_supplements/blob/master/cpm22/binary/utility/README.md)
+has the long version):
+
+- The Sparks 2022 letter is a private letter rather than a
+  formal license. We adopt a conservative posture on third-party-
+  OEM DRI executables.
+- `cpm.z80.de` is the canonical mirror since the late 1990s. Re-
+  mirroring creates a fork that drifts if upstream is corrected.
+- Keeping the shelf binary-free makes the companion's license
+  review trivial — no DRI executables to audit.
+
+This is a different posture from `cpm22/source/CPM22.Z80` (which
+IS mirrored): that is a community-published disassembly explicitly
+distributed as a source asset, cleanly covered by the Sparks
+letter's predecessors-and-successors clause.
+
+#### Earlier-rejected alternatives (kept for context)
+
+| Source | Why rejected |
+|---|---|
+| Extract from `22src1.img` / `22src2.img` (local scratchpad disks) | Those are **source-code** disks (`OS1BOOT.ASM`, `OS2CCP.ASM`, `ED.PLM`, etc.) — they don't contain the utility `.COM` binaries despite the suggestive filenames. Confirmed 2026-05-24 by reading their CP/M directories. |
+| `cpmtools` (cpm8680.com) | Useful for inspection but doesn't itself supply the binaries. Defer as a Phase 5.2 reader/writer tool decision. |
+| Re-assemble from upstream `*.ASM` sources | DRI never widely distributed sources for the standard transients; only CCP/BDOS. No path. |
+| Community-curated distros (RC2014 / joyce / mame) | Each has its own re-statement of license posture. Pointer-shelf to DRI canonical avoids the per-distro review. |
+
+#### Build-pipeline implication
+
+The build pipeline (Phase 5.2) needs to:
+
+1. Look for the eight `.COM` files in `<companion>/cpm22/binary/utility/`.
+2. If missing, SKIP cleanly with a clear "download cpm22-b.zip from
+   <URL> and extract here" message — same SKIP-when-absent pattern
+   as zexdoc / eForth / cpm22-sssd.img already use.
+3. If present, verify each against its SHA-256 in `provenance.md`
+   (optional but cheap and catches OEM-variant mismatches early).
+4. Bake the verified bytes into the CP/M filesystem via the
+   `Add-CpmFile` helper (Phase 5.2 deliverable).
+
+Open question (Phase 5.2 input): do we write the CP/M filesystem
+reader/writer inline in `build.ps1` or factor to a separate
+`cpmfs.ps1` module? The reader is also useful for **verifying**
+generated images later (Phase 5.4 boot-transcript work). Lean:
+separate `cpmfs.ps1` module so the read + write helpers share
+types.
 
 ## 2. License posture for utility binaries
 
-The Sparks 2022 letter that covers CPM22.Z80 also covers the eight
-DRI-supplied utility binaries — they're part of the same CP/M 2.2
-distribution, named directly. Per-file inclusion review per
-`emfe_plugins_cpm_supplements/scope.md` §1.4 still happens:
+The Sparks 2022 letter that covers CPM22.Z80 arguably also covers
+the eight DRI-supplied utility binaries — they're part of the same
+CP/M 2.2 distribution, named directly. **However**, we adopt a
+conservative posture and do NOT redistribute them (see §1.1's
+"Why not mirror" discussion).
 
-- Each `.COM` file mirrored from 22src1.img gets a row in
-  `emfe_plugins_cpm_supplements/docs/provenance.md` with SHA-256
-  of the bytes-as-extracted, source disk image SHA-256, extraction
-  date, normalisation notes ("none — copied byte-for-byte from
-  directory extents").
-- File extension stays `.COM` (uppercase, matching CP/M FS
-  convention).
-- Files land in `cpm22/binary/utility/` (new subdirectory), not
-  `cpm22/binary/` (which `scope.md` reserves for CCP + BDOS).
+What the companion repo's
+[`cpm22/binary/utility/`](https://github.com/hha0x617/emfe_plugins_cpm_supplements/tree/master/cpm22/binary/utility)
+shelf does provide:
 
-The mirrored utility binaries are CP/M-licensed, inherit the same
-`LICENSE-CPM-2022.txt` umbrella, and stay in the companion repo.
-**Never** copied into the public `emfe_plugins` tree.
+- A canonical pointer to <http://www.cpm.z80.de/download/cpm22-b.zip>
+  (the Xerox 1800 system distribution).
+- A frozen per-file SHA-256 table in `docs/provenance.md`, so the
+  user-side bytes are verifiable against documented expectations.
+- A local `.gitignore` matching `*.COM` so a user's downloaded
+  binaries never accidentally land in commits.
+- A README explaining the rationale, the "How to populate this
+  shelf" walkthrough, and the relationship to the CPM22.Z80
+  mirror (which IS in the repo because community-published source
+  is a different posture from OEM-distributed binary).
+
+The pointer-shelf bytes never enter either repository (companion
+or `emfe_plugins`). The build pipeline reads from the user's
+local extraction directory only.
 
 ## 3. Disk-image filesystem write (sub-phase 5.2)
 
@@ -363,11 +412,14 @@ match substrings, not column widths.)
    (matches the rest of the pipeline; ~200 LoC across the two
    directions) vs `cpmtools` external dependency (less code, more
    tooling). Lean: **PowerShell-native** in a `cpmfs.ps1` module.
-2. **Per-utility name normalisation** — DRI's 22src1.img stores
-   filenames upper-case + space-padded; do we keep that exact
-   form when mirroring or canonicalise to short form (e.g.
-   `pip.com`)? Lean: **keep upper-case + padding** so the bytes
-   stay byte-identical to the source; the file system itself is
+2. **Per-utility name normalisation** — the host filesystem and
+   the CP/M directory entry use different conventions. The user's
+   downloaded `.COM` files arrive as host-filesystem entries
+   (e.g. `PIP.COM`); when written into the CP/M directory they
+   need to be re-formatted as `PIP     ` + `COM` (8-byte filename
+   space-padded + 3-byte extension space-padded). Lean: **keep
+   the host extension upper-case** to match what `cpm22-b.zip`
+   extracts as; the file system itself is
    case-preserving.
 3. **Multi-extent files** — none of the 8 standard utilities need
    them at SSSD-256K. Do we still implement multi-extent in the
