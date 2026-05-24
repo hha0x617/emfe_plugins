@@ -1977,8 +1977,252 @@ static void TestImAndInterruptVector() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.5 tests — Z80Disasm
+// ---------------------------------------------------------------------
+
+// Disassemble one instruction at `addr` and assert that the mnemonic
+// and operand fields equal the expected strings. Also checks length.
+static void AssertDisasm(EmfeInstance inst, uint16_t addr,
+                         const char* expected_mnem,
+                         const char* expected_ops,
+                         uint32_t expected_len,
+                         const char* tag) {
+    EmfeDisasmLine line{};
+    EmfeResult rc = emfe_disassemble_one(inst, addr, &line);
+    if (rc != EMFE_OK) {
+        fprintf(stderr, "  FAIL[%s]: disasm rc=%d\n", tag, rc);
+        g_fail++;
+        return;
+    }
+    if (std::strcmp(line.mnemonic, expected_mnem) != 0) {
+        fprintf(stderr, "  FAIL[%s]: mnem got '%s' expected '%s'\n",
+                tag, line.mnemonic, expected_mnem);
+        g_fail++;
+        return;
+    }
+    if (std::strcmp(line.operands, expected_ops) != 0) {
+        fprintf(stderr, "  FAIL[%s]: ops got '%s' expected '%s'\n",
+                tag, line.operands, expected_ops);
+        g_fail++;
+        return;
+    }
+    if (line.length != expected_len) {
+        fprintf(stderr, "  FAIL[%s]: length got %u expected %u\n",
+                tag, line.length, expected_len);
+        g_fail++;
+        return;
+    }
+}
+
+static void TestDisasmPlain() {
+    // Spot-check every "family" of plain (non-prefixed) opcodes.
+    printf("TestDisasmPlain...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x00 NOP
+    emfe_poke_byte(inst, 0x0000, 0x00);
+    AssertDisasm(inst, 0x0000, "NOP", "", 1, "NOP");
+
+    // 0x21 LD HL, 0x1234
+    emfe_poke_byte(inst, 0x0010, 0x21);
+    emfe_poke_byte(inst, 0x0011, 0x34);
+    emfe_poke_byte(inst, 0x0012, 0x12);
+    AssertDisasm(inst, 0x0010, "LD", "HL, $1234", 3, "LD HL,nn");
+
+    // 0x7E LD A, (HL)
+    emfe_poke_byte(inst, 0x0020, 0x7E);
+    AssertDisasm(inst, 0x0020, "LD", "A, (HL)", 1, "LD A,(HL)");
+
+    // 0x80 ADD A, B
+    emfe_poke_byte(inst, 0x0030, 0x80);
+    AssertDisasm(inst, 0x0030, "ADD", "A, B", 1, "ADD A,B");
+
+    // 0xC9 RET
+    emfe_poke_byte(inst, 0x0040, 0xC9);
+    AssertDisasm(inst, 0x0040, "RET", "", 1, "RET");
+
+    // 0xD3 OUT (0xFE), A
+    emfe_poke_byte(inst, 0x0050, 0xD3);
+    emfe_poke_byte(inst, 0x0051, 0xFE);
+    AssertDisasm(inst, 0x0050, "OUT", "($FE), A", 2, "OUT (n),A");
+
+    // 0x76 HALT
+    emfe_poke_byte(inst, 0x0060, 0x76);
+    AssertDisasm(inst, 0x0060, "HALT", "", 1, "HALT");
+
+    // 0xCD CALL $5000
+    emfe_poke_byte(inst, 0x0070, 0xCD);
+    emfe_poke_byte(inst, 0x0071, 0x00);
+    emfe_poke_byte(inst, 0x0072, 0x50);
+    AssertDisasm(inst, 0x0070, "CALL", "$5000", 3, "CALL");
+
+    // 0x18 JR +5 at 0x0080: end-of-instruction = 0x0082, target = 0x0087
+    emfe_poke_byte(inst, 0x0080, 0x18);
+    emfe_poke_byte(inst, 0x0081, 0x05);
+    AssertDisasm(inst, 0x0080, "JR", "$0087", 2, "JR e");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmCbPrefix() {
+    printf("TestDisasmCbPrefix...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // CB 27  SLA A
+    emfe_poke_byte(inst, 0, 0xCB);
+    emfe_poke_byte(inst, 1, 0x27);
+    AssertDisasm(inst, 0, "SLA", "A", 2, "SLA A");
+
+    // CB 7F  BIT 7, A
+    emfe_poke_byte(inst, 0x10, 0xCB);
+    emfe_poke_byte(inst, 0x11, 0x7F);
+    AssertDisasm(inst, 0x10, "BIT", "7, A", 2, "BIT 7,A");
+
+    // CB C6  SET 0, (HL)
+    emfe_poke_byte(inst, 0x20, 0xCB);
+    emfe_poke_byte(inst, 0x21, 0xC6);
+    AssertDisasm(inst, 0x20, "SET", "0, (HL)", 2, "SET 0,(HL)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmDdFdPrefix() {
+    printf("TestDisasmDdFdPrefix...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // DD 21 34 12  LD IX, $1234
+    emfe_poke_byte(inst, 0, 0xDD);
+    emfe_poke_byte(inst, 1, 0x21);
+    emfe_poke_byte(inst, 2, 0x34);
+    emfe_poke_byte(inst, 3, 0x12);
+    AssertDisasm(inst, 0, "LD", "IX, $1234", 4, "LD IX,nn");
+
+    // FD 46 05  LD B, (IY+5)
+    emfe_poke_byte(inst, 0x10, 0xFD);
+    emfe_poke_byte(inst, 0x11, 0x46);
+    emfe_poke_byte(inst, 0x12, 0x05);
+    AssertDisasm(inst, 0x10, "LD", "B, (IY+5)", 3, "LD B,(IY+5)");
+
+    // DD 36 FF 99  LD (IX-1), $99
+    emfe_poke_byte(inst, 0x20, 0xDD);
+    emfe_poke_byte(inst, 0x21, 0x36);
+    emfe_poke_byte(inst, 0x22, 0xFF);
+    emfe_poke_byte(inst, 0x23, 0x99);
+    AssertDisasm(inst, 0x20, "LD", "(IX-1), $99", 4, "LD (IX-1),n");
+
+    // DD CB 03 7E  BIT 7, (IX+3)
+    emfe_poke_byte(inst, 0x30, 0xDD);
+    emfe_poke_byte(inst, 0x31, 0xCB);
+    emfe_poke_byte(inst, 0x32, 0x03);
+    emfe_poke_byte(inst, 0x33, 0x7E);
+    AssertDisasm(inst, 0x30, "BIT", "7, (IX+3)", 4, "BIT 7,(IX+3)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmEdPrefix() {
+    printf("TestDisasmEdPrefix...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // ED B0  LDIR
+    emfe_poke_byte(inst, 0, 0xED);
+    emfe_poke_byte(inst, 1, 0xB0);
+    AssertDisasm(inst, 0, "LDIR", "", 2, "LDIR");
+
+    // ED 44  NEG
+    emfe_poke_byte(inst, 0x10, 0xED);
+    emfe_poke_byte(inst, 0x11, 0x44);
+    AssertDisasm(inst, 0x10, "NEG", "", 2, "NEG");
+
+    // ED 5E  IM 2
+    emfe_poke_byte(inst, 0x20, 0xED);
+    emfe_poke_byte(inst, 0x21, 0x5E);
+    AssertDisasm(inst, 0x20, "IM", "2", 2, "IM 2");
+
+    // ED 4B 34 12  LD BC, ($1234)
+    emfe_poke_byte(inst, 0x30, 0xED);
+    emfe_poke_byte(inst, 0x31, 0x4B);
+    emfe_poke_byte(inst, 0x32, 0x34);
+    emfe_poke_byte(inst, 0x33, 0x12);
+    AssertDisasm(inst, 0x30, "LD", "BC, ($1234)", 4, "LD BC,(nn)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmHelloWorldROM() {
+    // Decode the 30-byte hello-world ROM from Phase 1.7 and verify
+    // the first few lines step naturally.
+    printf("TestDisasmHelloWorldROM...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    for (size_t i = 0; i < sizeof(hello_world_bin); ++i) {
+        emfe_poke_byte(inst, (uint16_t)i, hello_world_bin[i]);
+    }
+
+    // 0x0000  LD HL, $000E
+    AssertDisasm(inst, 0x0000, "LD",  "HL, $000E", 3, "hello[0]");
+    // 0x0003  LD A, (HL)
+    AssertDisasm(inst, 0x0003, "LD",  "A, (HL)",   1, "hello[3]");
+    // 0x0004  OR A
+    AssertDisasm(inst, 0x0004, "OR",  "A",         1, "hello[4]");
+    // 0x0005  JR Z, $000C
+    AssertDisasm(inst, 0x0005, "JR",  "Z, $000C",  2, "hello[5]");
+    // 0x0007  OUT ($FE), A
+    AssertDisasm(inst, 0x0007, "OUT", "($FE), A",  2, "hello[7]");
+    // 0x0009  INC HL
+    AssertDisasm(inst, 0x0009, "INC", "HL",        1, "hello[9]");
+    // 0x000A  JR $0003
+    AssertDisasm(inst, 0x000A, "JR",  "$0003",     2, "hello[A]");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDisasmRangeAndProgramRange() {
+    printf("TestDisasmRangeAndProgramRange...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Load 3 instructions and disassemble the range.
+    const uint8_t prog[] = {
+        0x00,             // NOP
+        0x06, 0x11,       // LD B, $11
+        0xC9,             // RET
+    };
+    for (size_t i = 0; i < sizeof(prog); ++i) {
+        emfe_poke_byte(inst, (uint16_t)i, prog[i]);
+    }
+
+    EmfeDisasmLine lines[10] = {};
+    int32_t n = emfe_disassemble_range(inst, 0, 4, lines, 10);
+    TEST_EQ(n, 3, "disassemble_range returns 3 lines");
+    TEST_TRUE(std::strcmp(lines[0].mnemonic, "NOP") == 0, "line 0: NOP");
+    TEST_TRUE(std::strcmp(lines[1].mnemonic, "LD")  == 0, "line 1: LD");
+    TEST_TRUE(std::strcmp(lines[1].operands, "B, $11") == 0, "line 1 operands");
+    TEST_TRUE(std::strcmp(lines[2].mnemonic, "RET") == 0, "line 2: RET");
+
+    // get_program_range returns the full 64 KiB.
+    uint64_t s = 0, e = 0;
+    TEST_EQ(emfe_get_program_range(inst, &s, &e), EMFE_OK, "program_range OK");
+    TEST_EQ(s, (uint64_t)0,       "start = 0");
+    TEST_EQ(e, (uint64_t)0x10000, "end = 64 KiB");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.4) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.5) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -2051,6 +2295,13 @@ int main() {
     TestEiDi();
     TestHaltLoop();
     TestImAndInterruptVector();
+    // Phase 2.5
+    TestDisasmPlain();
+    TestDisasmCbPrefix();
+    TestDisasmDdFdPrefix();
+    TestDisasmEdPrefix();
+    TestDisasmHelloWorldROM();
+    TestDisasmRangeAndProgramRange();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
