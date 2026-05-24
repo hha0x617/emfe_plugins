@@ -46,6 +46,11 @@ public:
     bool NmiPending = false;
     bool IrqLine = false;
 
+    // True for exactly one ExecuteOne call after EI runs — interrupts
+    // are masked during that step (the Zilog "EI delay" rule that
+    // prevents an EI;RETI pattern from re-firing immediately).
+    bool EiDelayPending = false;
+
     Z80Memory* Memory = nullptr;
 
     // ---- 8-bit half accessors ---------------------------------------
@@ -181,4 +186,11 @@ private:
 
     // ---- ED prefix dispatcher ---------------------------------------
     int ExecuteEdPrefix();
+
+    // ---- Interrupt acceptance ---------------------------------------
+    // Called by ExecuteOne between instructions when an NMI or a
+    // maskable IRQ is pending. Return values are T-states consumed
+    // by the acceptance sequence (push PC + jump-to-vector).
+    int AcceptNmi();
+    int AcceptIrq();
 };

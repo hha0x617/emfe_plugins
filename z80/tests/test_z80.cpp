@@ -320,11 +320,14 @@ static void TestStepNop() {
     TEST_EQ(GetReg(inst, REG_PC), (uint64_t)2, "PC advanced again");
     TEST_EQ(emfe_get_cycle_count(inst), (int64_t)8, "cycles accumulated");
 
-    // An unrecognised opcode still traps as unsupported and leaves PC.
-    TEST_EQ(emfe_poke_byte(inst, 2, 0x76), EMFE_OK, "poke HALT (0x76)");
-    uint64_t pc_before = GetReg(inst, REG_PC);
-    TEST_EQ(emfe_step(inst), EMFE_ERR_UNSUPPORTED, "HALT not yet supported");
-    TEST_EQ(GetReg(inst, REG_PC), pc_before, "PC preserved on trap");
+    // An unrecognised opcode (e.g. 0xDD with no follow-up — impossible
+    // here since 0xDD is decoded; use 0xED 0x00 which is an unassigned
+    // ED slot and now acts as NOP per Phase 2.3. We can't easily test
+    // unsupported-trap now that DD/ED/CB are all decoded; assert
+    // instead that the trap path is reachable via an isolated 0xDD at
+    // the end of memory which would fetch garbage as the suffix — but
+    // even that decodes per spec. The trap path is exercised by
+    // Phase 2.1 RegisterDefs / Phase 1.2 step-trap test instead).
 
     emfe_destroy(inst);
     g_pass++;
@@ -444,12 +447,13 @@ static void TestLdRegReg() {
     TEST_EQ(emfe_get_cycle_count(inst), (int64_t)(7 + 6 * 4),
             "cycle counts as expected");
 
-    // HALT (0x76) is in the LD r,r' opcode range but must NOT be
-    // executed by Phase 1.4. Poke it and confirm the step traps.
+    // HALT (0x76) is excluded from the LD r,r' opcode block. Until
+    // Phase 2.4 it trapped; from Phase 2.4 onward it enters the halted
+    // state and PC advances past the HALT byte.
     emfe_poke_byte(inst, 0x100, 0x76);
     SetReg(inst, REG_PC, 0x100);
-    TEST_EQ(emfe_step(inst), EMFE_ERR_UNSUPPORTED, "HALT still unsupported");
-    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x100, "PC preserved on HALT trap");
+    TEST_EQ(emfe_step(inst), EMFE_OK, "HALT now decoded (Phase 2.4)");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x101, "PC advanced past HALT");
 
     emfe_destroy(inst);
     g_pass++;
@@ -1881,8 +1885,100 @@ static void TestEdRrdRld() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.4 tests — EI / DI / HALT / interrupts
+// ---------------------------------------------------------------------
+
+static void TestEiDi() {
+    printf("TestEiDi...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // EI sets IFF1, IFF2 := 1
+    const uint8_t ei[] = { 0xFB };
+    LoadProgram(inst, 0, ei, 1);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IFF1), (uint64_t)1, "EI sets IFF1");
+    TEST_EQ(GetReg(inst, REG_IFF2), (uint64_t)1, "EI sets IFF2");
+
+    // DI clears both
+    const uint8_t di[] = { 0xF3 };
+    LoadProgram(inst, 0x10, di, 1);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_IFF1), (uint64_t)0, "DI clears IFF1");
+    TEST_EQ(GetReg(inst, REG_IFF2), (uint64_t)0, "DI clears IFF2");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestHaltLoop() {
+    // HALT enters halted state. Each subsequent step is a pseudo-NOP
+    // (4 T, R bumps, InstructionCount bumps) but PC stays at HALT+1.
+    printf("TestHaltLoop...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const uint8_t prog[] = { 0x76 };           // HALT
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)1, "PC advanced past HALT");
+    int64_t cycles_after_halt = emfe_get_cycle_count(inst);
+    int64_t r_after_halt = (int64_t)GetReg(inst, REG_R);
+
+    // Three more steps — all pseudo-NOPs while halted.
+    emfe_step(inst);
+    emfe_step(inst);
+    emfe_step(inst);
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)1, "PC stays at HALT+1 while halted");
+    TEST_EQ(emfe_get_cycle_count(inst) - cycles_after_halt, (int64_t)(4 * 3),
+            "3 × 4 T for pseudo-NOPs");
+    TEST_EQ((int64_t)GetReg(inst, REG_R) - r_after_halt, (int64_t)3,
+            "R bumps per pseudo-NOP");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+// We can't directly trigger NMI / IRQ via the public ABI yet — Phase
+// 2.4 only adds the CPU-side machinery. Test by poking the Z80Cpu
+// state through a private back-channel: there isn't one over the C
+// ABI, so we exercise IM 1 and NMI vectors through the same path the
+// host would use (manually set NmiPending/IrqLine via memory tricks)
+// — but those fields aren't exposed either. Instead, we test the
+// state machine indirectly:
+//   - After RST 38h (which is the IM 1 vector), PC should land at
+//     0x0038 with the previous PC pushed.
+//   - We can't simulate IRQ acceptance from outside, but we CAN test
+//     the EI/DI/HALT semantics and verify IM register changes drive
+//     the right code path.
+//
+// A full interrupt-injection test will land in Phase 2.7 (the
+// zexdoc integration) which exercises the path naturally via CP/M-
+// stub ISRs. For Phase 2.4 we settle for verifying the dispatch
+// surface compiles and HALT/EI/DI behave correctly.
+static void TestImAndInterruptVector() {
+    printf("TestImAndInterruptVector...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Set IM 2, I := 0x40 — this would direct IM 2 IRQs through
+    // vectors at 0x40FF / 0x40FE. We can't fire the IRQ from outside
+    // but we can verify the state writes round-trip cleanly.
+    const uint8_t prog[] = { 0xED, 0x5E, 0x3E, 0x40, 0xED, 0x47 };  // IM 2; LD A,0x40; LD I,A
+    LoadProgram(inst, 0, prog, sizeof(prog));
+    emfe_step(inst);   // IM 2
+    emfe_step(inst);   // LD A, 0x40
+    emfe_step(inst);   // LD I, A
+    TEST_EQ(GetReg(inst, REG_IM), (uint64_t)2, "IM 2 set");
+    TEST_EQ(GetReg(inst, REG_I),  (uint64_t)0x40, "I = 0x40");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.3) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -1951,6 +2047,10 @@ int main() {
     TestEdLdiAndLdir();
     TestEdCpirSearch();
     TestEdRrdRld();
+    // Phase 2.4
+    TestEiDi();
+    TestHaltLoop();
+    TestImAndInterruptVector();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

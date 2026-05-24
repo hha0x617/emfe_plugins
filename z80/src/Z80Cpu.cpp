@@ -3,12 +3,10 @@
 //
 // Z80Cpu.cpp - Z80 CPU core.
 //
-// Phase 2.3: Phase 2.2 + ED prefix family (block I/O LDI/LDD/CPI/CPD
-// + the R variants, INI/IND/OUTI/OUTD + R variants; per-register
-// IN r,(C) / OUT (C),r; 16-bit ADC/SBC on HL; LD (nn),rr / LD rr,(nn);
-// IM 0/1/2; LD A,I / LD A,R / LD I,A / LD R,A; NEG; RETN / RETI;
-// RRD / RLD). HALT, EX/EXX, and the undocumented IXH/IXL/IYH/IYL byte
-// access land later in Phase 2 / Phase 3.
+// Phase 2.4: Phase 2.3 + interrupt machinery (EI/DI, IFF1/IFF2, NMI
+// acceptance to 0x0066, INT acceptance per IM 0/1/2) + HALT.
+// EX/EXX and the undocumented IXH/IXL/IYH/IYL byte access land in
+// Phase 2.x / Phase 3.
 
 #include "pch.h"
 #include "Z80Cpu.h"
@@ -42,6 +40,7 @@ void Z80Cpu::Reset() {
     InstructionCount = 0;
     NmiPending = false;
     IrqLine = false;
+    EiDelayPending = false;
 }
 
 uint8_t Z80Cpu::FetchByte() {
@@ -335,6 +334,33 @@ void Z80Cpu::AluCp(uint8_t a, uint8_t b) {
 int Z80Cpu::ExecuteOne() {
     if (!Memory) return 0;
 
+    // --- Interrupt acceptance --------------------------------------
+    // NMI is non-maskable and always wins. INT (maskable) only fires
+    // when IFF1 is set. The Zilog "EI delay" suppresses INT for the
+    // single instruction that immediately follows an EI, preventing
+    // EI;RETI from re-entering the ISR instantly.
+    if (NmiPending) {
+        NmiPending = false;
+        return AcceptNmi();
+    }
+    if (IrqLine && IFF1 && !EiDelayPending) {
+        return AcceptIrq();
+    }
+    if (EiDelayPending) {
+        EiDelayPending = false;  // consumed by this step's IRQ check
+    }
+
+    // --- HALT pseudo-NOP -------------------------------------------
+    // While halted, the CPU keeps re-fetching at the post-HALT PC and
+    // executing internal NOPs (R still bumps per fetch). It exits on
+    // any accepted interrupt above.
+    if (Halted) {
+        R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+        CycleCount += 4;
+        InstructionCount += 1;
+        return 4;
+    }
+
     uint16_t opcodePC = PC;            // for rollback on trap
     uint8_t opcode = FetchByte();
 
@@ -500,6 +526,29 @@ int Z80Cpu::ExecuteOne() {
         CycleCount += cycles;
         InstructionCount += 1;
         return cycles;
+    }
+
+    // ----- 0x76 HALT --------------------------------------------------
+    // Enters the halted state — PC is already past the HALT byte
+    // (FetchByte advanced it). ExecuteOne's pre-amble re-enters the
+    // pseudo-NOP loop on subsequent steps; an accepted interrupt
+    // pushes this post-HALT PC, so RETI returns to HALT+1.
+    if (opcode == 0x76) {
+        Halted = true;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+
+    // ----- 0xF3 DI / 0xFB EI ------------------------------------------
+    // DI immediate; EI takes effect after this instruction (one-step
+    // delay tracked via EiDelayPending).
+    if (opcode == 0xF3) {
+        IFF1 = IFF2 = false;
+        CycleCount += 4; InstructionCount++; return 4;
+    }
+    if (opcode == 0xFB) {
+        IFF1 = IFF2 = true;
+        EiDelayPending = true;
+        CycleCount += 4; InstructionCount++; return 4;
     }
 
     // ----- 0x40 .. 0x7F : LD r, r' (except 0x76 = HALT) ---------------
@@ -1308,4 +1357,56 @@ int Z80Cpu::ExecuteEdPrefix() {
     // This matches real-hardware behaviour for the unassigned ED slots
     // (ED 00..3F, ED 80..9F not in the block-op list, ED 77/7F, etc.).
     CycleCount += 8; InstructionCount++; return 8;
+}
+
+// ---- Interrupt acceptance helpers -----------------------------------
+
+int Z80Cpu::AcceptNmi() {
+    // NMI is non-maskable. Wake from HALT, save IFF1 into IFF2,
+    // disable maskable IRQs, push current PC, jump to 0x0066.
+    Halted = false;
+    IFF2 = IFF1;
+    IFF1 = false;
+    Push16(PC);
+    PC = 0x0066;
+    // M1 cycle for the acknowledge bumps R like any instruction fetch.
+    R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+    CycleCount += 11; InstructionCount += 1; return 11;
+}
+
+int Z80Cpu::AcceptIrq() {
+    // Maskable INT. Wake from HALT, disable both flip-flops, push PC,
+    // dispatch per IM.
+    Halted = false;
+    IFF1 = false;
+    IFF2 = false;
+    Push16(PC);
+
+    int cycles;
+    switch (IM) {
+    case 1:
+        PC = 0x0038;
+        cycles = 13;
+        break;
+    case 2: {
+        // Vector table at (I << 8) | bus_byte. We don't model an
+        // interrupt controller, so the bus byte is taken as 0xFF
+        // (idle-bus default). Real systems wire the controller's
+        // data-bus byte to whatever vector the device chose.
+        uint16_t addr = static_cast<uint16_t>((I << 8) | 0xFF);
+        PC = Memory->ReadWord(addr);
+        cycles = 19;
+        break;
+    }
+    case 0:
+    default:
+        // IM 0 is "execute whatever opcode is on the data bus". With
+        // no device wired up, real hardware reads 0xFF (idle) which
+        // happens to be RST 38h — same as IM 1. Match that.
+        PC = 0x0038;
+        cycles = 13;
+        break;
+    }
+    R = static_cast<uint8_t>((R & 0x80) | ((R + 1) & 0x7F));
+    CycleCount += cycles; InstructionCount += 1; return cycles;
 }
