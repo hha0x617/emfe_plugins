@@ -57,13 +57,14 @@ byte is dropped and the `RX_OVERRUN` status bit is set.
 
 ## Disk MMIO (`0xF0–0xF7`, reserved for Phase 4)
 
-Specification will be finalised in Phase 4 alongside the custom CBIOS
-written for the [`emfe_plugin_z80_cpm22`](https://github.com/hha0x617/emfe_plugin_z80_cpm22)
-companion repository. The intent is a minimal "sector device" — sector
-buffer + LBA + read/write trigger — not an emulation of a historic
-controller (WD1793, NEC 765, etc.). Keeping it minimal lets the CBIOS
-be small and platform-specific instead of dragging in a full
-floppy-controller emulation.
+Specification is now drafted in
+[`phase4_design.md`](phase4_design.md) §1. The shape is a minimal
+"sector device" — 24-bit LBA register, sector buffer pointer in guest
+RAM, command/status registers, fixed 128-byte CP/M-native sector size.
+Not an emulation of a historic floppy controller (WD1793, NEC 765,
+etc.); the CBIOS handles all logical-to-physical mapping at the CP/M
+end. Implementation lands in sub-phase 4.1 (CPU MMIO) and 4.4 (host-
+side mount via Settings).
 
 ## Timer / CTC (`0xE0–0xE3`, reserved for Phase 6)
 
