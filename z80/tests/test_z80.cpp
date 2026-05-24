@@ -4507,8 +4507,225 @@ static void TestAddBreakpointIdempotent() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 6.3 tests — memory watchpoints
+// ---------------------------------------------------------------------
+
+static void TestWatchpointHaltsOnWrite() {
+    // A WP_WRITE at 0x4000 should halt the worker when a guest STORE
+    // to that address fires. Program: LD A,$42 / LD (4000H), A / JR -2.
+    printf("TestWatchpointHaltsOnWrite...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 3E 42        LD A, $42
+    // 32 00 40     LD (4000H), A
+    // 18 FA        JR -6  (loop back to start)
+    emfe_poke_byte(inst, 0x0000, 0x3E);
+    emfe_poke_byte(inst, 0x0001, 0x42);
+    emfe_poke_byte(inst, 0x0002, 0x32);
+    emfe_poke_byte(inst, 0x0003, 0x00);
+    emfe_poke_byte(inst, 0x0004, 0x40);
+    emfe_poke_byte(inst, 0x0005, 0x18);
+    emfe_poke_byte(inst, 0x0006, 0xFA);
+    SetReg(inst, REG_PC, 0x0000);
+
+    TEST_EQ(emfe_add_watchpoint(inst, 0x4000,
+                                EMFE_WP_SIZE_BYTE, EMFE_WP_WRITE),
+            EMFE_OK, "add WP_WRITE OK");
+
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED, "halted on WP");
+    TEST_EQ((uint64_t)emfe_peek_byte(inst, 0x4000), (uint64_t)0x42,
+            "guest write went through (halt happens AFTER access)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestWatchpointHaltsOnRead() {
+    // WP_READ at 0x4000 should halt on a guest LOAD. Program:
+    // LD A, (4000H) / JR -5
+    printf("TestWatchpointHaltsOnRead...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_poke_byte(inst, 0x4000, 0xCA);     // sentinel byte for the read
+    // 3A 00 40   LD A, (4000H)
+    // 18 FB      JR -5
+    emfe_poke_byte(inst, 0x0000, 0x3A);
+    emfe_poke_byte(inst, 0x0001, 0x00);
+    emfe_poke_byte(inst, 0x0002, 0x40);
+    emfe_poke_byte(inst, 0x0003, 0x18);
+    emfe_poke_byte(inst, 0x0004, 0xFB);
+    SetReg(inst, REG_PC, 0x0000);
+
+    emfe_add_watchpoint(inst, 0x4000, EMFE_WP_SIZE_BYTE, EMFE_WP_READ);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED, "halted on WP read");
+    TEST_EQ(GetReg(inst, REG_A), (uint64_t)0xCA,
+            "A got the read value (read completed before halt)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestWatchpointReadwrite() {
+    // WP_READWRITE fires on both directions. Program writes 0x77
+    // then reads back — either should halt.
+    printf("TestWatchpointReadwrite...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 3E 77      LD A, $77
+    // 32 00 50   LD (5000H), A     ← write at 5000
+    // 3A 00 50   LD A, (5000H)     ← read at 5000
+    // 18 F9      JR -7
+    emfe_poke_byte(inst, 0x0000, 0x3E);
+    emfe_poke_byte(inst, 0x0001, 0x77);
+    emfe_poke_byte(inst, 0x0002, 0x32);
+    emfe_poke_byte(inst, 0x0003, 0x00);
+    emfe_poke_byte(inst, 0x0004, 0x50);
+    emfe_poke_byte(inst, 0x0005, 0x3A);
+    emfe_poke_byte(inst, 0x0006, 0x00);
+    emfe_poke_byte(inst, 0x0007, 0x50);
+    emfe_poke_byte(inst, 0x0008, 0x18);
+    emfe_poke_byte(inst, 0x0009, 0xF7);
+    SetReg(inst, REG_PC, 0x0000);
+
+    emfe_add_watchpoint(inst, 0x5000, EMFE_WP_SIZE_BYTE, EMFE_WP_READWRITE);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED, "halted on READWRITE WP");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestWatchpointDoesntHaltOnNoMatch() {
+    // WP_WRITE at 0x4000; guest writes to 0x4001. No halt.
+    printf("TestWatchpointDoesntHaltOnNoMatch...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 3E 99      LD A, $99
+    // 32 01 40   LD (4001H), A
+    // 18 FA      JR -6 (loop)
+    emfe_poke_byte(inst, 0x0000, 0x3E);
+    emfe_poke_byte(inst, 0x0001, 0x99);
+    emfe_poke_byte(inst, 0x0002, 0x32);
+    emfe_poke_byte(inst, 0x0003, 0x01);
+    emfe_poke_byte(inst, 0x0004, 0x40);
+    emfe_poke_byte(inst, 0x0005, 0x18);
+    emfe_poke_byte(inst, 0x0006, 0xFA);
+    SetReg(inst, REG_PC, 0x0000);
+
+    emfe_add_watchpoint(inst, 0x4000, EMFE_WP_SIZE_BYTE, EMFE_WP_WRITE);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_RUNNING,
+            "still running (WP didn't match)");
+    emfe_stop(inst);
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestWatchpointWordSizeCoverage() {
+    // WP at 0x4000 with size=WORD covers bytes 0x4000 AND 0x4001.
+    // A guest write to 0x4001 should halt.
+    printf("TestWatchpointWordSizeCoverage...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 3E AA      LD A, $AA
+    // 32 01 40   LD (4001H), A   ← within WP coverage [4000, 4002)
+    // 18 FA      JR -6
+    emfe_poke_byte(inst, 0x0000, 0x3E);
+    emfe_poke_byte(inst, 0x0001, 0xAA);
+    emfe_poke_byte(inst, 0x0002, 0x32);
+    emfe_poke_byte(inst, 0x0003, 0x01);
+    emfe_poke_byte(inst, 0x0004, 0x40);
+    emfe_poke_byte(inst, 0x0005, 0x18);
+    emfe_poke_byte(inst, 0x0006, 0xFA);
+    SetReg(inst, REG_PC, 0x0000);
+
+    emfe_add_watchpoint(inst, 0x4000, EMFE_WP_SIZE_WORD, EMFE_WP_WRITE);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED,
+            "WORD-coverage WP catches write to addr+1");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestRemoveWatchpoint() {
+    printf("TestRemoveWatchpoint...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_add_watchpoint(inst, 0x4000, EMFE_WP_SIZE_BYTE, EMFE_WP_WRITE);
+    EmfeWatchpointInfo buf[4]{};
+    TEST_EQ(emfe_get_watchpoints(inst, buf, 4), 1, "1 WP added");
+
+    TEST_EQ(emfe_remove_watchpoint(inst, 0x4000), EMFE_OK, "remove OK");
+    TEST_EQ(emfe_get_watchpoints(inst, buf, 4), 0, "list now empty");
+
+    // Idempotent: removing again is OK.
+    TEST_EQ(emfe_remove_watchpoint(inst, 0x4000), EMFE_OK,
+            "remove non-existent OK");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestWatchpointEnableDisable() {
+    printf("TestWatchpointEnableDisable...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 3E 33 / 32 00 60 / 18 FA  → loop writing $33 to 0x6000
+    emfe_poke_byte(inst, 0x0000, 0x3E);
+    emfe_poke_byte(inst, 0x0001, 0x33);
+    emfe_poke_byte(inst, 0x0002, 0x32);
+    emfe_poke_byte(inst, 0x0003, 0x00);
+    emfe_poke_byte(inst, 0x0004, 0x60);
+    emfe_poke_byte(inst, 0x0005, 0x18);
+    emfe_poke_byte(inst, 0x0006, 0xFA);
+
+    emfe_add_watchpoint(inst, 0x6000, EMFE_WP_SIZE_BYTE, EMFE_WP_WRITE);
+    // Disable it — worker should not halt.
+    TEST_EQ(emfe_enable_watchpoint(inst, 0x6000, false), EMFE_OK,
+            "disable WP OK");
+    SetReg(inst, REG_PC, 0x0000);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_RUNNING,
+            "disabled WP doesn't halt");
+    emfe_stop(inst);
+
+    // Re-enable + re-run → halts.
+    TEST_EQ(emfe_enable_watchpoint(inst, 0x6000, true), EMFE_OK,
+            "re-enable WP OK");
+    SetReg(inst, REG_PC, 0x0000);
+    emfe_run(inst);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    TEST_EQ(emfe_get_state(inst), EMFE_STATE_STOPPED, "re-enabled WP halts");
+
+    // Enable on non-existent → NOTFOUND.
+    TEST_EQ(emfe_enable_watchpoint(inst, 0xBEEF, true),
+            EMFE_ERR_NOTFOUND,
+            "enable non-existent WP rejects");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 6.2) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 6.3) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -4653,6 +4870,14 @@ int main() {
     TestEnableDisableBreakpoint();
     TestGetBreakpointsEnumeration();
     TestAddBreakpointIdempotent();
+    // Phase 6.3
+    TestWatchpointHaltsOnWrite();
+    TestWatchpointHaltsOnRead();
+    TestWatchpointReadwrite();
+    TestWatchpointDoesntHaltOnNoMatch();
+    TestWatchpointWordSizeCoverage();
+    TestRemoveWatchpoint();
+    TestWatchpointEnableDisable();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
