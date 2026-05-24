@@ -609,6 +609,11 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step(EmfeInstance instance) {
     // is one-shot and ExecuteOne clears it on entry.
     inst->cpu.inStepMode = true;
     int cycles = inst->cpu.ExecuteOne();
+    // Phase 6.3: any WP that fired during this instruction's
+    // ReadByte/WriteByte path leaves a flag on Z80Memory. Clear it
+    // here so a subsequent emfe_step / emfe_run doesn't immediately
+    // re-halt on stale state.
+    (void)inst->memory.TakeWatchpointHit();
     // -1 (BP hit) shouldn't be reachable here because inStepMode
     // suppresses the check; treat it as success defensively for
     // ABI clarity. 0 still means UNSUPPORTED.
@@ -657,7 +662,12 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_run(EmfeInstance instance) {
     inst->runThread = std::thread([inst]() {
         while (!inst->stopRequested.load(std::memory_order_acquire)) {
             int cycles = inst->cpu.ExecuteOne();
-            if (cycles <= 0) break;      // UNSUPPORTED or future-sentinel
+            if (cycles <= 0) break;      // UNSUPPORTED or BP-hit sentinel
+            // Phase 6.3: a watchpoint fired during this instruction's
+            // memory accesses. Halt the worker just like a BP hit.
+            // PC has already advanced past the instruction, so the
+            // host sees state-after-access — desirable semantic.
+            if (inst->memory.TakeWatchpointHit()) break;
         }
         inst->state.store(EMFE_STATE_STOPPED, std::memory_order_release);
     });
@@ -913,18 +923,123 @@ extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_breakpoints(
 }
 
 // ============================================================================
-// Watchpoints — Phase 6 fills these in
+// Watchpoints — Phase 6.3 implementation
+//
+// Memory-range watchpoints backed by Z80Memory::watchpoints. A WP
+// covers [addr, addr+size) bytes; the kind (READ / WRITE / READWRITE)
+// filters which access direction fires it. WP-by-address API ⇒
+// at most one WP per starting address.
 // ============================================================================
 
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_add_watchpoint(EmfeInstance, uint64_t, EmfeWatchpointSize, EmfeWatchpointType) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_remove_watchpoint(EmfeInstance, uint64_t)  { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_enable_watchpoint(EmfeInstance, uint64_t, bool) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_watchpoint_condition(EmfeInstance, uint64_t, const char*) { return EMFE_ERR_UNSUPPORTED; }
-extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_clear_watchpoints(EmfeInstance)            { return EMFE_OK; }
+namespace {
+    Z80Memory::WpKind ToZ80WpKind(EmfeWatchpointType t) {
+        switch (t) {
+        case EMFE_WP_READ:      return Z80Memory::WP_READ;
+        case EMFE_WP_WRITE:     return Z80Memory::WP_WRITE;
+        case EMFE_WP_READWRITE: return Z80Memory::WP_READWRITE;
+        }
+        return Z80Memory::WP_READWRITE;
+    }
+    EmfeWatchpointSize ToEmfeWpSize(uint8_t s) {
+        switch (s) {
+        case 1: return EMFE_WP_SIZE_BYTE;
+        case 2: return EMFE_WP_SIZE_WORD;
+        case 4: return EMFE_WP_SIZE_LONG;
+        }
+        return EMFE_WP_SIZE_BYTE;
+    }
+    EmfeWatchpointType ToEmfeWpType(uint8_t k) {
+        switch (k) {
+        case Z80Memory::WP_READ:      return EMFE_WP_READ;
+        case Z80Memory::WP_WRITE:     return EMFE_WP_WRITE;
+        case Z80Memory::WP_READWRITE: return EMFE_WP_READWRITE;
+        }
+        return EMFE_WP_READWRITE;
+    }
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_add_watchpoint(
+        EmfeInstance instance, uint64_t address,
+        EmfeWatchpointSize size, EmfeWatchpointType type) {
+    if (!instance) return EMFE_ERR_INVALID;
+    if (size != EMFE_WP_SIZE_BYTE && size != EMFE_WP_SIZE_WORD && size != EMFE_WP_SIZE_LONG) {
+        return EMFE_ERR_INVALID;
+    }
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    // Idempotent: if a WP already exists at this address, leave it
+    // alone (caller can remove + re-add to change size/kind).
+    for (const auto& wp : inst->memory.watchpoints) {
+        if (wp.addr == addr) return EMFE_OK;
+    }
+    inst->memory.watchpoints.push_back({
+        addr,
+        static_cast<uint8_t>(size),
+        static_cast<uint8_t>(ToZ80WpKind(type)),
+        /*enabled*/ true,
+    });
+    return EMFE_OK;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_remove_watchpoint(
+        EmfeInstance instance, uint64_t address) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    auto& v = inst->memory.watchpoints;
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        if (it->addr == addr) {
+            v.erase(it);
+            return EMFE_OK;
+        }
+    }
+    return EMFE_OK;     // idempotent: removing non-existent is OK
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_enable_watchpoint(
+        EmfeInstance instance, uint64_t address, bool enabled) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    uint16_t addr = static_cast<uint16_t>(address & 0xFFFF);
+    for (auto& wp : inst->memory.watchpoints) {
+        if (wp.addr == addr) {
+            wp.enabled = enabled;
+            return EMFE_OK;
+        }
+    }
+    return EMFE_ERR_NOTFOUND;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_set_watchpoint_condition(
+        EmfeInstance instance, uint64_t /*address*/, const char* /*cond*/) {
+    // Phase 6.3 stub-with-success — same posture as
+    // emfe_set_breakpoint_condition (design §6 Q3).
+    return instance ? EMFE_OK : EMFE_ERR_INVALID;
+}
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_clear_watchpoints(
+        EmfeInstance instance) {
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    inst->memory.watchpoints.clear();
+    return EMFE_OK;
+}
 
 extern "C" EMFE_EXPORT int32_t EMFE_CALL emfe_get_watchpoints(
-        EmfeInstance, EmfeWatchpointInfo* /*out*/, int32_t /*max*/) {
-    return 0;
+        EmfeInstance instance, EmfeWatchpointInfo* out, int32_t max) {
+    if (!instance || !out || max <= 0) return 0;
+    auto* inst = to_inst(instance);
+    int32_t n = 0;
+    for (const auto& wp : inst->memory.watchpoints) {
+        if (n >= max) break;
+        out[n].address   = wp.addr;
+        out[n].size      = ToEmfeWpSize(wp.size);
+        out[n].type      = ToEmfeWpType(wp.kind);
+        out[n].enabled   = wp.enabled;
+        out[n].condition = nullptr;
+        ++n;
+    }
+    return n;
 }
 
 // ============================================================================

@@ -14,11 +14,29 @@ void Z80Memory::Reset() {
 }
 
 uint8_t Z80Memory::ReadByte(uint16_t addr) const {
+    CheckWatchpoint(addr, /*isWrite*/false);
     return Ram[addr];
 }
 
 void Z80Memory::WriteByte(uint16_t addr, uint8_t val) {
     Ram[addr] = val;
+    CheckWatchpoint(addr, /*isWrite*/true);
+}
+
+void Z80Memory::CheckWatchpoint(uint16_t addr, bool isWrite) const {
+    for (const auto& wp : watchpoints) {
+        if (!wp.enabled) continue;
+        if (addr < wp.addr || addr >= wp.addr + wp.size) continue;
+        // Direction filter: WP_READ fires only on reads, WP_WRITE
+        // only on writes, WP_READWRITE on both.
+        if (isWrite) {
+            if (wp.kind == WP_READ) continue;
+        } else {
+            if (wp.kind == WP_WRITE) continue;
+        }
+        watchpointHit = true;
+        return;     // one hit is enough; no point scanning further
+    }
 }
 
 uint16_t Z80Memory::ReadWord(uint16_t addr) const {
