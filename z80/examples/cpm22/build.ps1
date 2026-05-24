@@ -95,26 +95,57 @@ $CompanionPath = (Resolve-Path -LiteralPath $CompanionPath -ErrorAction Silently
     (Resolve-Path -LiteralPath $CompanionPath).Path :
     $CompanionPath
 
-$CcpBin     = Join-Path $CompanionPath 'cpm22/binary/ccp.bin'
-$BdosBin    = Join-Path $CompanionPath 'cpm22/binary/bdos.bin'
+$Cpm22Src   = Join-Path $CompanionPath 'cpm22/source/CPM22.Z80'
 $DisksDir   = Join-Path $CompanionPath 'disks'
 $ImageOut   = Join-Path $DisksDir 'cpm22-sssd.img'
 
 # Skip-with-message path (mirrors the zexdoc / eForth pattern): if the
 # companion repo isn't populated, document what's needed and exit 0 so a
 # casual `pwsh ./build.ps1` doesn't look like a build failure.
-if (-not (Test-Path $CcpBin) -or -not (Test-Path $BdosBin)) {
+if (-not (Test-Path $Cpm22Src)) {
     Write-Host ""
-    Write-Host "(SKIP - companion CCP / BDOS binaries not found)"
+    Write-Host "(SKIP - companion CPM22.Z80 source not found)"
     Write-Host ""
-    Write-Host "  Expected:  $CcpBin"
-    Write-Host "             $BdosBin"
+    Write-Host "  Expected:  $Cpm22Src"
     Write-Host ""
-    Write-Host "  Populate the companion repo with CCP / BDOS binaries from an"
-    Write-Host "  upstream CP/M 2.2 archive (see emfe_plugin_z80_cpm22/docs/scope.md"
-    Write-Host "  for the canonical sources). Then re-run this script."
+    Write-Host "  Populate the companion repo with CPM22.Z80 from cpm2-asm.zip"
+    Write-Host "  on 'The Unofficial CP/M Web Site' — see"
+    Write-Host "    emfe_plugin_z80_cpm22/cpm22/source/README.md"
+    Write-Host "  and"
+    Write-Host "    emfe_plugin_z80_cpm22/docs/provenance.md"
+    Write-Host "  for the canonical source and SHA-256. Then re-run this script."
     exit 0
 }
+
+# -----------------------------------------------------------------------------
+# Assemble CPM22.Z80 with MEM EQU 64 substitution.
+#
+# The upstream source defaults to MEM EQU 62 (62-KiB system, ORG 0xDC00).
+# Our plugin's memory map (phase4_design.md §3.1) puts CCP at 0xE400, which
+# corresponds to MEM = 64. We substitute the value into a temporary copy so
+# the on-disk source under the companion stays verbatim (matching the
+# documented SHA-256 in provenance.md).
+# -----------------------------------------------------------------------------
+
+$Cpm22Tmp = Join-Path $ScriptRoot 'cbios/cpm22-mem64.z80'
+$Cpm22Bin = Join-Path $ScriptRoot 'cbios/cpm22-system.bin'
+
+$srcText = Get-Content $Cpm22Src -Raw
+$patched = $srcText -replace '(?m)^(\s*MEM\s+EQU\s+)\d+', '${1}64'
+if ($patched -eq $srcText) {
+    Write-Error "Could not find 'MEM EQU N' line in $Cpm22Src to patch — upstream layout may have changed."
+    exit 1
+}
+Set-Content -LiteralPath $Cpm22Tmp -Value $patched -NoNewline
+
+Write-Host "Assembling $Cpm22Src (MEM=64) -> $Cpm22Bin"
+& $PasmoExe --bin $Cpm22Tmp $Cpm22Bin
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "pasmo failed on CPM22.Z80 with exit code $LASTEXITCODE"
+    exit 1
+}
+$cpm22Size = (Get-Item $Cpm22Bin).Length
+Write-Host ("CCP+BDOS assembled: {0} bytes" -f $cpm22Size)
 
 # -----------------------------------------------------------------------------
 # Build the disk image.
@@ -151,15 +182,15 @@ $image[2] = 0xFA
 # (remaining 125 bytes of sector 0 stay 0xE5; the JP is all we need)
 
 # -- CCP + BDOS at LBA 1 onwards ------------------------------------------
-$ccpBytes  = [System.IO.File]::ReadAllBytes($CcpBin)
-$bdosBytes = [System.IO.File]::ReadAllBytes($BdosBin)
-$payload   = New-Object byte[] ($ccpBytes.Length + $bdosBytes.Length)
-[Array]::Copy($ccpBytes,  0, $payload, 0,                  $ccpBytes.Length)
-[Array]::Copy($bdosBytes, 0, $payload, $ccpBytes.Length,   $bdosBytes.Length)
-
+# The CPM22.Z80 source assembles to a single flat blob starting at ORG
+# 0xE400 (because we patched MEM EQU 64). Total size with both CCP +
+# BDOS is around 5632 bytes; cap at 44 sectors so it never overlaps
+# the CBIOS region the cold-boot loader will lay down at LBA 45+.
+$payload = [System.IO.File]::ReadAllBytes($Cpm22Bin)
 if ($payload.Length -gt ($SectorSize * 44)) {
     Write-Error ("CCP+BDOS payload is {0} bytes (> 44 sectors = {1}). " +
-                 "Adjust WBOOT sector count in cbios.asm or rebuild CCP/BDOS." -f
+                 "Source layout may have changed — check CPM22.Z80 ORG vs " +
+                 "WBOOT sector count in cbios.asm." -f
                  $payload.Length, ($SectorSize * 44))
     exit 1
 }
