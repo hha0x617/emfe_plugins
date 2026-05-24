@@ -235,7 +235,9 @@ namespace {
             mnem = "LD"; ops = std::string("(") + xy + disp_str(d) + "), " + imm8(n); return;
         }
         // 0x46/0x4E/0x56/0x5E/0x66/0x6E/0x7E LD r, (IXY+d)
-        if ((opcode & 0xC7) == 0x46) {
+        // (0x76 fits the bit pattern but is HALT — fall through to
+        // the unrecognised-suffix path so it renders as DB / DB.)
+        if ((opcode & 0xC7) == 0x46 && opcode != 0x76) {
             int dst = (opcode >> 3) & 0x07;
             int8_t d = static_cast<int8_t>(r.fetch());
             mnem = "LD"; ops = std::string(k_reg8[dst]) + ", (" + xy + disp_str(d) + ")"; return;
@@ -264,6 +266,46 @@ namespace {
             ops  = k_alu_takes_a_prefix[op] ? ("A, " + target) : target;
             return;
         }
+        // ----- Phase 3.1: 8-bit halves of IXY (undocumented but used) -----
+        // Mirrors the Z80Cpu::ExecuteWithIndex handlers — see there for
+        // the substitution rules. Helper: map H/L (codes 4/5) to the
+        // IXYH/IXYL spelling, fall through to the standard k_reg8 names
+        // for every other code.
+        auto regH = std::string(xy) + "H";   // "IXH" / "IYH"
+        auto regL = std::string(xy) + "L";   // "IXL" / "IYL"
+        auto regName = [&](int code) -> std::string {
+            if (code == 4) return regH;
+            if (code == 5) return regL;
+            return std::string(k_reg8[code]);
+        };
+        // INC / DEC IXYH / IXYL.
+        if (opcode == 0x24) { mnem = "INC"; ops = regH; return; }
+        if (opcode == 0x2C) { mnem = "INC"; ops = regL; return; }
+        if (opcode == 0x25) { mnem = "DEC"; ops = regH; return; }
+        if (opcode == 0x2D) { mnem = "DEC"; ops = regL; return; }
+        // LD IXYH, n / LD IXYL, n.
+        if (opcode == 0x26) { uint8_t n = r.fetch(); mnem = "LD"; ops = regH + ", " + imm8(n); return; }
+        if (opcode == 0x2E) { uint8_t n = r.fetch(); mnem = "LD"; ops = regL + ", " + imm8(n); return; }
+        // LD r, r' with H/L → IXYH/IXYL when (HL) is not involved.
+        if ((opcode & 0xC0) == 0x40 && opcode != 0x76) {
+            int dst = (opcode >> 3) & 0x07;
+            int src = opcode & 0x07;
+            if (dst != 6 && src != 6 && (dst == 4 || dst == 5 || src == 4 || src == 5)) {
+                mnem = "LD"; ops = regName(dst) + ", " + regName(src); return;
+            }
+        }
+        // ALU A, IXYH / IXYL.
+        if ((opcode & 0xC0) == 0x80) {
+            int src = opcode & 0x07;
+            if (src == 4 || src == 5) {
+                int op = (opcode >> 3) & 0x07;
+                mnem = k_alu_mnem[op];
+                std::string target = (src == 4) ? regH : regL;
+                ops  = k_alu_takes_a_prefix[op] ? ("A, " + target) : target;
+                return;
+            }
+        }
+
         // DD CB d xx — 4-byte form.
         if (opcode == 0xCB) {
             int8_t d  = static_cast<int8_t>(r.fetch());

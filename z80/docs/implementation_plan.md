@@ -96,7 +96,7 @@ Phase 3, but is not blocked on by CI since the binary is user-supplied.
 
 | # | Theme |
 |---|---|
-| 3.1 | 8-bit operations on `IXH`, `IXL`, `IYH`, `IYL` |
+| 3.1 | 8-bit operations on `IXH`, `IXL`, `IYH`, `IYL`: INC / DEC / `LD r,n` for the halves, `LD r, IXY{H,L}` and `LD IXY{H,L}, r` (with `(HL)` left untouched), and ALU `A, IXY{H,L}`. Also fix a latent `DD 76` / `FD 76` bug — those must execute as plain `HALT`, not `LD (HL), (IX+d)` |
 | 3.2 | Undocumented flag propagation (`Y`, `X` bit propagation from `BIT` / `SCF` / `CCF` / 16-bit ops) |
 | 3.3 | `ED`-prefix undocumented NOPs of various lengths |
 | 3.4 | Add `examples/eforth/` from Bill Muench's public-domain eForth-Z80; confirm REPL operation over UART |
