@@ -1,0 +1,7 @@
+# Drop a public-domain eForth-Z80 binary (Bill Muench, early 1990s)
+# here to enable TestEForthIfPresent. The .bin / .com / .hex is not
+# redistributed by this repository; sourcing instructions are in
+# README.md.
+eforth.bin
+eforth.com
+eforth.hex
