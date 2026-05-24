@@ -3102,8 +3102,125 @@ static void TestDisasmEdUnassignedAsNopStar() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 3.4 — eForth-Z80 REPL demo
+//
+// Bill Muench eForth (public domain) is a small portable Forth that
+// runs as a bare-metal Z80 program — no operating system, no CP/M,
+// just a cold start at PC := 0x0000 driving the UART.
+//
+// The harness uses the UART path (ports 0xFE / 0xFF, see docs/mmio.md)
+// rather than a CP/M-stub like the zexdoc test, because eForth has no
+// OS to intercept. Same SKIP-when-binary-absent pattern as zexdoc.
+// ---------------------------------------------------------------------
+
+static void TestEForthIfPresent() {
+    printf("TestEForthIfPresent...\n");
+
+    const char* candidates[] = {
+        "examples/eforth/eforth.bin",
+        "../../../examples/eforth/eforth.bin",
+        "../../examples/eforth/eforth.bin",
+        "eforth.bin",
+    };
+    std::string foundPath;
+    std::vector<uint8_t> bytes;
+    for (const char* path : candidates) {
+        FILE* f = std::fopen(path, "rb");
+        if (!f) continue;
+        std::fseek(f, 0, SEEK_END);
+        long len = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (len > 0 && len < 0x10000) {
+            bytes.resize(static_cast<size_t>(len));
+            if (std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size()) {
+                foundPath = path;
+            }
+        }
+        std::fclose(f);
+        if (!foundPath.empty()) break;
+    }
+
+    if (foundPath.empty()) {
+        printf("  (SKIP — eforth.bin not found; see z80/examples/eforth/README.md)\n");
+        g_pass++;
+        return;
+    }
+    printf("  (found at %s, %zu bytes)\n", foundPath.c_str(), bytes.size());
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Load at the cold-vector address. Most bare-metal Z80 ROMs
+    // (including the published eForth-Z80 ports) sit at 0x0000.
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        emfe_poke_byte(inst, static_cast<uint16_t>(i & 0xFFFF), bytes[i]);
+    }
+    SetReg(inst, REG_PC, 0x0000);
+    SetReg(inst, REG_SP, 0xFF00);
+
+    CaptureCtx ctx;
+    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
+
+    // Cold-start budget: most published eForth-Z80 images print a
+    // banner within ~500k instructions. 5M is comfortably generous
+    // and still finishes inside the unit-test second budget.
+    const int64_t k_coldBudget = 5000000;
+    for (int64_t i = 0; i < k_coldBudget; ++i) {
+        if (emfe_step(inst) != EMFE_OK) {
+            fprintf(stderr, "  FAIL: cold-start step returned non-OK at i=%lld\n",
+                    static_cast<long long>(i));
+            g_fail++;
+            emfe_destroy(inst);
+            return;
+        }
+    }
+    size_t banner_len = ctx.captured.size();
+    printf("  cold start produced %zu chars\n", banner_len);
+    if (banner_len == 0) {
+        fprintf(stderr,
+                "  FAIL: no UART output after %lld cold-start steps. "
+                "If your eForth image needs a different load address "
+                "or longer warm-up, adjust TestEForthIfPresent at the "
+                "top of the function.\n",
+                static_cast<long long>(k_coldBudget));
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+
+    // REPL transaction: ask "1 2 + . CR\n" and run for another budget.
+    // Use CR + LF to be tolerant of either line-ending convention.
+    size_t pre_repl = ctx.captured.size();
+    emfe_send_string(inst, "1 2 + . CR\r\n");
+    const int64_t k_replBudget = 2000000;
+    for (int64_t i = 0; i < k_replBudget; ++i) {
+        emfe_step(inst);   // ignore non-OK here — eForth can park itself
+    }
+    std::string repl_output = ctx.captured.substr(pre_repl);
+    printf("  REPL produced %zu chars after the prompt\n", repl_output.size());
+
+    // We accept any output that contains a "3" digit (the result of
+    // 1 + 2). Forth's "." prints the number followed by a space, so
+    // "3 " is the typical form, but some images print just "3" then
+    // CR/LF. A bare "3" digit is sufficient evidence the REPL ran.
+    bool saw_three = (repl_output.find('3') != std::string::npos);
+    if (!saw_three) {
+        fprintf(stderr,
+                "  FAIL: REPL did not produce '3' after '1 2 + .'. "
+                "Captured (last 200 chars):\n%s\n",
+                repl_output.substr(repl_output.size() > 200 ? repl_output.size() - 200 : 0).c_str());
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 3.3) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 3.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3211,6 +3328,8 @@ int main() {
     // Phase 3.3
     TestEdNopBehaviour();
     TestDisasmEdUnassignedAsNopStar();
+    // Phase 3.4
+    TestEForthIfPresent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
