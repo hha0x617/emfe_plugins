@@ -76,6 +76,14 @@ struct EmfeInstanceData {
     Z80DiskDevice disk;
     std::atomic<EmfeState> state{EMFE_STATE_STOPPED};
 
+    // Phase 6.1: emfe_run lifecycle. The worker thread polls
+    // stopRequested in a tight ExecuteOne loop; emfe_stop sets the
+    // flag and joins. Both fields are also touched in emfe_destroy
+    // (stop the worker BEFORE deleting any device state) so a host
+    // that drops an instance mid-run doesn't UAF its CPU thread.
+    std::atomic<bool> stopRequested{false};
+    std::thread       runThread;
+
     // Console char callback (set by the host) — fired whenever the
     // guest writes a byte to the UART data port. Stored under a mutex
     // so the host can swap it while the worker thread is running.
@@ -265,7 +273,15 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_destroy(EmfeInstance instance) {
     if (!instance) return EMFE_ERR_INVALID;
-    delete to_inst(instance);
+    auto* inst = to_inst(instance);
+    // Phase 6.1: stop the worker thread BEFORE tearing the instance
+    // down. Worker reads/writes inst->cpu / inst->memory; if delete
+    // runs while the thread is still ExecuteOne'ing we'd UAF.
+    inst->stopRequested.store(true, std::memory_order_release);
+    if (inst->runThread.joinable()) {
+        inst->runThread.join();
+    }
+    delete inst;
     return EMFE_OK;
 }
 
@@ -600,12 +616,57 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_step_out(EmfeInstance instance)
     return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
 }
 
+// Phase 6.1: emfe_run + emfe_stop worker-thread lifecycle.
+//
+// emfe_run spawns a worker thread that loops Z80Cpu::ExecuteOne
+// until: (a) stopRequested is set (emfe_stop / emfe_destroy), or
+// (b) ExecuteOne returns 0 (UNSUPPORTED opcode — the guest hit
+// something we don't implement). The thread updates state to
+// STOPPED on exit so the host can poll emfe_get_state to detect
+// auto-halt.
+//
+// Calling emfe_run while already running returns EMFE_ERR_STATE.
+// emfe_stop / emfe_destroy are idempotent on an already-stopped
+// instance (stopRequested set unconditionally; join is no-op if
+// the thread isn't joinable).
+
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_run(EmfeInstance instance) {
-    return instance ? EMFE_ERR_UNSUPPORTED : EMFE_ERR_INVALID;
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+
+    EmfeState expected = EMFE_STATE_STOPPED;
+    if (!inst->state.compare_exchange_strong(expected, EMFE_STATE_RUNNING)) {
+        return EMFE_ERR_STATE;     // already running (or some other state)
+    }
+
+    // Clean up any previous worker — emfe_stop on the prior run may
+    // have set state→STOPPED but never joined (it does, but defensive).
+    if (inst->runThread.joinable()) {
+        inst->runThread.join();
+    }
+    inst->stopRequested.store(false, std::memory_order_release);
+
+    inst->runThread = std::thread([inst]() {
+        while (!inst->stopRequested.load(std::memory_order_acquire)) {
+            int cycles = inst->cpu.ExecuteOne();
+            if (cycles <= 0) break;      // UNSUPPORTED or future-sentinel
+        }
+        inst->state.store(EMFE_STATE_STOPPED, std::memory_order_release);
+    });
+    return EMFE_OK;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
-    return instance ? EMFE_OK : EMFE_ERR_INVALID;
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    inst->stopRequested.store(true, std::memory_order_release);
+    if (inst->runThread.joinable()) {
+        inst->runThread.join();
+    }
+    // The worker stores STOPPED itself on exit; do it here too for
+    // the idempotent "stop an already-stopped instance" case.
+    inst->state.store(EMFE_STATE_STOPPED, std::memory_order_release);
+    return EMFE_OK;
 }
 
 // Phase 4.4: load the disk image referenced by the DiskImagePath /
