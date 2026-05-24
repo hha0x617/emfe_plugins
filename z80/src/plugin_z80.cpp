@@ -614,9 +614,11 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
 // have moved into appliedSettings and AFTER inst->disk.Reset() has
 // cleared the device's transient state.
 //
-// Empty DiskImagePath unmounts; a non-existent or unreadable path
-// also unmounts and leaves the IMAGE_LOADED status bit clear (the
-// guest CBIOS then sees no media in drive A).
+// Empty DiskImagePath means "Settings doesn't manage the mount" —
+// leave the disk device alone (so hosts / tests that mounted via
+// the vendor-prefixed emfe_z80_mount_disk_image hook keep their
+// image). Non-empty path replaces; missing / unreadable file
+// explicitly unmounts so the user notices a typo.
 static void ApplyDiskImageOnReset(EmfeInstanceData* inst) {
     auto path_it = inst->appliedSettings.find("DiskImagePath");
     auto wp_it   = inst->appliedSettings.find("DiskImageWriteProtect");
@@ -627,13 +629,11 @@ static void ApplyDiskImageOnReset(EmfeInstanceData* inst) {
         writeProtect = (v == "true" || v == "1");
     }
 
-    if (path.empty()) {
-        inst->disk.SetImage({}, false);
-        return;
-    }
+    if (path.empty()) return;     // Settings disengaged — preserve any vendor mount
+
     std::ifstream f(path, std::ios::binary);
     if (!f) {
-        inst->disk.SetImage({}, false);   // file missing → leave unmounted
+        inst->disk.SetImage({}, false);   // file missing → unmount (loud failure)
         return;
     }
     f.seekg(0, std::ios::end);
@@ -651,6 +651,51 @@ static void ApplyDiskImageOnReset(EmfeInstanceData* inst) {
         return;
     }
     inst->disk.SetImage(std::move(bytes), writeProtect);
+}
+
+// Phase 4.5: if BootFromDisk is enabled AND a disk image is mounted,
+// pre-load the system tracks from the image into the canonical RAM
+// addresses and start execution at the cold-boot vector (0x0000).
+//
+// This is the host-side equivalent of "the boot stub already ran" —
+// the plugin lays down the boot stub at 0x0000, the CCP / BDOS at
+// 0xE400 / 0xEC00, and the CBIOS at 0xFA00 in one shot, so that on
+// the very first instruction execution the JP 0xFA00 in the boot
+// stub lands in real CBIOS code. The layout matches what build.ps1
+// writes to a fresh SSSD-256K image.
+//
+// No-op if BootFromDisk is false or no image is mounted — the cold
+// boot then behaves like Phase 1.7 / Phase 3.4 (bare-metal at PC=0
+// running whatever's already in RAM).
+static void ApplyBootFromDiskOnReset(EmfeInstanceData* inst) {
+    auto boot_it = inst->appliedSettings.find("BootFromDisk");
+    bool bootFromDisk = false;
+    if (boot_it != inst->appliedSettings.end()) {
+        const std::string& v = boot_it->second;
+        bootFromDisk = (v == "true" || v == "1");
+    }
+    if (!bootFromDisk) return;
+    if (!inst->disk.HasImage()) return;
+
+    // Sector size is fixed at 128 bytes (CP/M 2.2 native record).
+    // System layout written by build.ps1:
+    //   LBA 0       boot stub @ RAM 0x0000  (3 bytes of JP + padding)
+    //   LBA 1..44   CCP + BDOS @ RAM 0xE400 (44 sectors = 5632 bytes)
+    //   LBA 45..56  CBIOS      @ RAM 0xFA00 (12 sectors = 1536 bytes)
+    auto copyRange = [inst](uint32_t srcLba, uint32_t count, uint16_t dstAddr) {
+        for (uint32_t s = 0; s < count; ++s) {
+            uint32_t srcOff = (srcLba + s) * 128u;
+            for (int b = 0; b < 128; ++b) {
+                uint8_t v = inst->disk.PeekImageByte(srcOff + b);
+                inst->memory.Poke(static_cast<uint16_t>(dstAddr + s * 128 + b), v);
+            }
+        }
+    };
+    copyRange(0,   1,  0x0000);   // boot stub
+    copyRange(1,  44,  0xE400);   // CCP + BDOS
+    copyRange(45, 12,  0xFA00);   // CBIOS
+
+    inst->cpu.PC = 0x0000;
 }
 
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
@@ -675,6 +720,10 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     // after the device transient state has been cleared — that way
     // the freshly-loaded image is the first thing the guest sees.
     ApplyDiskImageOnReset(inst);
+    // Once the image is mounted (or not), decide whether we should
+    // pre-stage system tracks into RAM and start at the cold-boot
+    // vector. This is what makes CP/M actually boot.
+    ApplyBootFromDiskOnReset(inst);
     return EMFE_OK;
 }
 
