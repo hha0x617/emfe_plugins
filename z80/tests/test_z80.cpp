@@ -3666,8 +3666,11 @@ static void TestBootFromDiskStagesRam() {
         }
     };
     fillSector(0,  0xB0);                                       // boot stub
-    for (uint32_t s = 1;  s < 1 + 44;  ++s) fillSector(s, 0xC0);    // CCP+BDOS
-    for (uint32_t s = 45; s < 45 + 12; ++s) fillSector(s, 0xCB);    // CBIOS
+    // CCP+BDOS code in LBA 1..44 (44 sectors that ApplyBootFromDisk
+    // actually loads); LBA 45 holds the CPM22.Z80 internal fake BIOS
+    // table on a real image, which the plugin intentionally skips.
+    for (uint32_t s = 1;  s < 1 + 44;  ++s) fillSector(s, 0xC0);
+    for (uint32_t s = 46; s < 46 + 12; ++s) fillSector(s, 0xCB);    // CBIOS
 
     EmfeInstance inst = nullptr;
     emfe_create(&inst);
@@ -3690,13 +3693,16 @@ static void TestBootFromDiskStagesRam() {
     TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0x007F)),
             static_cast<uint64_t>(0xB0 ^ 0x7F),
             "boot stub byte 127 landed at RAM 0x007F");
-    // CCP+BDOS at RAM 0xE400.
+    // CCP+BDOS at RAM 0xE400 (44 sectors = 5632 bytes, ends at 0xF9FF).
     TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xE400)), (uint64_t)0xC0,
             "CCP+BDOS byte 0 landed at RAM 0xE400");
     TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xF9FF)),
             static_cast<uint64_t>(0xC0 ^ 0x7F),
             "CCP+BDOS last byte landed at RAM 0xF9FF");
-    // CBIOS at RAM 0xFA00.
+    // CBIOS at RAM 0xFA00. It deliberately overlays the same address
+    // where CPM22.Z80's internal fake BIOS table would have been —
+    // ApplyBootFromDisk skips LBA 45 (the fake-table sector) so only
+    // our real CBIOS lands there.
     TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xFA00)), (uint64_t)0xCB,
             "CBIOS byte 0 landed at RAM 0xFA00");
     TEST_EQ(static_cast<uint64_t>(emfe_peek_byte(inst, 0xFFFF)),
@@ -3764,9 +3770,9 @@ static void TestCpmBootIfPresent() {
 
     const int64_t k_bootBudget = 10000000;
     for (int64_t i = 0; i < k_bootBudget; ++i) {
-        // Tolerate early-boot non-OK steps — CCP's setup sometimes
-        // surfaces a transient bus error while the stack is staging.
-        // The A> prompt is the actual gate.
+        // Tolerate early-boot non-OK steps — CCP's setup may surface
+        // transient bus errors while the stack stages. The A> prompt
+        // is the gate.
         (void)emfe_step(inst);
     }
 
@@ -3774,7 +3780,11 @@ static void TestCpmBootIfPresent() {
     printf("  captured %zu chars during cold boot\n", out.size());
 
     bool sawBios    = (out.find("emfe Z80 CBIOS") != std::string::npos);
-    bool sawAPrompt = (out.find("A>")             != std::string::npos);
+    // CCP prints the drive letter via `ADD A,'a'` (lowercase) in Calkins'
+    // CPM22.Z80 reconstruction; other historical CCP variants use `A`.
+    // Accept either case.
+    bool sawAPrompt = (out.find("A>") != std::string::npos) ||
+                      (out.find("a>") != std::string::npos);
 
     if (!sawBios) {
         fprintf(stderr, "  FAIL: CBIOS sign-on marker not seen. "

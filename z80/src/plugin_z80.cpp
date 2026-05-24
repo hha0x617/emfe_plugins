@@ -680,8 +680,21 @@ static void ApplyBootFromDiskOnReset(EmfeInstanceData* inst) {
     // Sector size is fixed at 128 bytes (CP/M 2.2 native record).
     // System layout written by build.ps1:
     //   LBA 0       boot stub @ RAM 0x0000  (3 bytes of JP + padding)
-    //   LBA 1..44   CCP + BDOS @ RAM 0xE400 (44 sectors = 5632 bytes)
-    //   LBA 45..56  CBIOS      @ RAM 0xFA00 (12 sectors = 1536 bytes)
+    //   LBA 1..44   CCP + BDOS @ RAM 0xE400 (44 sectors = 5632 bytes —
+    //                                        the CODE portion of the
+    //                                        5683-byte assembled blob)
+    //   LBA 45      NOT LOADED — contains Calkins' CPM22.Z80 internal
+    //                            fake BIOS jump table (17 × 'JP 0'
+    //                            placeholders). Real CBIOS overlays
+    //                            this region in RAM, so loading the
+    //                            fake table would overwrite us.
+    //   LBA 46..57  CBIOS      @ RAM 0xFA00 (12 sectors = 1536 bytes —
+    //                                        exactly fills 0xFA00..0xFFFF)
+    // The trick: CPM22.Z80's BDOS internally CALLs "CONOUT", "READ" etc.
+    // at addresses 0xFA0C, 0xFA27 etc — which are inside the fake BIOS
+    // table at 0xFA00. By placing our REAL CBIOS at the same 0xFA00
+    // base address, those calls resolve to OUR routines. The fake bytes
+    // at LBA 45 in the disk image are never loaded into RAM.
     auto copyRange = [inst](uint32_t srcLba, uint32_t count, uint16_t dstAddr) {
         for (uint32_t s = 0; s < count; ++s) {
             uint32_t srcOff = (srcLba + s) * 128u;
@@ -692,8 +705,8 @@ static void ApplyBootFromDiskOnReset(EmfeInstanceData* inst) {
         }
     };
     copyRange(0,   1,  0x0000);   // boot stub
-    copyRange(1,  44,  0xE400);   // CCP + BDOS
-    copyRange(45, 12,  0xFA00);   // CBIOS
+    copyRange(1,  44,  0xE400);   // CCP + BDOS (code+data, NOT fake table)
+    copyRange(46, 12,  0xFA00);   // real CBIOS, overlaying fake-table addrs
 
     inst->cpu.PC = 0x0000;
 }
