@@ -195,10 +195,15 @@ namespace {
         case 0xB3: mnem = "OTIR"; return;
         case 0xBB: mnem = "OTDR"; return;
         }
-        // Unassigned ED slot — render as DB ED nn (matches what NOP-ed
-        // hardware would consume).
-        mnem = "DB";
-        ops  = "$ED, " + imm8(sub);
+        // Unassigned ED slot. Real hardware treats every unrecognised
+        // ED-prefix opcode as a 2-byte 8 T-state NOP (the prefix
+        // consumes 4 T, the suffix consumes 4 T and is dropped). The
+        // CPU side matches that — see Z80Cpu::ExecuteEdPrefix's
+        // "Anything else under ED" fallback. We use the convention
+        // `NOP*` (sometimes "NOPD") to flag the 2-byte form, which
+        // tells the user the disasm did consume both bytes.
+        mnem = "NOP*";
+        ops  = "";
     }
 
     void decodeDdFd(Reader& r, const char* xy, std::string& mnem, std::string& ops) {
