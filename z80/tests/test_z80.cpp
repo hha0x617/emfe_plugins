@@ -2241,6 +2241,8 @@ static void TestSettingsDefsPresent() {
 
     bool sawMemorySize = false, sawResetVector = false, sawClearRam = false;
     bool sawCols = false, sawRows = false, sawScrollback = false;
+    // Phase 6.5 — parity with mc6809's General-tab keys.
+    bool sawBoardType = false, sawTheme = false;
     for (int32_t i = 0; i < n; ++i) {
         const auto& d = defs[i];
         if (std::strcmp(d.key, "MemorySize") == 0) {
@@ -2256,6 +2258,14 @@ static void TestSettingsDefsPresent() {
             sawRows = (std::strcmp(d.group, "Console") == 0);
         } else if (std::strcmp(d.key, "ConsoleScrollbackLines") == 0) {
             sawScrollback = (std::strcmp(d.group, "Console") == 0);
+        } else if (std::strcmp(d.key, "BoardType") == 0) {
+            sawBoardType = (std::strcmp(d.group, "General") == 0
+                            && d.type == EMFE_SETTING_COMBO
+                            && (d.flags & EMFE_SETTING_FLAG_REQUIRES_RESET) != 0);
+        } else if (std::strcmp(d.key, "Theme") == 0) {
+            sawTheme = (std::strcmp(d.group, "General") == 0
+                        && d.type == EMFE_SETTING_COMBO
+                        && (d.flags & EMFE_SETTING_FLAG_REQUIRES_RESET) == 0);
         }
     }
     TEST_TRUE(sawMemorySize,  "MemorySize under General");
@@ -2264,6 +2274,10 @@ static void TestSettingsDefsPresent() {
     TEST_TRUE(sawCols,        "ConsoleColumns under Console");
     TEST_TRUE(sawRows,        "ConsoleRows under Console");
     TEST_TRUE(sawScrollback,  "ConsoleScrollbackLines under Console");
+    TEST_TRUE(sawBoardType,
+              "BoardType under General (COMBO, REQUIRES_RESET) — mc6809 parity");
+    TEST_TRUE(sawTheme,
+              "Theme under General (COMBO, no RR) — mc6809 parity");
 
     emfe_destroy(inst);
     g_pass++;
