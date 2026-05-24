@@ -51,40 +51,56 @@ pwsh ./build.ps1 -SkipImage
 The script:
 
 1. Looks for `pasmo` on PATH (single-binary Z80 assembler — install
-   from <https://pasmo.speccy.org/>). Other assemblers work too
-   (`sjasmplus`, `z80asm`, `tniASM`) — the source uses only standard
-   mnemonics + `ORG`/`EQU`/`DB`/`DW`/`DS`.
+   from <https://pasmo.speccy.org/>). The CBIOS source uses only
+   standard mnemonics + `ORG` / `EQU` / `DB` / `DW` / `DS` so other
+   Z80 assemblers (`sjasmplus`, `z80asm`, `tniASM`) work too if you
+   substitute the call.
 2. Assembles `cbios/cbios.asm` → `cbios/cbios.bin` (flat binary,
    `pasmo --bin`).
-3. Resolves the companion repo (`emfe_plugin_z80_cpm22`) as a sibling
-   directory next to `emfe_plugins`. If absent or not populated with
-   CCP / BDOS binaries, prints a SKIP message and exits 0 — same
-   "user-supplied binary" pattern as zexdoc (Phase 2.7) and eForth
-   (Phase 3.4).
-4. Builds a 256 256-byte SSSD layout (77 × 26 × 128 B) with:
+3. Resolves the companion repo (`emfe_plugin_z80_cpm22`) as a
+   sibling directory next to `emfe_plugins`. If absent or not
+   populated with `cpm22/source/CPM22.Z80`, prints a SKIP message
+   and exits 0 — same "user-supplied source" pattern as zexdoc
+   (Phase 2.7) and eForth (Phase 3.4).
+4. Substitutes `MEM EQU 64` into a temporary copy of `CPM22.Z80`
+   (the upstream default is `MEM EQU 62` for a 62-KiB system,
+   which would land at ORG `0xDC00`; our memory map needs ORG
+   `0xE400`). Assembles the patched copy → `cbios/cpm22-system.bin`
+   (~5632 bytes of CCP + BDOS).
+5. Builds a 256 256-byte SSSD layout (77 × 26 × 128 B) with:
    - LBA 0: 3-byte boot stub (`JP 0xFA00` into CBIOS BOOT)
-   - LBA 1..N: CCP + BDOS bytes (44 sectors max)
+   - LBA 1..44: `cpm22-system.bin` bytes (CCP + BDOS)
    - LBA 45+: CBIOS bytes
    - All other bytes: `0xE5` (CP/M "empty directory entry" marker —
      looks blank to a fresh BDOS).
-5. Writes the image to `<companion>/disks/cpm22-sssd.img`. The
-   output inherits the CP/M licence by virtue of containing CCP and
+6. Writes the image to `<companion>/disks/cpm22-sssd.img`. The
+   output inherits the CP/M licence by virtue of containing CCP +
    BDOS bytes — that's why it lands in the companion repo, not here.
 
 ## File flow recap
 
 ```
-  cbios.asm  (this repo)          cpm22/binary/{ccp,bdos}.bin
-       │                                   │ (companion repo)
-       ▼                                   │
-   pasmo                                   │
-       │                                   │
-       ▼                                   ▼
-   cbios.bin   ──────►   build.ps1 combine
-                                  │
-                                  ▼
-                       disks/cpm22-sssd.img
-                          (companion repo)
+  cbios.asm           cpm22/source/CPM22.Z80   (companion repo,
+  (this repo)              CP/M-licensed verbatim mirror)
+       │                              │
+       │                              │  build.ps1: substitute
+       │                              │  MEM EQU 64 in temp copy
+       │                              ▼
+       │                          (temp .z80)
+       │                              │
+       ▼                              ▼
+   pasmo                          pasmo
+       │                              │
+       ▼                              ▼
+   cbios.bin                  cpm22-system.bin
+       │                              │
+       ▼                              ▼
+   build.ps1 combine ◄─────────────────
+              │
+              ▼
+   disks/cpm22-sssd.img
+      (companion repo,
+       CP/M-licensed output)
 ```
 
 One-way: the build reads from both repos, writes only into the

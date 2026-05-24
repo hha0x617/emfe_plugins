@@ -110,7 +110,7 @@ interactive over the plugin's UART.
 |---|---|
 | 4.1 | Disk-controller MMIO spec finalised in `docs/phase4_design.md` §1 (PR #69) and implemented as `Z80DiskDevice` (8 ports `0xF0..0xF7`, 24-bit LBA, 16-bit buffer pointer, READ/WRITE/NOP commands, sticky ERROR + WRITE_PROTECT + IMAGE_LOADED status, fixed 128 B CP/M-native sector size). Vendor-prefixed `emfe_z80_mount_disk_image` host hook exposes mount for tests; Settings wiring lands in Phase 4.4 |
 | 4.2 | Custom CBIOS in `examples/cpm22/cbios/cbios.asm` (MIT, original work). 17-entry BIOS jump table mapping CONOUT/CONIN/CONST to UART (0xFE/0xFF), READ/WRITE to the sector-device MMIO (0xF0..0xF7), single-drive SSSD-256K geometry, DPH+DPB+DIRBUF+ALV+CSV laid out. Originates at 0xFA00. README documents the layout, license split, and Phase 4.3 build-pipeline hand-off |
-| 4.3 | `examples/cpm22/build.ps1`: PowerShell driver that invokes `pasmo` on `cbios.asm`, locates the sibling `emfe_plugin_z80_cpm22/` clone, reads its `cpm22/binary/{ccp,bdos}.bin`, builds the SSSD-256K layout (boot stub at LBA 0, CCP+BDOS at LBA 1.., CBIOS at LBA 45+, rest filled with `0xE5`), and writes the result to `<companion>/disks/cpm22-sssd.img`. SKIPs cleanly when the companion isn't populated yet, mirroring the zexdoc / eForth pattern |
+| 4.3 | `examples/cpm22/build.ps1`: PowerShell driver that invokes `pasmo` on `cbios.asm`, locates the sibling `emfe_plugin_z80_cpm22/` clone, **assembles CCP+BDOS from the companion's `cpm22/source/CPM22.Z80`** (substituting `MEM EQU 64` into a temp copy so the on-disk source stays verbatim), builds the SSSD-256K layout (boot stub at LBA 0, CCP+BDOS at LBA 1.., CBIOS at LBA 45+, rest filled with `0xE5`), and writes the result to `<companion>/disks/cpm22-sssd.img`. SKIPs cleanly when the companion isn't populated yet, mirroring the zexdoc / eForth pattern |
 | 4.4 | Settings keys wired to mount/unmount the disk image via `emfe_reset`. Three new keys in the "Disk" group: `DiskImagePath` (FILE, REQUIRES_RESET — empty unmounts), `DiskImageWriteProtect` (BOOL, REQUIRES_RESET — drives the status bit), `BootFromDisk` (BOOL, REQUIRES_RESET — Phase 4.5 will flip the cold-boot path). `ApplyDiskImageOnReset` reads the file from disk inside `emfe_reset`; missing files leave the device unmounted (IMAGE_LOADED clear) without surfacing an error. The vendor-prefixed `emfe_z80_mount_disk_image` hook from 4.1 remains as a direct mount path for tests and out-of-Settings host integrations |
 | 4.5 | Plugin `ApplyBootFromDiskOnReset` stages the canonical system tracks (LBA 0 → 0x0000 boot stub; LBA 1..44 → 0xE400 CCP+BDOS; LBA 45..56 → 0xFA00 CBIOS) into RAM when `BootFromDisk=true` AND an image is mounted, then sets PC=0. `TestBootFromDiskStagesRam` verifies the staging with a synthetic in-memory image (always runs in CI). `TestCpmBootIfPresent` looks for `examples/cpm22/cpm22-sssd.img` (the `build.ps1` output) and asserts the captured UART output contains `A>` + the CBIOS sign-on marker; SKIPs cleanly when the image is absent (matching the zexdoc / eForth pattern). Also tightened `ApplyDiskImageOnReset` so empty `DiskImagePath` no longer auto-unmounts vendor-mounted images — Settings and the vendor hook now coexist without clobbering each other |
 
@@ -129,6 +129,22 @@ binaries, assembled disk image) inherit the CP/M licence.
 
 - `DIR`, `PIP`, `STAT`, `ED` and other standard CP/M tools run.
 - Optional: Turbo Pascal 3.0 / Hi-Tech C compile a Hello World.
+
+### Phase 5 prep (2026-05-24, pre-PR-75)
+
+- Companion repo `emfe_plugin_z80_cpm22` populated with
+  `cpm22/source/CPM22.Z80` (verbatim mirror of the Z80-mnemonic CCP+BDOS
+  disassembly from `cpm2-asm.zip`) + `docs/provenance.md` recording the
+  upstream URL, SHA-256, and license posture. Committed locally to the
+  companion (still no remote — published when Phase 1 of `docs/scope.md`
+  is complete).
+- `examples/cpm22/build.ps1` now reads `CPM22.Z80` rather than requiring
+  pre-built `ccp.bin` / `bdos.bin` — single-tool dependency
+  (`pasmo` only) for the user-side end-to-end build.
+- User-side gate to unlock Phase 5: install `pasmo`, run
+  `pwsh ./build.ps1` — Phase 4.5's `TestCpmBootIfPresent` should then
+  flip from SKIP to PASS with the captured `A>` prompt, at which point
+  Phase 5's smoke tests can be authored on top.
 
 ## 8. Phase 6 — Settings UI + debugger integration (~1 week)
 

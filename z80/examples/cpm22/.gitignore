@@ -1,8 +1,12 @@
-# build.ps1 outputs — never commit assembled CBIOS or disk images.
+# build.ps1 outputs — never commit assembled binaries or disk images.
 # CBIOS source goes through review here, but the assembled binary
 # belongs in either the user's local working tree or the companion
 # repo's disks/ (where it inherits the CP/M license).
 cbios/cbios.bin
+# Phase 5 prep: temp CPM22.Z80 with MEM=64 patched in, and the
+# assembled CCP+BDOS blob. Both are intermediate outputs.
+cbios/cpm22-mem64.z80
+cbios/cpm22-system.bin
 *.img
 *.dsk
 *.cpm
