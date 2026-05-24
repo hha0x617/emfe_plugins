@@ -4724,8 +4724,216 @@ static void TestWatchpointEnableDisable() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 6.4 tests — step_over / step_out
+// ---------------------------------------------------------------------
+
+static void TestStepOverCall() {
+    // CALL nn at PC=0x0000 jumps to a subroutine that does an
+    // INC HL + RET. step_over should skip past the entire CALL,
+    // landing PC at the instruction immediately after the CALL.
+    printf("TestStepOverCall...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0000: CD 10 00     CALL 0x0010
+    // 0x0003: 00           NOP (return target)
+    // 0x0004: 00           NOP
+    // 0x0010: 23           INC HL
+    // 0x0011: C9           RET
+    emfe_poke_byte(inst, 0x0000, 0xCD);
+    emfe_poke_byte(inst, 0x0001, 0x10);
+    emfe_poke_byte(inst, 0x0002, 0x00);
+    emfe_poke_byte(inst, 0x0003, 0x00);
+    emfe_poke_byte(inst, 0x0004, 0x00);
+    emfe_poke_byte(inst, 0x0010, 0x23);
+    emfe_poke_byte(inst, 0x0011, 0xC9);
+    SetReg(inst, REG_PC, 0x0000);
+    SetReg(inst, REG_SP, 0xFFFE);
+    SetReg(inst, REG_HL, 0x0000);
+
+    TEST_EQ(emfe_step_over(inst), EMFE_OK, "step_over OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0003,
+            "PC parked at return target (after CALL)");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0001,
+            "subroutine ran (HL incremented)");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFFE,
+            "SP back to entry value (CALL pushed, RET popped)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepOverConditionalCall_NotTaken() {
+    // CALL NZ, 0x0010 with Z=1 → call NOT taken; PC advances 3 bytes.
+    // step_over with non-taken conditional CALL: detect via PC ==
+    // expectedRet after the first ExecuteOne, exit cleanly.
+    printf("TestStepOverConditionalCall_NotTaken...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0000: C4 10 00     CALL NZ, 0x0010 (NOT taken when Z=1)
+    // 0x0003: 00           NOP
+    // 0x0010: C9           RET   (only reached if call IS taken)
+    emfe_poke_byte(inst, 0x0000, 0xC4);
+    emfe_poke_byte(inst, 0x0001, 0x10);
+    emfe_poke_byte(inst, 0x0002, 0x00);
+    emfe_poke_byte(inst, 0x0003, 0x00);
+    emfe_poke_byte(inst, 0x0010, 0xC9);
+    SetReg(inst, REG_PC, 0x0000);
+    SetReg(inst, REG_SP, 0xFFFE);
+    SetReg(inst, REG_F,  TF_Z);     // Z=1 so NZ fails
+    SetReg(inst, REG_HL, 0xDEAD);
+
+    TEST_EQ(emfe_step_over(inst), EMFE_OK, "step_over OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0003,
+            "PC advanced past not-taken CALL");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0xFFFE,
+            "SP unchanged (CALL not taken)");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0xDEAD,
+            "subroutine NOT entered (HL untouched)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepOverRst() {
+    // RST 0x08 is a 1-byte CALL to 0x0008. step_over should skip
+    // past it, landing PC at the next instruction (0x0001).
+    printf("TestStepOverRst...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0000: CF           RST 0x08
+    // 0x0001: 00           NOP (return target)
+    // 0x0008: 23           INC HL
+    // 0x0009: C9           RET
+    emfe_poke_byte(inst, 0x0000, 0xCF);
+    emfe_poke_byte(inst, 0x0001, 0x00);
+    emfe_poke_byte(inst, 0x0008, 0x23);
+    emfe_poke_byte(inst, 0x0009, 0xC9);
+    SetReg(inst, REG_PC, 0x0000);
+    SetReg(inst, REG_SP, 0xFFFE);
+    SetReg(inst, REG_HL, 0x0000);
+
+    TEST_EQ(emfe_step_over(inst), EMFE_OK, "step_over OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0001,
+            "PC parked at return target (after RST)");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0001, "RST handler ran");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepOverNonCall() {
+    // For a non-CALL opcode (e.g. plain NOP), step_over must
+    // degenerate to single-step — PC advances by exactly one
+    // instruction's length.
+    printf("TestStepOverNonCall...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0000: 23           INC HL (1-byte non-CALL)
+    // 0x0001: 00
+    emfe_poke_byte(inst, 0x0000, 0x23);
+    emfe_poke_byte(inst, 0x0001, 0x00);
+    SetReg(inst, REG_PC, 0x0000);
+    SetReg(inst, REG_HL, 0x0100);
+
+    TEST_EQ(emfe_step_over(inst), EMFE_OK, "step_over OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0001,
+            "PC advanced one instruction");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0101, "INC HL executed");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepOutSimple() {
+    // Enter a subroutine via direct PC set + manual stack push (no
+    // CALL needed). step_out should run until RET pops, landing
+    // PC at the simulated return address.
+    printf("TestStepOutSimple...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0010: 23           INC HL
+    // 0x0011: C9           RET
+    // [SP-2..SP-1] = return address 0x0050
+    // 0x0050: 00           NOP (return target)
+    emfe_poke_byte(inst, 0x0010, 0x23);
+    emfe_poke_byte(inst, 0x0011, 0xC9);
+    emfe_poke_byte(inst, 0x0050, 0x00);
+    // Set SP and push 0x0050 manually as the simulated CALL return
+    SetReg(inst, REG_SP, 0xFFFE);
+    emfe_poke_byte(inst, 0xFFFE, 0x50);   // low byte of 0x0050
+    emfe_poke_byte(inst, 0xFFFF, 0x00);   // high byte
+    SetReg(inst, REG_PC, 0x0010);
+    SetReg(inst, REG_HL, 0x0000);
+
+    TEST_EQ(emfe_step_out(inst), EMFE_OK, "step_out OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0050,
+            "PC at simulated return address after RET");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)0x0000,
+            "SP after popping return (0xFFFE + 2 = 0x10000 wraps to 0)");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0001,
+            "INC HL ran before RET");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestStepOutNested() {
+    // Nested CALL: outer fn calls inner fn. step_out from INSIDE
+    // the inner fn should stop on inner's RET (back to outer),
+    // not the outer's RET (back to original PC).
+    printf("TestStepOutNested...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0010: CD 20 00     CALL 0x0020 (inner)  — outer fn
+    // 0x0013: C9           RET
+    // 0x0020: 23           INC HL  — inner fn body
+    // 0x0021: C9           RET
+    // 0x0050: 00           outermost return target
+    emfe_poke_byte(inst, 0x0010, 0xCD);
+    emfe_poke_byte(inst, 0x0011, 0x20);
+    emfe_poke_byte(inst, 0x0012, 0x00);
+    emfe_poke_byte(inst, 0x0013, 0xC9);
+    emfe_poke_byte(inst, 0x0020, 0x23);
+    emfe_poke_byte(inst, 0x0021, 0xC9);
+
+    // Simulate that the outermost CALL has happened: SP points to
+    // a return-to-0x0050; we then enter outer at 0x0010.
+    SetReg(inst, REG_SP, 0xFFFE);
+    emfe_poke_byte(inst, 0xFFFE, 0x50);
+    emfe_poke_byte(inst, 0xFFFF, 0x00);
+    SetReg(inst, REG_PC, 0x0010);
+    SetReg(inst, REG_HL, 0x0000);
+
+    // Step into the inner call so PC is sitting at the inner fn.
+    // (Use plain emfe_step a few times to execute the CALL +
+    // land at 0x0020.)
+    emfe_step(inst);   // CALL pushes return + sets PC=0x0020
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0020, "in inner fn after CALL");
+    uint64_t innerEntrySp = GetReg(inst, REG_SP);
+
+    // step_out from inside the inner fn: should run INC HL + RET
+    // and land at the outer's instruction-after-CALL = 0x0013, NOT
+    // the outermost return target (0x0050).
+    TEST_EQ(emfe_step_out(inst), EMFE_OK, "step_out from nested OK");
+    TEST_EQ(GetReg(inst, REG_PC), (uint64_t)0x0013,
+            "step_out exited inner only (not outer)");
+    TEST_EQ(GetReg(inst, REG_SP), (uint64_t)(innerEntrySp + 2),
+            "SP rose by 2 (one RET popped)");
+    TEST_EQ(GetReg(inst, REG_HL), (uint64_t)0x0001, "inner fn body ran");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 6.3) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 6.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -4878,6 +5086,13 @@ int main() {
     TestWatchpointWordSizeCoverage();
     TestRemoveWatchpoint();
     TestWatchpointEnableDisable();
+    // Phase 6.4
+    TestStepOverCall();
+    TestStepOverConditionalCall_NotTaken();
+    TestStepOverRst();
+    TestStepOverNonCall();
+    TestStepOutSimple();
+    TestStepOutNested();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
