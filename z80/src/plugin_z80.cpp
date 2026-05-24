@@ -231,9 +231,23 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
         inst->appliedSettings [key] = defVal;
     };
 
-    // General tab — emulator-wide knobs. Z80 RAM is always 64 KiB; the
-    // entry is informational (constraint locks the range to a single
-    // value) and exists so the dialog shows what the user is running.
+    // General tab — emulator-wide knobs + cross-plugin shared keys.
+    //
+    // BoardType / Theme are the two keys mc6809 puts on the General
+    // tab and that Phase 6.5 brings z80 into parity with. BoardType
+    // is "Generic" only today (future RC2014 / Xerox 1800 / MSX
+    // targets would extend the constraint string per phase6_design
+    // §6 Q8). Theme is host-rendered (the plugin doesn't read it),
+    // propagated through so the dialog shows the same control on
+    // both plugins.
+    addSetting("BoardType", "Target Board", "General",
+               EMFE_SETTING_COMBO, "Generic", "Generic", RR);
+    addSetting("Theme", "Theme", "General",
+               EMFE_SETTING_COMBO, "System", "Dark|Light|System", 0);
+
+    // Z80 RAM is always 64 KiB; the entry is informational
+    // (constraint locks the range to a single value) and exists so
+    // the dialog shows what the user is running.
     addSetting("MemorySize", "Memory Size (KiB)", "General",
                EMFE_SETTING_INT, "64", "64|64", RR);
     addSetting("ResetVector", "Reset Vector (PC on reset)", "General",
