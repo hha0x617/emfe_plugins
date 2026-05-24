@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -2316,8 +2317,181 @@ static void TestSettingsRequiresResetDeferral() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 2.7 tests — CP/M-stub harness + optional zexdoc run
+// ---------------------------------------------------------------------
+
+// Run a CP/M .COM image preloaded at memory address `loadAt` (0x0100
+// for real CP/M) under a stub BDOS that captures console output.
+//
+// Stops when one of:
+//   - PC reaches 0x0000 (CP/M warm-boot trap)
+//   - BDOS call C=0 (system reset)
+//   - step budget exhausted
+//
+// Returns the captured console output, including any BDOS output but
+// not the raw bytes the program would push through the OUT (0xFE), A
+// path (that's the plugin's own UART, separate from CP/M's BDOS).
+struct CpmStubResult {
+    std::string output;
+    int64_t     steps;
+    bool        completed;       // exited cleanly (warm boot / C=0)
+};
+
+static CpmStubResult RunCpmStub(EmfeInstance inst, int64_t maxSteps) {
+    CpmStubResult r{};
+    SetReg(inst, REG_SP, 0xFFF0);
+    while (r.steps < maxSteps) {
+        uint64_t pc = GetReg(inst, REG_PC);
+        if (pc == 0x0000) { r.completed = true; break; }
+        if (pc == 0x0005) {
+            // CP/M BDOS entry. Service the call in C++.
+            uint8_t c  = (uint8_t)GetReg(inst, REG_C);
+            uint8_t e  = (uint8_t)GetReg(inst, REG_E);
+            uint16_t de = (uint16_t)GetReg(inst, REG_DE);
+            if (c == 2) {
+                r.output.push_back((char)e);
+            } else if (c == 9) {
+                for (int k = 0; k < 65536; ++k) {
+                    uint8_t ch = (uint8_t)emfe_peek_byte(inst, (de + k) & 0xFFFF);
+                    if (ch == '$') break;
+                    r.output.push_back((char)ch);
+                }
+            } else if (c == 0) {
+                r.completed = true; break;
+            }
+            // Pop the return address off the stack manually (no need
+            // to actually execute the byte at 0x0005).
+            uint16_t sp = (uint16_t)GetReg(inst, REG_SP);
+            uint8_t lo = (uint8_t)emfe_peek_byte(inst, sp);
+            uint8_t hi = (uint8_t)emfe_peek_byte(inst, (sp + 1) & 0xFFFF);
+            SetReg(inst, REG_SP, (uint64_t)((sp + 2) & 0xFFFF));
+            SetReg(inst, REG_PC, (uint64_t)(lo | (hi << 8)));
+            continue;
+        }
+        emfe_step(inst);
+        ++r.steps;
+    }
+    return r;
+}
+
+static void TestCpmStubHarness() {
+    // Verify the CP/M-stub wiring with a tiny self-contained program
+    // that prints "OK\r\n" via BDOS function 9 and then warm-boots.
+    printf("TestCpmStubHarness...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // 0x0100 (entry):
+    //   LD C, 9            0E 09          ; offset 0..1
+    //   LD DE, 0x010B      11 0B 01       ; offset 2..4
+    //   CALL 0x0005        CD 05 00       ; offset 5..7
+    //   JP 0x0000          C3 00 00       ; offset 8..10  (warm boot)
+    // 0x010B message: "OK\r\n$"           4F 4B 0D 0A 24  ; offset 11..15
+    const uint8_t prog[] = {
+        0x0E, 0x09,
+        0x11, 0x0B, 0x01,
+        0xCD, 0x05, 0x00,
+        0xC3, 0x00, 0x00,
+        0x4F, 0x4B, 0x0D, 0x0A, 0x24,
+    };
+    for (size_t i = 0; i < sizeof(prog); ++i) {
+        emfe_poke_byte(inst, (uint16_t)(0x0100 + i), prog[i]);
+    }
+    SetReg(inst, REG_PC, 0x0100);
+
+    CpmStubResult r = RunCpmStub(inst, 1000);
+    TEST_TRUE(r.completed, "harness terminated cleanly");
+    TEST_TRUE(r.output == "OK\r\n", "captured output == 'OK\\r\\n'");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestZexdocIfPresent() {
+    // Look for zexdoc.com next to the test executable. If absent,
+    // print a SKIP and count as pass — this is the "user drops the
+    // .COM here to enable the full Z80 ISA validation" pattern.
+    printf("TestZexdocIfPresent...\n");
+
+    // Search a handful of likely paths (working-dir-relative). When
+    // the test is invoked from build/bin/Release/ the .COM is two
+    // levels up + into z80/examples/zexdoc/.
+    const char* candidates[] = {
+        "examples/zexdoc/zexdoc.com",
+        "../../../examples/zexdoc/zexdoc.com",
+        "../../examples/zexdoc/zexdoc.com",
+        "zexdoc.com",
+    };
+    std::string foundPath;
+    std::vector<uint8_t> bytes;
+    for (const char* path : candidates) {
+        FILE* f = std::fopen(path, "rb");
+        if (!f) continue;
+        std::fseek(f, 0, SEEK_END);
+        long len = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (len > 0 && len < 0x10000) {
+            bytes.resize((size_t)len);
+            if (std::fread(bytes.data(), 1, (size_t)len, f) == (size_t)len) {
+                foundPath = path;
+            }
+        }
+        std::fclose(f);
+        if (!foundPath.empty()) break;
+    }
+
+    if (foundPath.empty()) {
+        printf("  (SKIP — zexdoc.com not found; see z80/examples/zexdoc/README.md)\n");
+        g_pass++;
+        return;
+    }
+    printf("  (found at %s, %zu bytes)\n", foundPath.c_str(), bytes.size());
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Load .COM at 0x0100. zexdoc fits within 64 KiB and uses BDOS
+    // calls — no extra setup required beyond placing the bytes.
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        emfe_poke_byte(inst, (uint16_t)((0x0100 + i) & 0xFFFF), bytes[i]);
+    }
+    SetReg(inst, REG_PC, 0x0100);
+
+    // zexdoc needs ~70M instructions. Cap at 200M for safety.
+    CpmStubResult r = RunCpmStub(inst, 200000000);
+
+    printf("  zexdoc completed=%d steps=%lld bytes_output=%zu\n",
+           r.completed ? 1 : 0, (long long)r.steps, r.output.size());
+    // Last line typically: "Tests complete"
+    bool sawCompleteMarker =
+        r.output.find("Tests complete") != std::string::npos ||
+        r.output.find("complete") != std::string::npos;
+    bool sawAnyError =
+        r.output.find("ERROR") != std::string::npos ||
+        r.output.find("FAILED") != std::string::npos;
+
+    if (sawAnyError) {
+        fprintf(stderr, "  FAIL: zexdoc reported an error in the output\n");
+        fprintf(stderr, "  --- captured output (last 2000 chars) ---\n%s\n",
+                r.output.substr(r.output.size() > 2000 ? r.output.size() - 2000 : 0).c_str());
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+    if (!sawCompleteMarker) {
+        fprintf(stderr, "  FAIL: zexdoc did not reach the 'Tests complete' marker (ran out of steps?)\n");
+        g_fail++;
+        emfe_destroy(inst);
+        return;
+    }
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 2.6) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 2.7) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -2401,6 +2575,9 @@ int main() {
     TestSettingsDefsPresent();
     TestSettingsGetSetApply();
     TestSettingsRequiresResetDeferral();
+    // Phase 2.7
+    TestCpmStubHarness();
+    TestZexdocIfPresent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
