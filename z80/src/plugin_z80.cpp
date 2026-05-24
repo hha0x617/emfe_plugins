@@ -19,6 +19,8 @@
 #include "Z80Timer.h"
 #include "Z80DiskDevice.h"
 
+#include <fstream>
+
 #include <cstdint>
 #include <cstring>
 #include <atomic>
@@ -240,6 +242,22 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
                EMFE_SETTING_INT, "25", "10|100", 0);
     addSetting("ConsoleScrollbackLines", "Scrollback Lines", "Console",
                EMFE_SETTING_INT, "2000", "0|100000", 0);
+
+    // Disk tab — Phase 4.4. The path is REQUIRES_RESET because the
+    // image is read off disk inside emfe_reset, where the disk MMIO
+    // is already cleared and the device is in a known state.
+    //
+    //   DiskImagePath          empty = unmount; otherwise host path
+    //   DiskImageWriteProtect  controls the WRITE_PROTECT status bit
+    //   BootFromDisk           Phase 4.5 will flip the cold-boot path;
+    //                          stored here so the Settings UI can
+    //                          carry the flag forward.
+    addSetting("DiskImagePath", "Disk Image", "Disk",
+               EMFE_SETTING_FILE, "", nullptr, RR);
+    addSetting("DiskImageWriteProtect", "Write Protect", "Disk",
+               EMFE_SETTING_BOOL, "false", nullptr, RR);
+    addSetting("BootFromDisk", "Boot from Disk", "Disk",
+               EMFE_SETTING_BOOL, "false", nullptr, RR);
 
     *out_instance = reinterpret_cast<EmfeInstance>(inst);
     return EMFE_OK;
@@ -590,6 +608,51 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_stop(EmfeInstance instance) {
     return instance ? EMFE_OK : EMFE_ERR_INVALID;
 }
 
+// Phase 4.4: load the disk image referenced by the DiskImagePath /
+// DiskImageWriteProtect settings (if any) into the Z80DiskDevice.
+// Called from inside emfe_reset AFTER the REQUIRES_RESET settings
+// have moved into appliedSettings and AFTER inst->disk.Reset() has
+// cleared the device's transient state.
+//
+// Empty DiskImagePath unmounts; a non-existent or unreadable path
+// also unmounts and leaves the IMAGE_LOADED status bit clear (the
+// guest CBIOS then sees no media in drive A).
+static void ApplyDiskImageOnReset(EmfeInstanceData* inst) {
+    auto path_it = inst->appliedSettings.find("DiskImagePath");
+    auto wp_it   = inst->appliedSettings.find("DiskImageWriteProtect");
+    const std::string& path = (path_it != inst->appliedSettings.end()) ? path_it->second : std::string();
+    bool writeProtect = false;
+    if (wp_it != inst->appliedSettings.end()) {
+        const std::string& v = wp_it->second;
+        writeProtect = (v == "true" || v == "1");
+    }
+
+    if (path.empty()) {
+        inst->disk.SetImage({}, false);
+        return;
+    }
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        inst->disk.SetImage({}, false);   // file missing → leave unmounted
+        return;
+    }
+    f.seekg(0, std::ios::end);
+    auto end = f.tellg();
+    if (end <= 0) {
+        inst->disk.SetImage({}, false);
+        return;
+    }
+    auto size = static_cast<size_t>(end);
+    f.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes(size);
+    f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    if (!f) {
+        inst->disk.SetImage({}, false);
+        return;
+    }
+    inst->disk.SetImage(std::move(bytes), writeProtect);
+}
+
 extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     if (!instance) return EMFE_ERR_INVALID;
     auto* inst = to_inst(instance);
@@ -608,6 +671,10 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     inst->uart.Reset();
     inst->timer.Reset();
     inst->disk.Reset();
+    // The disk image lives at a host-side file path that we mount
+    // after the device transient state has been cleared — that way
+    // the freshly-loaded image is the first thing the guest sees.
+    ApplyDiskImageOnReset(inst);
     return EMFE_OK;
 }
 

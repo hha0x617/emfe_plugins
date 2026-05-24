@@ -3460,8 +3460,189 @@ static void TestDiskOutOfRangeReadSetsError() {
     g_pass++;
 }
 
+// ---------------------------------------------------------------------
+// Phase 4.4 tests — disk image Settings wiring
+//
+// Settings keys added in this phase:
+//   DiskImagePath          (FILE)  REQUIRES_RESET
+//   DiskImageWriteProtect  (BOOL)  REQUIRES_RESET
+//   BootFromDisk           (BOOL)  REQUIRES_RESET — Phase 4.5 wires it
+// ---------------------------------------------------------------------
+
+// Helper: write a temp disk image file (single sector, pattern bytes)
+// and return its path. Caller is responsible for cleanup.
+static std::string MakeTempDiskImage(const char* tag, uint8_t fingerprint) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "z80_disk_settings_%s.tmp.img", tag);
+    std::string path = buf;
+    std::vector<uint8_t> image(128);
+    for (int i = 0; i < 128; ++i) image[i] = static_cast<uint8_t>(fingerprint ^ i);
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return std::string();
+    std::fwrite(image.data(), 1, image.size(), f);
+    std::fclose(f);
+    return path;
+}
+
+static void TestDiskSettingsDefsPresent() {
+    printf("TestDiskSettingsDefsPresent...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    const EmfeSettingDef* defs = nullptr;
+    int32_t n = emfe_get_setting_defs(inst, &defs);
+    bool sawPath = false, sawWp = false, sawBoot = false;
+    for (int32_t i = 0; i < n; ++i) {
+        const auto& d = defs[i];
+        if (std::strcmp(d.key, "DiskImagePath") == 0) {
+            sawPath = (std::strcmp(d.group, "Disk") == 0
+                       && d.type == EMFE_SETTING_FILE
+                       && (d.flags & EMFE_SETTING_FLAG_REQUIRES_RESET) != 0);
+        } else if (std::strcmp(d.key, "DiskImageWriteProtect") == 0) {
+            sawWp = (std::strcmp(d.group, "Disk") == 0
+                     && d.type == EMFE_SETTING_BOOL
+                     && (d.flags & EMFE_SETTING_FLAG_REQUIRES_RESET) != 0);
+        } else if (std::strcmp(d.key, "BootFromDisk") == 0) {
+            sawBoot = (std::strcmp(d.group, "Disk") == 0
+                       && d.type == EMFE_SETTING_BOOL
+                       && (d.flags & EMFE_SETTING_FLAG_REQUIRES_RESET) != 0);
+        }
+    }
+    TEST_TRUE(sawPath, "DiskImagePath (FILE, REQUIRES_RESET)");
+    TEST_TRUE(sawWp,   "DiskImageWriteProtect (BOOL, REQUIRES_RESET)");
+    TEST_TRUE(sawBoot, "BootFromDisk (BOOL, REQUIRES_RESET)");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskSettingsMountOnReset() {
+    printf("TestDiskSettingsMountOnReset...\n");
+    std::string path = MakeTempDiskImage("mount", 0x77);
+    if (path.empty()) {
+        fprintf(stderr, "  FAIL: could not write temp file\n");
+        g_fail++;
+        return;
+    }
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // No image at create time — IMAGE_LOADED should be clear.
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) == 0, "no image at construction");
+
+    // Stage the path and apply. REQUIRES_RESET: the device should
+    // remain unmounted until reset moves the value into appliedSettings.
+    emfe_set_setting(inst, "DiskImagePath", path.c_str());
+    emfe_apply_settings(inst);
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) == 0, "image still unmounted before reset (REQUIRES_RESET)");
+
+    emfe_reset(inst);
+    s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) != 0, "IMAGE_LOADED set after reset");
+    TEST_TRUE((s & 0x04) == 0, "WRITE_PROTECT clear (default false)");
+
+    // Read sector 0 through the device into 0x8000 and check the
+    // fingerprint matches the file we wrote.
+    OutPort(inst, 0xF0, 0x00);
+    OutPort(inst, 0xF1, 0x00);
+    OutPort(inst, 0xF2, 0x00);
+    OutPort(inst, 0xF3, 0x00);
+    OutPort(inst, 0xF4, 0x80);
+    OutPort(inst, 0xF5, 0x01);
+    for (int i = 0; i < 128; ++i) {
+        uint8_t want = static_cast<uint8_t>(0x77 ^ i);
+        if (emfe_peek_byte(inst, static_cast<uint16_t>(0x8000 + i)) != want) {
+            fprintf(stderr, "  FAIL: byte %d mismatch (got 0x%02X want 0x%02X)\n",
+                    i, emfe_peek_byte(inst, static_cast<uint16_t>(0x8000 + i)), want);
+            g_fail++;
+            emfe_destroy(inst);
+            std::remove(path.c_str());
+            return;
+        }
+    }
+
+    emfe_destroy(inst);
+    std::remove(path.c_str());
+    g_pass++;
+}
+
+static void TestDiskSettingsWriteProtectFlag() {
+    printf("TestDiskSettingsWriteProtectFlag...\n");
+    std::string path = MakeTempDiskImage("wp", 0x33);
+    if (path.empty()) {
+        fprintf(stderr, "  FAIL: could not write temp file\n");
+        g_fail++;
+        return;
+    }
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+    emfe_set_setting(inst, "DiskImagePath", path.c_str());
+    emfe_set_setting(inst, "DiskImageWriteProtect", "true");
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) != 0, "IMAGE_LOADED set");
+    TEST_TRUE((s & 0x04) != 0, "WRITE_PROTECT set");
+
+    emfe_destroy(inst);
+    std::remove(path.c_str());
+    g_pass++;
+}
+
+static void TestDiskSettingsMissingPathLeavesUnmounted() {
+    printf("TestDiskSettingsMissingPathLeavesUnmounted...\n");
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    emfe_set_setting(inst, "DiskImagePath", "no_such_file_z80_phase_4_4.img");
+    emfe_apply_settings(inst);
+    // emfe_reset itself does NOT return an error code for missing
+    // files — the failure surfaces via the device's IMAGE_LOADED bit
+    // staying clear, which is what the guest CBIOS observes.
+    TEST_EQ(emfe_reset(inst), EMFE_OK, "reset OK even with bad path");
+    uint8_t s = InPort(inst, 0xF6);
+    TEST_TRUE((s & 0x08) == 0, "IMAGE_LOADED stays clear for missing file");
+
+    emfe_destroy(inst);
+    g_pass++;
+}
+
+static void TestDiskSettingsEmptyPathUnmounts() {
+    printf("TestDiskSettingsEmptyPathUnmounts...\n");
+    std::string path = MakeTempDiskImage("unmount", 0x11);
+    if (path.empty()) {
+        fprintf(stderr, "  FAIL: could not write temp file\n");
+        g_fail++;
+        return;
+    }
+
+    EmfeInstance inst = nullptr;
+    emfe_create(&inst);
+
+    // Mount.
+    emfe_set_setting(inst, "DiskImagePath", path.c_str());
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+    TEST_TRUE((InPort(inst, 0xF6) & 0x08) != 0, "mounted after first reset");
+
+    // Now clear the path and reset again — should unmount.
+    emfe_set_setting(inst, "DiskImagePath", "");
+    emfe_apply_settings(inst);
+    emfe_reset(inst);
+    TEST_TRUE((InPort(inst, 0xF6) & 0x08) == 0, "unmounted after empty path + reset");
+
+    emfe_destroy(inst);
+    std::remove(path.c_str());
+    g_pass++;
+}
+
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 4.1) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 4.4) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3578,6 +3759,12 @@ int main() {
     TestDiskWriteSectorRw();
     TestDiskWriteRejectedOnRoImage();
     TestDiskOutOfRangeReadSetsError();
+    // Phase 4.4
+    TestDiskSettingsDefsPresent();
+    TestDiskSettingsMountOnReset();
+    TestDiskSettingsWriteProtectFlag();
+    TestDiskSettingsMissingPathLeavesUnmounted();
+    TestDiskSettingsEmptyPathUnmounts();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
