@@ -13,6 +13,7 @@
 #include "emfe_plugin.h"
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -3722,16 +3723,23 @@ static void TestBootFromDiskStagesRam() {
     g_pass++;
 }
 
-static void TestCpmBootIfPresent() {
-    printf("TestCpmBootIfPresent...\n");
+// ---------------------------------------------------------------------
+// Phase 5.3 — CpmSession typed-command harness
+//
+// Wraps an EmfeInstance + CaptureCtx, exposing TypeLine / WaitForPrompt
+// / Mark + CaptureSince so per-tool smoke tests can drive the CCP at
+// the `a>` prompt without each test re-implementing the boot sequence.
+// ---------------------------------------------------------------------
 
+// Locate cpm22-sssd.img in the usual candidate paths and return its
+// bytes; returns an empty vector on miss.
+static std::vector<uint8_t> LoadCpmImageIfPresent(const char** outFoundPath) {
     const char* candidates[] = {
         "examples/cpm22/cpm22-sssd.img",
         "../../../examples/cpm22/cpm22-sssd.img",
         "../../examples/cpm22/cpm22-sssd.img",
         "cpm22-sssd.img",
     };
-    std::string foundPath;
     std::vector<uint8_t> bytes;
     for (const char* path : candidates) {
         FILE* f = std::fopen(path, "rb");
@@ -3739,53 +3747,109 @@ static void TestCpmBootIfPresent() {
         std::fseek(f, 0, SEEK_END);
         long len = std::ftell(f);
         std::fseek(f, 0, SEEK_SET);
-        if (len > 0 && len <= (1 << 20)) {     // sanity cap at 1 MiB
+        if (len > 0 && len <= (1 << 20)) {       // sanity cap at 1 MiB
             bytes.resize(static_cast<size_t>(len));
             if (std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size()) {
-                foundPath = path;
+                if (outFoundPath) *outFoundPath = path;
+                std::fclose(f);
+                return bytes;
             }
         }
         std::fclose(f);
-        if (!foundPath.empty()) break;
+    }
+    bytes.clear();
+    if (outFoundPath) *outFoundPath = nullptr;
+    return bytes;
+}
+
+struct CpmSession {
+    EmfeInstance inst   = nullptr;
+    CaptureCtx   ctx;
+    bool         active = false;       // false = boot never reached prompt
+    CpmSession() = default;
+    ~CpmSession() { if (inst) emfe_destroy(inst); }
+    CpmSession(const CpmSession&)            = delete;
+    CpmSession& operator=(const CpmSession&) = delete;
+
+    size_t Mark() const { return ctx.captured.size(); }
+    std::string CaptureSince(size_t mark) const {
+        return mark <= ctx.captured.size()
+            ? ctx.captured.substr(mark)
+            : std::string();
     }
 
-    if (foundPath.empty()) {
+    // CCP expects a CR-terminated line (NOT CR+LF). Pushing characters
+    // into the UART RX FIFO via emfe_send_string queues them for the
+    // next CONIN spin-loop poll; the caller drives the CPU forward via
+    // WaitForPrompt so CCP can drain them.
+    void TypeLine(const std::string& cmd) {
+        std::string line = cmd;
+        line += '\r';
+        emfe_send_string(inst, line.c_str());
+    }
+
+    // Step the CPU until the captured tail ends with "[a-p]>" — CCP's
+    // prompt pattern. Polls cheaply every 16 K steps to avoid an
+    // O(N²) substring scan on the growing capture buffer. Returns true
+    // if the prompt landed within stepCap; false on timeout.
+    bool WaitForPrompt(int64_t stepCap) {
+        for (int64_t i = 0; i < stepCap; ++i) {
+            (void)emfe_step(inst);
+            if ((i & 0x3FFF) == 0x3FFF) {
+                if (TailMatchesPrompt()) return true;
+            }
+        }
+        return TailMatchesPrompt();
+    }
+
+private:
+    bool TailMatchesPrompt() const {
+        const auto& s = ctx.captured;
+        if (s.size() < 2) return false;
+        char prev = s[s.size() - 2];
+        char last = s[s.size() - 1];
+        if (last != '>') return false;
+        return (prev >= 'A' && prev <= 'P') || (prev >= 'a' && prev <= 'p');
+    }
+};
+
+// Boot a CP/M session from a disk image. Returns a heap-owned session
+// so the embedded CaptureCtx address stays stable across the move.
+// Caller checks `->active` — false means boot failed to reach the
+// first `a>` prompt within the budget.
+static std::unique_ptr<CpmSession> BootCpmSession(
+        const std::vector<uint8_t>& bytes,
+        int64_t bootBudget = 10000000) {
+    auto s = std::unique_ptr<CpmSession>(new CpmSession());
+    if (emfe_create(&s->inst) != EMFE_OK) return s;
+    emfe_set_console_char_callback(s->inst, CaptureChar, &s->ctx);
+    emfe_z80_mount_disk_image(s->inst, bytes.data(),
+                              static_cast<uint32_t>(bytes.size()), 0);
+    emfe_set_setting(s->inst, "BootFromDisk", "true");
+    emfe_apply_settings(s->inst);
+    emfe_reset(s->inst);
+    s->active = s->WaitForPrompt(bootBudget);
+    return s;
+}
+
+static void TestCpmBootIfPresent() {
+    printf("TestCpmBootIfPresent...\n");
+
+    const char* foundPath = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&foundPath);
+    if (bytes.empty()) {
         printf("  (SKIP — cpm22-sssd.img not found; see "
                "z80/examples/cpm22/README.md to build one)\n");
         g_pass++;
         return;
     }
-    printf("  (found at %s, %zu bytes)\n", foundPath.c_str(), bytes.size());
+    printf("  (found at %s, %zu bytes)\n", foundPath, bytes.size());
 
-    EmfeInstance inst = nullptr;
-    emfe_create(&inst);
-    CaptureCtx ctx;
-    emfe_set_console_char_callback(inst, CaptureChar, &ctx);
-
-    emfe_z80_mount_disk_image(inst, bytes.data(),
-                              static_cast<uint32_t>(bytes.size()), 0);
-    emfe_set_setting(inst, "BootFromDisk", "true");
-    emfe_apply_settings(inst);
-    emfe_reset(inst);
-
-    const int64_t k_bootBudget = 10000000;
-    for (int64_t i = 0; i < k_bootBudget; ++i) {
-        // Tolerate early-boot non-OK steps — CCP's setup may surface
-        // transient bus errors while the stack stages. The A> prompt
-        // is the gate.
-        (void)emfe_step(inst);
-    }
-
-    const std::string& out = ctx.captured;
+    auto sess = BootCpmSession(bytes);
+    const std::string& out = sess->ctx.captured;
     printf("  captured %zu chars during cold boot\n", out.size());
 
-    bool sawBios    = (out.find("emfe Z80 CBIOS") != std::string::npos);
-    // CCP prints the drive letter via `ADD A,'a'` (lowercase) in Calkins'
-    // CPM22.Z80 reconstruction; other historical CCP variants use `A`.
-    // Accept either case.
-    bool sawAPrompt = (out.find("A>") != std::string::npos) ||
-                      (out.find("a>") != std::string::npos);
-
+    bool sawBios = (out.find("emfe Z80 CBIOS") != std::string::npos);
     if (!sawBios) {
         fprintf(stderr, "  FAIL: CBIOS sign-on marker not seen. "
                         "Either the boot stub never reached CBIOS, or "
@@ -3793,24 +3857,95 @@ static void TestCpmBootIfPresent() {
                         "chars):\n%s\n",
                 out.substr(out.size() > 400 ? out.size() - 400 : 0).c_str());
         g_fail++;
-        emfe_destroy(inst);
         return;
     }
-    if (!sawAPrompt) {
+    if (!sess->active) {
         fprintf(stderr, "  FAIL: A> prompt not seen. CBIOS ran but CCP "
                         "never landed. Captured (last 400 chars):\n%s\n",
                 out.substr(out.size() > 400 ? out.size() - 400 : 0).c_str());
         g_fail++;
-        emfe_destroy(inst);
         return;
     }
 
-    emfe_destroy(inst);
+    g_pass++;
+}
+
+// ---------------------------------------------------------------------
+// Phase 5.3 — first typed-command smoke test
+//
+// Boots the CP/M image, sends `DIR\r`, asserts the captured response
+// names every utility baked in by Phase 5.2 (PIP / STAT / ED /
+// SUBMIT / XSUB / LOAD / DUMP / DDT). This proves the CpmSession
+// harness end-to-end. Per-tool smoke tests (PIP / STAT / ED ...)
+// follow in Phase 5.4 on top of the same harness.
+// ---------------------------------------------------------------------
+
+static void TestCpmDirIfPresent() {
+    printf("TestCpmDirIfPresent...\n");
+
+    const char* foundPath = nullptr;
+    auto bytes = LoadCpmImageIfPresent(&foundPath);
+    if (bytes.empty()) {
+        printf("  (SKIP — cpm22-sssd.img not found; see "
+               "z80/examples/cpm22/README.md to build one)\n");
+        g_pass++;
+        return;
+    }
+
+    auto sess = BootCpmSession(bytes);
+    if (!sess->active) {
+        fprintf(stderr, "  FAIL: cold boot didn't reach prompt; "
+                        "see TestCpmBootIfPresent for diagnosis\n");
+        g_fail++;
+        return;
+    }
+
+    // The image must have the Phase 5.2 utilities baked in. If
+    // build.ps1 produced a blank-filesystem image (utilities missing
+    // from the pointer shelf), DIR will respond with "NO FILE" and
+    // this test fails — that's the expected behaviour and the user-
+    // visible signal to populate the shelf.
+    size_t mark = sess->Mark();
+    sess->TypeLine("DIR");
+    if (!sess->WaitForPrompt(5000000)) {
+        fprintf(stderr, "  FAIL: prompt didn't return after DIR within "
+                        "5M instructions. Captured tail (last 400):\n%s\n",
+                sess->ctx.captured.substr(
+                    sess->ctx.captured.size() > 400
+                        ? sess->ctx.captured.size() - 400 : 0).c_str());
+        g_fail++;
+        return;
+    }
+    std::string out = sess->CaptureSince(mark);
+    printf("  DIR output: %zu chars\n", out.size());
+
+    // CCP's DIR formats names as 8-char-padded + dot + 3-char-padded,
+    // e.g. "PIP     COM" with multiple spaces. Substring check just
+    // looks for the bare name — robust against column-width drift
+    // across CCP variants.
+    const char* utilities[] = {
+        "PIP", "STAT", "ED", "SUBMIT",
+        "XSUB", "LOAD", "DUMP", "DDT",
+    };
+    bool allFound = true;
+    for (const char* name : utilities) {
+        if (out.find(name) == std::string::npos) {
+            fprintf(stderr, "  FAIL: DIR didn't list '%s'. Captured DIR "
+                            "tail (last 400):\n%s\n",
+                    name, out.substr(out.size() > 400 ? out.size() - 400 : 0).c_str());
+            allFound = false;
+        }
+    }
+    if (!allFound) {
+        g_fail++;
+        return;
+    }
+
     g_pass++;
 }
 
 int main() {
-    printf("=== emfe_plugin_z80 tests (through Phase 4.5) ===\n");
+    printf("=== emfe_plugin_z80 tests (through Phase 5.3) ===\n");
     TestNegotiate();
     TestBoardInfo();
     TestLifecycle();
@@ -3936,6 +4071,8 @@ int main() {
     // Phase 4.5
     TestBootFromDiskStagesRam();
     TestCpmBootIfPresent();
+    // Phase 5.3
+    TestCpmDirIfPresent();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
