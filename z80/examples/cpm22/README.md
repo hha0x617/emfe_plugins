@@ -27,10 +27,69 @@ acceptance criterion).
 | # | Status | Theme |
 |---|---|---|
 | 4.1 | ✅ merged (#70) | Sector-device disk MMIO (CPU side) |
-| 4.2 | ✅ this PR | CBIOS skeleton (`cbios/cbios.asm`) |
-| 4.3 | planned | Build pipeline — assemble CBIOS + combine with CCP / BDOS → bootable disk image |
+| 4.2 | ✅ merged (#71) | CBIOS skeleton (`cbios/cbios.asm`) |
+| 4.3 | ✅ this PR | Build pipeline — `build.ps1` assembles CBIOS + combines with CCP / BDOS → bootable disk image |
 | 4.4 | planned | Settings keys to mount a disk image (host-side wiring) |
 | 4.5 | planned | Cold boot to `A>` (acceptance test) |
+
+## Building a disk image
+
+```powershell
+# Default: companion repo is a sibling directory next to emfe_plugins
+pwsh ./build.ps1
+
+# Explicit companion location
+pwsh ./build.ps1 -CompanionPath D:\path\to\emfe_plugin_z80_cpm22
+
+# Explicit pasmo (otherwise looked up in PATH)
+pwsh ./build.ps1 -PasmoExe C:\tools\pasmo.exe
+
+# Just assemble cbios.asm — skip the disk-image combine step
+pwsh ./build.ps1 -SkipImage
+```
+
+The script:
+
+1. Looks for `pasmo` on PATH (single-binary Z80 assembler — install
+   from <https://pasmo.speccy.org/>). Other assemblers work too
+   (`sjasmplus`, `z80asm`, `tniASM`) — the source uses only standard
+   mnemonics + `ORG`/`EQU`/`DB`/`DW`/`DS`.
+2. Assembles `cbios/cbios.asm` → `cbios/cbios.bin` (flat binary,
+   `pasmo --bin`).
+3. Resolves the companion repo (`emfe_plugin_z80_cpm22`) as a sibling
+   directory next to `emfe_plugins`. If absent or not populated with
+   CCP / BDOS binaries, prints a SKIP message and exits 0 — same
+   "user-supplied binary" pattern as zexdoc (Phase 2.7) and eForth
+   (Phase 3.4).
+4. Builds a 256 256-byte SSSD layout (77 × 26 × 128 B) with:
+   - LBA 0: 3-byte boot stub (`JP 0xFA00` into CBIOS BOOT)
+   - LBA 1..N: CCP + BDOS bytes (44 sectors max)
+   - LBA 45+: CBIOS bytes
+   - All other bytes: `0xE5` (CP/M "empty directory entry" marker —
+     looks blank to a fresh BDOS).
+5. Writes the image to `<companion>/disks/cpm22-sssd.img`. The
+   output inherits the CP/M licence by virtue of containing CCP and
+   BDOS bytes — that's why it lands in the companion repo, not here.
+
+## File flow recap
+
+```
+  cbios.asm  (this repo)          cpm22/binary/{ccp,bdos}.bin
+       │                                   │ (companion repo)
+       ▼                                   │
+   pasmo                                   │
+       │                                   │
+       ▼                                   ▼
+   cbios.bin   ──────►   build.ps1 combine
+                                  │
+                                  ▼
+                       disks/cpm22-sssd.img
+                          (companion repo)
+```
+
+One-way: the build reads from both repos, writes only into the
+companion repo. The plugin itself builds and tests without the
+companion present.
 
 ## Contents
 

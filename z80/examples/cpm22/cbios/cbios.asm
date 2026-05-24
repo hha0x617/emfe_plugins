@@ -316,14 +316,10 @@ FINISH_DISK:
 ; LBA = CUR_TRK * DISK_SPT + CUR_SEC. With CUR_TRK 16-bit and SPT 26,
 ; the worst case for our 256 KiB floppy (77*26 = 2002) fits in 16 bits.
 SETUP_DISK:
+                ; Compute HL := CUR_TRK * 26 via shift-and-add:
+                ;   (HL << 4) + (HL << 3) + (HL << 1) = HL * (16 + 8 + 2)
+                ; DE holds the *2 partial, BC holds the *8 partial.
                 LD      HL, (CUR_TRK)
-                LD      DE, 0
-                LD      B, 5            ; multiplier shift count = log2(32)
-                                        ; — we use a shift-and-add for 26
-                ; Compute HL := HL * 26 via (HL << 4) + (HL << 3) + (HL << 1)
-                ; = HL * (16 + 8 + 2) = HL * 26. Use BC as scratch.
-                LD      B, H
-                LD      C, L
                 ADD     HL, HL          ; *2
                 LD      D, H            ; save *2 in DE
                 LD      E, L

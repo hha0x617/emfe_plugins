@@ -1,0 +1,8 @@
+# build.ps1 outputs — never commit assembled CBIOS or disk images.
+# CBIOS source goes through review here, but the assembled binary
+# belongs in either the user's local working tree or the companion
+# repo's disks/ (where it inherits the CP/M license).
+cbios/cbios.bin
+*.img
+*.dsk
+*.cpm
