@@ -17,6 +17,7 @@
 #include "Z80Memory.h"
 #include "Z80Uart.h"
 #include "Z80Timer.h"
+#include "Z80DiskDevice.h"
 
 #include <cstdint>
 #include <cstring>
@@ -70,6 +71,7 @@ struct EmfeInstanceData {
     Z80Memory memory;
     Z80Uart uart;
     Z80Timer timer;
+    Z80DiskDevice disk;
     std::atomic<EmfeState> state{EMFE_STATE_STOPPED};
 
     // Console char callback (set by the host) — fired whenever the
@@ -143,6 +145,8 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
     inst->cpu.Memory = &inst->memory;
     inst->memory.Uart = &inst->uart;
     inst->memory.Timer = &inst->timer;
+    inst->memory.Disk = &inst->disk;
+    inst->disk.Memory = &inst->memory;
     // Wire UART TX → console char callback. Captures `inst` so we can
     // grab the latest callback under the mutex when each byte fires.
     inst->uart.TxCallback = [inst](uint8_t ch) {
@@ -159,6 +163,7 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_create(EmfeInstance* out_instan
     inst->memory.Reset();
     inst->uart.Reset();
     inst->timer.Reset();
+    inst->disk.Reset();
 
     // Build the register definition table. Order here drives the host's
     // display order; group strings cluster registers under collapsible
@@ -602,6 +607,7 @@ extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_reset(EmfeInstance instance) {
     inst->memory.Reset();
     inst->uart.Reset();
     inst->timer.Reset();
+    inst->disk.Reset();
     return EMFE_OK;
 }
 
@@ -784,4 +790,34 @@ extern "C" EMFE_EXPORT EmfeResult  EMFE_CALL emfe_load_settings(EmfeInstance)   
 extern "C" EMFE_EXPORT void EMFE_CALL emfe_release_string(const char* /*str*/) {
     // No allocator handoff yet — strings returned from this plugin are
     // either nullptr or pointers into static storage.
+}
+
+// ============================================================================
+// Phase 4.1: vendor-prefixed test/host disk-mount API
+// ============================================================================
+//
+// The Settings-based mount path (Phase 4.4) reads a file from the
+// host file system and feeds it through this same SetImage hook. For
+// Phase 4.1 (CPU MMIO) we just expose a vendor-prefixed entry point so
+// the unit tests can mount an in-memory image. Real host integrations
+// (emfe_CsWPF / emfe_WinUI3Cpp) get their wiring in 4.4.
+//
+// `bytes` may be NULL when `size_bytes == 0` (unmount). On success
+// the disk device is updated and any sticky-error state is cleared.
+
+extern "C" EMFE_EXPORT EmfeResult EMFE_CALL emfe_z80_mount_disk_image(
+    EmfeInstance instance,
+    const uint8_t* bytes,
+    uint32_t size_bytes,
+    int32_t write_protect)
+{
+    if (!instance) return EMFE_ERR_INVALID;
+    auto* inst = to_inst(instance);
+    std::vector<uint8_t> v;
+    if (size_bytes > 0) {
+        if (!bytes) return EMFE_ERR_INVALID;
+        v.assign(bytes, bytes + size_bytes);
+    }
+    inst->disk.SetImage(std::move(v), write_protect != 0);
+    return EMFE_OK;
 }

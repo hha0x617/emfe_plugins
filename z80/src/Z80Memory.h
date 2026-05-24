@@ -21,13 +21,15 @@
 
 class Z80Uart;
 class Z80Timer;
+class Z80DiskDevice;
 
 class Z80Memory {
 public:
     std::array<uint8_t, 0x10000> Ram{};
 
-    Z80Uart*  Uart  = nullptr;
-    Z80Timer* Timer = nullptr;
+    Z80Uart*       Uart  = nullptr;
+    Z80Timer*      Timer = nullptr;
+    Z80DiskDevice* Disk  = nullptr;
 
     void Reset();
 

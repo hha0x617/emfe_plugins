@@ -108,7 +108,7 @@ interactive over the plugin's UART.
 
 | # | Theme |
 |---|---|
-| 4.1 | Disk-controller MMIO specification finalised, written to `docs/mmio.md`. Minimal sector-device shape |
+| 4.1 | Disk-controller MMIO spec finalised in `docs/phase4_design.md` §1 (PR #69) and implemented as `Z80DiskDevice` (8 ports `0xF0..0xF7`, 24-bit LBA, 16-bit buffer pointer, READ/WRITE/NOP commands, sticky ERROR + WRITE_PROTECT + IMAGE_LOADED status, fixed 128 B CP/M-native sector size). Vendor-prefixed `emfe_z80_mount_disk_image` host hook exposes mount for tests; Settings wiring lands in Phase 4.4 |
 | 4.2 | Custom CBIOS in `examples/cpm22/cbios/` (MIT, original work): Z80 assembly that maps CP/M's BIOS jump table to the plugin's MMIO |
 | 4.3 | Build recipe in `examples/cpm22/Makefile` (or similar): reads CP/M sources from a sibling `emfe_plugin_z80_cpm22/` clone, assembles them, combines with the CBIOS, writes the result back into `emfe_plugin_z80_cpm22/disks/` |
 | 4.4 | Plugin gains the minimum disk MMIO needed by the CBIOS |
