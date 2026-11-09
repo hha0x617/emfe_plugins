@@ -311,7 +311,7 @@ jobs:
           Get-ChildItem dist\
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: emfe-plugins-${{ env.SHORT_HASH }}
           path: dist/plugins/*.dll
@@ -326,7 +326,7 @@ jobs:
         # Skipped on PRs that did not trigger an installer compile —
         # nothing to upload in that case.
         if: github.event_name != 'pull_request' || needs.changes.outputs.shared == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: emfe-plugins-installer-${{ env.SHORT_HASH }}
           path: dist/emfe_plugins-*-setup.exe
